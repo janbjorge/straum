@@ -2,10 +2,11 @@
 
 This page names the code behind [How Straum works](how-it-works.md):
 who takes part, what each use case does, how the crates depend on each
-other and what the code holds true. A name in code
-font, such as `Writer::start`, is the type or function that holds a
-rule, under `crates/`; the [glossary](glossary.md) gives each name
-its type in the code.
+other and what the code holds true. A name in code font, such as
+`Writer::start`, is the type or function under `crates/` that holds a
+rule; the [glossary](glossary.md) gives each term its name in the
+code. [Reading the code](reading-the-code.md) gives the order to read
+the crates in and the Rust they use.
 
 Four participants:
 
@@ -18,12 +19,12 @@ Four participants:
   join or a row, only the names a view gives its keys and measures.
 - **People**: a table owner, who runs the setup SQL `straum plan`
   prints once, and an operator, who runs the binary and reads
-  `/readyz`, `/status`, `/views` and the log. In Kubernetes the chart is the
-  operator.
+  `/readyz`, `/status`, `/views` and the log. In Kubernetes the chart
+  is the operator.
 
 ## Architecture
 
-Six crates, dependencies inward only, enforced by
+Six crates, dependencies inward only (ADR-0002), enforced by
 `scripts/check-layers.py`.
 
 ![The six crates and their dependencies, inward only](diagrams/crates.svg)
@@ -41,9 +42,10 @@ Six crates, dependencies inward only, enforced by
   the binary (`AskSyntax` in `straum-http`: a reader and the words for
   `AskError`, both from `straum-notation`), so HTTP never knows Straum
   SQL.
-- The domain holds what an ask means, not how it is written: its
-  errors are data, worded in `straum-notation`
-  (`scripts/check-domain-syntax.py`).
+- The domain holds what a spec and an ask mean, never how Straum SQL
+  writes them: its errors are data, worded in `straum-notation`
+  (`describe_ask_error`). `scripts/check-domain-syntax.py` refuses a
+  Straum SQL word in a domain string.
 
 Data moves the other way at run time: PostgreSQL feeds `straum-pg`,
 which hands commits to the writer, which applies them to the store;
@@ -62,38 +64,38 @@ apps post asks to `straum-http`, which reads the store through the app.
 | Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](cli.md#straum-run) |
 
 Run Straum is `run` in the binary: read the spec and the DSN, bind the
-listener, make an **App** with an empty **Store** and the **Limits**,
-make a **Writer** over a **Postgres** source, spawn the writer thread,
-serve HTTP until a signal. A panic aborts the process (the hook `run`
-sets), since the store may be half written. Fail is `run_writer`: a
+listener, set a panic hook that aborts the process, since the store
+may be half written, make an **App** with an empty **Store** and the
+**Limits**, make a **Writer** over a **Postgres** source, spawn the
+writer thread, and serve HTTP until a signal. Fail is `run_writer`: a
 step that fails logs its error and ends the process with exit 1, and
 PostgreSQL drops the slot as the connection closes. Straum never
 retries in the process; whatever runs it starts it again.
 
 `straum plan --copy` writes the psql scripts that copy the spec's
 tables into another database (ADR-0015); Straum itself reads no
-database for it. They sit next to `plan` in `straum-pg`. `Source` stays
-the port that loads the store and then streams.
+database for it. `copy_scripts.rs` writes them, beside `plan.rs` in
+`straum-pg` and outside the `Source` port, which only loads the store
+and then streams.
 
 ## Start
 
 `Writer::start`:
 
-1. Drop the old store, so two stores never take memory at once.
-2. `Source::open`: connect, begin a read-only repeatable-read
+1. `Source::open`: connect, begin a read-only repeatable-read
    transaction, create a temporary logical slot with `pgoutput` and
    `SNAPSHOT 'use'`, read L. Read the catalog and [check
    it](postgresql.md#what-straum-checks-at-start) against the spec.
    Hold the spec tables in `ACCESS SHARE` mode (`hold_tables`), and
    fail if one was rewritten after the snapshot: its new file reads
    empty in it.
-3. `Source::load` each dim, then each fact: set the column types from
+2. `Source::load` each dim, then each fact: set the column types from
    the catalog, run one binary `COPY` of the columns the spec names,
    add rows by the batch (`Store::add_rows`). The snapshot
    transaction commits with the last load.
-4. Read the server's WAL once; start the **Lag** from when the slot
+3. Read the server's WAL once; start the **Lag** from when the slot
    was opened.
-5. Take the write lock, swap the store in at L, then set
+4. Take the write lock, swap the store in at L, then set
    **Following** at L in the progress. Straum is ready. The stream
    thread starts at the first `next_commit`: it reads the stream,
    answers the server's keepalives and confirms what the writer has
@@ -101,9 +103,10 @@ the port that loads the store and then streams.
 
 Any error is a **Failure**, and Straum exits. The load fills a new
 store outside the lock, so asks never wait on PostgreSQL; they answer
-503 until step 5.
+503 until step 4. A writer starts once: the **App** begins with an
+empty store, and a failed writer takes no more steps.
 
-With `--wal physical`, step 2 differs (ADR-0008);
+With `--wal physical`, step 1 differs (ADR-0008);
 [The physical stream](how-it-works.md#the-physical-stream) says why:
 
 1. Read the catalog on a plain connection and check it.
@@ -111,17 +114,16 @@ With `--wal physical`, step 2 differs (ADR-0008);
    `pg_current_wal_flush_lsn()` to reach its redo point. Read each spec
    table's **Layout** (`physical::read_layouts`) after the slot, so a
    rewrite between the two is in the WAL read. Start the stream thread
-   with a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes into
-   records and pass by those of other tables' pages, `Heap` keeps the
-   pages, `Transactions` holds changes by
-   xid, `Publisher` turns commits into pgoutput messages for the same
-   `Decoder`.
+   with a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes
+   into records and pass by those of other tables' pages, `Heap` keeps
+   the pages, `Transactions` holds changes by xid, and `Publisher`
+   turns commits into pgoutput messages for the same `Decoder`.
 3. Try `pg_log_standby_snapshot()`, then wait for the **Consistent
    point**: past the first `RUNNING_XACTS` and every transaction it
    names.
 4. Begin the repeatable-read transaction, read `pg_current_snapshot()`
    and hand the snapshot to the stream thread (`Stream::see`). A
-   snapshot that misses a commit the stream dropped gets
+   snapshot blind to a commit the stream read as before its start gets
    `Sight::Blind`, and Straum takes another. Once one is taken, check
    the catalog again in it, as the load will read the tables, and hold
    them as the logical start does.
@@ -162,13 +164,13 @@ width; a bucket is columnar cells with one state per input.*
   and a hash map per cell from its first value of another type
   (`DistinctCells`): the load sets the column types only after the
   states exist.
-- A **Projection** maps key values to the attribute codes of every
-  row under them. `Null` is code 0 in every attribute, so no row and
-  a null read alike.
+- A **Projection** maps dim key values to the codes of the dim columns
+  of every row under them. `Null` is code 0 in every dim column, so no
+  row and a null read alike.
 - **Bound** cells are a second rollup of a fact whose joins all read
   fact columns, one of them a column no key reads: keyed by the keys
   and the dim columns' values, so they are fewer than the fact's
-  cells and an ask reads no projection. A fact row goes into both
+  cells and an ask reads no projection (ADR-0006). A fact row goes into both
   rollups; into the bound one once per way its joins resolve now
   (`Bound::rows`). A change to a dim the fact reads moves the ones
   whose join columns name the changed key (`Store::retarget`); a dim
@@ -203,22 +205,22 @@ Steps 2 to 4 repeat for every level.
    connection, fail past `--max-retained-wal`, feed the **Lag**.
 2. `Source::next_commit`, waiting at most until the next WAL reading
    is due.
-3. Under the write lock, apply the commit: each change to its rollup
-   or projection, tables the spec doesn't name skipped, then move
-   **Following** to the commit's LSN and time.
+3. Under the write lock, apply the commit (`State::apply`): each
+   change to its rollup or projection, tables the spec doesn't name
+   skipped, then move **Following** to the commit's LSN and time.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The watchdog
-(`watchdog.rs`) is two threads, from the slot's making to its end. Its
-reader reads what the slot holds every second on a connection of its
-own, counting a physical slot's WAL from where it was made, not from
-the redo point it keeps WAL from; past `--max-retained-wal` it shuts
-the stream's sockets, the
-load's too, then has PostgreSQL end the slot's session each second the
-slot is still there, so a writer stuck under its lock can't keep the
-slot. Its clock touches no network: after 10
-seconds without a reading, whatever the reader is stuck on, it shuts
-the same sockets.
+(`watchdog.rs`) is two threads, from the slot's making to its end:
+
+- Its reader reads what the slot holds every second, on a connection
+  of its own. It counts a physical slot's WAL from where the slot was
+  made, not from the redo point it keeps WAL from. Past
+  `--max-retained-wal` it shuts the stream's sockets, the load's too,
+  then has PostgreSQL end the slot's session each second the slot is
+  still there, so a writer stuck under its lock can't keep the slot.
+- Its clock touches no network: after 10 seconds without a reading,
+  whatever the reader is stuck on, it shuts the same sockets.
 
 ## Answering an ask
 
@@ -231,15 +233,16 @@ The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
    exactly. An invalid ask is 400 even while loading. Once a load has
    read the column types, a filter value of another type than its
    column is refused too.
-4. Without a **Following**, 503 not ready.
+4. Until a load is in (no applied LSN in the `State`), 503 not
+   ready.
 5. `Store::ask`: read the cells of the buckets in the range
    (`Rollup::cover`). A dim column is part of the bound cells' key
-   while they hold, else read from the dim's projection through the
-   join id in the cell key, once per id met (`Joined`): in a list of
-   every id when the ask reads as many cells as there are ids, else in
-   a map of those it met. A cell whose join keeps no row is passed
-   over. Then add, filter and sort as
-   [Answering an ask](how-it-works.md#answering-an-ask) says.
+   when the fact keeps them, else read from the dim's projection
+   through the join column in the cell key, once per value met
+   (`Joined`): in a list of every value when the ask reads as many
+   cells as there are values, else in a map of those it met. A cell
+   whose join keeps no row is passed over. Then add, filter and sort
+   as [Answering an ask](how-it-works.md#answering-an-ask) says.
 6. Answer with `as_of` from the **Lag** and the applied LSN in the
    `Straum-LSN` header, `Cache-Control: no-store`: JSON, or a table in
    plain text for an ask sent with `Accept: text/plain`.
@@ -254,24 +257,25 @@ every measure by the bucket and every key over the buckets the view
 holds, through the same steps as any ask (`App::ask_window`). The
 store builds only the rows of the window asked for, at most 1000,
 though it still merges every cell into its group.
+
 `GET /views/NAME/spec` replies with the view's `CREATE VIEW`
 statement, which `straum run` cut from the spec's text at start
 (`straum_notation::definitions`); the store never sees it.
-`straum shell` is a client of these endpoints: it
-reads the views as JSON to complete names, prints an answer's
-`Server-Timing` under it beside the time it measured itself, and knows
-no Straum SQL.
 
-In the binary, `main.rs` reads the command line and wires the crates
-together. The commands that talk to a running Straum go through
-`client.rs`, one request on a plain socket, which also times an ask
-and a view's rows. `complete.rs` is what Tab
-offers, plain functions over a line and the views, and `shell.rs` is
-the prompt around both, the only code that touches the terminal.
+`straum shell` is a client of these endpoints: it reads the views as
+JSON to complete names, prints an answer's `Server-Timing` under it
+beside the time it measured itself, and knows no Straum SQL.
+
+In the binary, `main.rs` reads the command line (`command_line.rs`)
+and wires the crates together. The commands that talk to a running
+Straum go through `client.rs`, one request on a plain socket, which
+also times an ask and a view's rows. `complete.rs` is what Tab offers,
+plain functions over a line and the views, and `shell.rs` is the
+prompt around both, the only code that touches the terminal.
 
 ## Model
 
-Arrows denote dependency, not communication flow.
+In these diagrams an arrow points at what a thing holds.
 
 ### The spec: what Straum keeps
 
@@ -282,7 +286,7 @@ object compared by value.
 
 *A spec is dims and facts. A fact is one view: its table, one time,
 by keys, refs in join order, measures and the view's WHERE. A ref
-joins through one via per key column and reads attributes.*
+joins through one `Via` per dim key column and reads dim columns.*
 
 An **Aggregate** is count, count of a column, sum, min, max, avg,
 count distinct, sum distinct, avg distinct, bool_and, bool_or,
@@ -292,15 +296,15 @@ all but count name one input column (`Aggregate::input`).
 - A **Spec** holds dims and facts in one namespace (`Spec::new`).
   `Spec::tables` lists each table once, dims first.
 - One **Dim** per table, whatever the number of views joining it;
-  `Dim::attributes` is the union of what they read.
+  its `attributes` are the union of the dim columns they read.
 - A **Fact** holds its refs in join order: a ref joined through
   another dim comes after it (`Via::Attribute::through` is an index
   into `Fact::refs` before it).
 - A **Ref** points at a dim by name, with as many **Via** columns as
   the dim's key has (`JoinError::KeyLength`). Left and inner refs read
-  at least one **Attribute**; semi and anti read none
+  at least one dim column (`Attribute`); semi and anti read none
   (`JoinError::ReadsNothing`, `JoinError::ReadsColumns`).
-- The time, keys, attributes and measures share one namespace per
+- The time, keys, dim columns and measures share one namespace per
   view (`SpecError::Duplicate`). An ask reaches any of them by that
   name alone: the time by `Time::name`, the rest through
   `Fact::resolve`.
@@ -310,12 +314,12 @@ all but count name one input column (`Aggregate::input`).
 
 Derived from a fact, not stored:
 
-| Derived        | What                                      | Where         |
-| -------------- | ----------------------------------------- | ------------- |
-| Rollup key     | by parts, each fact-side via once, bucket | `Fact::rollup_key` |
-| Row layout     | time, by columns, vias, inputs, each once | `Fact::columns` |
-| Dim row layout | key columns, then attributes              | `Dim::columns` |
-| Direct         | every via is a fact column, no chain      | `Fact::is_direct` |
+| Derived        | What                                              | Where              |
+| -------------- | ------------------------------------------------- | ------------------ |
+| Rollup key     | by parts, each join column once, bucket           | `Fact::rollup_key` |
+| Row layout     | time, by columns, join columns, inputs, each once | `Fact::columns`    |
+| Dim row layout | dim key columns, then dim columns                 | `Dim::columns`     |
+| Direct         | every `Via` is a join column, no chain            | `Fact::is_direct`  |
 
 ### The ask and the answer
 
@@ -342,12 +346,12 @@ conditions; its range is two bucket edges with `from < to`. An
 a state behind a read-write lock, the store, and a progress behind a
 mutex: a following while every table is loaded.*
 
-- **App** is an `Arc<RwLock<State>>`, the store and the LSN it holds
-  up to, beside an `Arc<Mutex<Progress>>`, the following, and the
-  limits, which never change; clones
-  share them. Asks take the read lock, the writer the write lock only
-  to apply a commit it has read or to swap a store in
-  (`State::apply`, `Writer::start`). The status and the writer's
+- **App** holds an `Arc<RwLock<State>>`, the store and the LSN it
+  holds up to; an `Arc<Mutex<Progress>>`, the following; and the spec
+  and the limits, which never change. Clones share them. Asks take
+  the read lock, the writer the write lock only to apply a commit it
+  has read or to swap the loaded store in (`State::apply`,
+  `Writer::start`). The status and the writer's
   readings of the WAL take only the progress's lock, so they never
   wait on an ask, and a writer waiting for the write lock holds back
   no ask for a reading. The store's lock is always taken first.
@@ -399,17 +403,19 @@ makes a property test fail.
 10. **Bound cells are the keyed cells, bound as the dims are now.**
     They exist only for a fact whose joins all read fact columns, one
     of them no key: any other fact's would be as many as its keyed
-    cells (`Bound::new`). A dim change moves the ones that
-    name its key (`Store::retarget`), one walk for an update that keeps
-    the key, none for a key the via parts never coded, and a dim
-    truncate or load makes them again (`Store::rebuild_dim`). An ask
+    cells (`Bound::new`). A dim change moves the ones that name its
+    key (`Store::retarget`), one walk for an update that keeps the key,
+    none for a key the join columns never coded, and a dim truncate or
+    load makes them again (`Store::rebuild_dim`). An ask
     reads them whenever the fact keeps them (`Store::reading`).
 11. **Lag never understates.** Readings merge only toward older
     (`Lag::read`); `matches_every_reading_kept` checks it against a
     reference that keeps every reading.
-12. **Two stores never take memory at once.** The old store goes
-    before the new load (`Writer::start`).
-13. **One name, one thing, per view.** The time, keys, attributes and
+12. **A process loads once.** The writer's first step loads into the
+    **App**'s empty store, and a step after a failed one panics
+    (`Writer::step`), so two loaded stores never take memory at once;
+    a start after a failure is a new process.
+13. **One name, one thing, per view.** The time, keys, dim columns and
     measures share a namespace, and an answer's columns are its names
     (`Spec::new`, `Spec::check_ask`).
 
@@ -429,14 +435,15 @@ source connection:
 to Streaming on the first `next_commit`, and back to Closed on the next
 `open`.*
 
-A `load` outside `Loading` and a `wal` while `Closed` are
-`Error::Stopped`.
+A `load` outside `Loading`, and a `next_commit` or `wal` while
+`Closed`, are `Error::Stopped`.
 
 ## Which decision shaped what
 
 The reasoning and the tradeoffs are in the
 [ADRs](https://github.com/janbjorge/straum/tree/main/docs/adr), one per
-subject; their index says which record covers which part of the model.
+subject (ADR-0001); their index says which record covers which part of
+the model.
 
 The PostgreSQL mechanics behind the load, the apply and the slot, with
 their citations, are in
