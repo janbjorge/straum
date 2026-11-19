@@ -9,7 +9,8 @@ break and lets the honest form through.
 The layer check reads Cargo's metadata; these tests hand it metadata
 built here, over a workspace of files in a temporary folder, so they
 need no cargo and no network. The domain syntax check reads a folder of
-Rust files; these tests write one. Many cases here are ways past a
+Rust files; these tests write one. The chart check reads its oldest
+Kubernetes from Chart.yaml; these tests hand it the line. Many cases here are ways past a
 check that a red team found; each stays so the way stays shut.
 """
 
@@ -39,6 +40,7 @@ def load(name: str):
 
 layers = load("check-layers")
 syntax = load("check-domain-syntax")
+chart = load("check-chart")
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 
 
@@ -593,6 +595,30 @@ class DomainSyntaxCheck(unittest.TestCase):
                 errors = domain_errors({"lib.rs": text})
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn("not read", errors[0])
+
+
+class ChartKubernetesFloor(unittest.TestCase):
+    def test_reads_the_floor_of_kube_version(self):
+        for text, floor in [
+            ('kubeVersion: ">=1.30.0-0"\n', "1.30.0"),
+            ("name: straum\nkubeVersion: >=1.31.2\n", "1.31.2"),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(chart.oldest_kubernetes(text), floor)
+
+    def test_refuses_a_kube_version_with_no_plain_floor(self):
+        for text in [
+            'kubeVersion: "<=1.30.0"\n',
+            'kubeVersion: ">=1.30.0 <1.40.0"\n',
+            "# kubeVersion: >=1.30.0\n",
+            "name: straum\n",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNone(chart.oldest_kubernetes(text))
+
+    def test_the_chart_has_a_floor(self):
+        text = (chart.CHART / "Chart.yaml").read_text()
+        self.assertIsNotNone(chart.oldest_kubernetes(text))
 
 
 if __name__ == "__main__":

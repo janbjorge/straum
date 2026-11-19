@@ -1,6 +1,6 @@
 # ADR-0012: Straum ships as one image, from a release
 
-Status: Accepted 2026-11-10; revised 2026-11-18
+Status: Accepted 2026-11-10; revised 2026-11-19
 
 ## Context
 
@@ -28,9 +28,10 @@ DSN Secret, optional CA bundle Secret, ClusterIP Service and
 ServiceAccount under the Restricted Pod Security Standard, pinning no
 user so OpenShift's `restricted-v2` admits it; no PDB, HPA, Ingress or
 NetworkPolicy. `scripts/check-chart.py` runs `helm lint --strict`,
-helm-unittest and kubeconform on Kubernetes 1.33 and 1.36. The
-chart requires 1.30 or newer: its preStop pause is a sleep action, on
-by default from 1.30 and stable from 1.34.
+helm-unittest and kubeconform on the oldest Kubernetes the chart
+takes, read from its `kubeVersion`, and on 1.36. The chart requires
+1.30 or newer: its preStop pause is a sleep action, on by default from
+1.30 and stable from 1.34.
 
 Besides the chart, `deploy/` holds two more ways to run the same
 image, chosen to cover where long-running services run: Docker
