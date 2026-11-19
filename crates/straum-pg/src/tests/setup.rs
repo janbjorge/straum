@@ -157,6 +157,7 @@ fn expect_problems(pg: &PostgresContainer, cases: Vec<Case>) {
 fn setup_problems_say_what_to_fix() {
     let pg = postgres();
     publication_problems(&pg);
+    column_list_problems(&pg);
     table_problems(&pg);
     column_type_problems(&pg);
     date_uuid_and_float_problems(&pg);
@@ -215,7 +216,7 @@ fn grouped(view: &str, group_by: &str) -> String {
 }
 
 /// A publication that is missing, publishes too little or leaves out a
-/// table, a row or a column.
+/// table or a row.
 fn publication_problems(pg: &PostgresContainer) {
     let Fact { table, spec } = summed_fact();
     let cases = vec![
@@ -277,11 +278,39 @@ fn publication_problems(pg: &PostgresContainer) {
             &spec,
             Some("f: publication filtered filters the rows of filtered.f; Straum needs every row"),
         ),
+    ];
+    expect_problems(pg, cases);
+}
+
+/// A publication's column list leaves out a column the spec reads, or
+/// lists it, whatever the other names hold.
+fn column_list_problems(pg: &PostgresContainer) {
+    let Fact { table, spec } = summed_fact();
+    let cases = vec![
         case(
             "listed",
             format!("{table} CREATE PUBLICATION $S FOR TABLE $S.f (id, at);"),
             &spec,
             Some("f: publication listed leaves out column x of listed.f"),
+        ),
+        // A published name holding a comma names no other column.
+        case(
+            "comma",
+            format!(
+                "{} CREATE PUBLICATION $S FOR TABLE $S.f (id, at, \"y,x\");",
+                fact("x int, \"y,x\" int", "").table
+            ),
+            &spec,
+            Some("f: publication comma leaves out column x of comma.f"),
+        ),
+        case(
+            "commalisted",
+            format!(
+                "{} CREATE PUBLICATION $S FOR TABLE $S.f (id, at, x, \"y,x\");",
+                fact("x int, \"y,x\" int", "").table
+            ),
+            &spec,
+            None,
         ),
     ];
     expect_problems(pg, cases);

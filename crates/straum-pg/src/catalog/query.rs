@@ -26,7 +26,7 @@ pub(crate) fn query(
         return Ok(catalog);
     }
     catalog.classes = classes(connection, &publication, &tables)?;
-    read_columns(connection, &tables, &mut catalog.classes)?;
+    read_columns(connection, &publication, &tables, &mut catalog.classes)?;
     catalog.labels = labels(connection, &tables)?;
     Ok(catalog)
 }
@@ -90,7 +90,7 @@ fn classes(
     let rows = connection.rows(&format!(
         "SELECT c.oid, n.nspname, c.relname, c.relkind, c.relpersistence, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
-                array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL,
+                p.tablename IS NOT NULL, p.rowfilter IS NOT NULL,
                 EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid),
                 row_security_active(c.oid)
            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -126,7 +126,8 @@ fn classes(
             },
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
-            published: published.as_deref().map(comma_list),
+            // Filled with the columns, each tested against the publication.
+            published: published.as_deref().and_then(published_table),
             row_filter: row_filter.as_deref() == Some("t"),
             columns: Vec::new(),
         });
@@ -134,23 +135,36 @@ fn classes(
     Ok(classes)
 }
 
-fn comma_list(text: &str) -> Vec<String> {
-    text.split(',').map(str::to_owned).collect()
+/// No columns yet for a table the publication sends, `None` for one it
+/// leaves out.
+fn published_table(published: &str) -> Option<Vec<String>> {
+    if is_true(published) {
+        Some(Vec::new())
+    } else {
+        None
+    }
 }
 
-/// Adds each class's columns, dropped ones left out.
+/// Adds each class's columns, dropped ones left out, and the published
+/// ones to its published list. Each name is tested against the
+/// publication's list in SQL: a name may hold any separator.
 fn read_columns(
     connection: &mut Connection,
+    publication: &str,
     tables: &str,
     classes: &mut [Class],
 ) -> Result<(), Error> {
     let rows = connection.rows(&format!(
         "SELECT n.nspname, c.relname, a.attname, a.atttypid, a.atttypmod,
-                format_type(a.atttypid, a.atttypmod), t.typtype, a.attgenerated
+                format_type(a.atttypid, a.atttypmod), t.typtype, a.attgenerated,
+                COALESCE(a.attname = ANY (p.attnames), false)
            FROM pg_attribute a
            JOIN pg_class c ON c.oid = a.attrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
            JOIN pg_type t ON t.oid = a.atttypid
+           LEFT JOIN pg_publication_tables p
+                  ON p.pubname = {publication}
+                 AND p.schemaname = n.nspname AND p.tablename = c.relname
           WHERE a.attnum > 0 AND NOT a.attisdropped
             AND (n.nspname, c.relname) IN (VALUES {tables})
           ORDER BY a.attnum"
@@ -166,12 +180,18 @@ fn read_columns(
             type_name,
             typtype,
             generated,
-        ] = <[Option<String>; 8]>::try_from(row)
+            published,
+        ] = <[Option<String>; 9]>::try_from(row)
             .map_err(|_| shape("columns"))?
             .map(Option::unwrap_or_default);
         let Some(class) = class_mut(classes, &schema, &table) else {
             return Err(shape("columns"));
         };
+        if let Some(names) = class.published.as_mut()
+            && is_true(&published)
+        {
+            names.push(name.clone());
+        }
         class.columns.push(Column {
             name,
             type_oid: type_oid.parse().map_err(|_| shape("columns"))?,
