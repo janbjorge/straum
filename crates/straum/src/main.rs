@@ -18,7 +18,7 @@ mod testing;
 use std::env;
 use std::fmt::{self, Display};
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::panic;
 use std::process::{self, ExitCode};
@@ -31,9 +31,10 @@ use straum_http::{AskSyntax, QueryError};
 use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, PgEnv, Postgres, Replication};
 
-use crate::client::ClientError;
+use crate::client::{ClientError, Server};
 use crate::command_line::{Command, Environment, Plan, Printed, ROLE, Run, URL_VARIABLE, command};
 use crate::help::HELP;
+use crate::shell::PipeError;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
 const USAGE_FAILURE: u8 = 2;
@@ -200,12 +201,25 @@ fn execute(command: Command) -> Result<(), Failure> {
             if input.is_terminal() && output.is_terminal() {
                 return shell::interactive(&server).map_err(Failure::Terminal);
             }
-            match shell::piped(&server, input.lock(), output.lock(), io::stderr().lock()) {
-                Ok(0) => Ok(()),
-                Ok(failed) => Err(Failure::CommandsFailed(failed)),
-                Err(error) => Err(Failure::ReadingCommands(error)),
-            }
+            piped_shell(&server, input.lock(), output.lock(), io::stderr().lock())
         }
+    }
+}
+
+/// Runs the shell on pipes, failing when a command failed or a stream
+/// did.
+// `impl`: the binary passes the locked streams, tests a writer that fails.
+fn piped_shell(
+    server: &Server,
+    input: impl BufRead,
+    output: impl Write,
+    errors: impl Write,
+) -> Result<(), Failure> {
+    match shell::piped(server, input, output, errors) {
+        Ok(0) => Ok(()),
+        Ok(failed) => Err(Failure::CommandsFailed(failed)),
+        Err(PipeError::Reading(error)) => Err(Failure::ReadingCommands(error)),
+        Err(PipeError::Writing(error)) => Err(Failure::WritingAnswer(error)),
     }
 }
 
@@ -637,6 +651,41 @@ mod tests {
         let mut written = Vec::new();
         assert!(write_answer(&mut written, "a\n").is_ok());
         assert_eq!(written, b"a\n");
+    }
+
+    /// Fails every read, as a pipe whose writer broke does.
+    struct Broken;
+
+    impl io::Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::ConnectionReset.into())
+        }
+    }
+
+    fn piped_failure(input: impl BufRead, output: impl Write, errors: impl Write) -> Failure {
+        let server = crate::testing::server("http://127.0.0.1:1");
+        piped_shell(&server, input, output, errors).unwrap_err()
+    }
+
+    #[test]
+    fn a_piped_shell_says_which_stream_failed() {
+        let full = || Full {
+            kind: io::ErrorKind::StorageFull,
+        };
+        // `\?` prints to the output, `\nope` to the errors.
+        let failure = piped_failure(&b"\\?\n"[..], full(), Vec::new());
+        assert!(matches!(failure, Failure::WritingAnswer(_)), "{failure}");
+        let failure = piped_failure(&b"\\nope\n"[..], Vec::new(), full());
+        assert!(matches!(failure, Failure::WritingAnswer(_)), "{failure}");
+        // A writer that takes no byte fails the write itself.
+        let failure = piped_failure(&b"\\?\n"[..], &mut [][..], Vec::new());
+        assert!(matches!(failure, Failure::WritingAnswer(_)), "{failure}");
+        let failure = piped_failure(io::BufReader::new(Broken), Vec::new(), Vec::new());
+        assert!(matches!(failure, Failure::ReadingCommands(_)), "{failure}");
+        let failure = piped_failure(&b"\\nope\n"[..], Vec::new(), Vec::new());
+        assert!(matches!(failure, Failure::CommandsFailed(1)), "{failure}");
+        let server = crate::testing::server("http://127.0.0.1:1");
+        assert!(piped_shell(&server, &b"\\?\n"[..], Vec::new(), Vec::new()).is_ok());
     }
 
     fn refused(status_line: &str) -> Failure {

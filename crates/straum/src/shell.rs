@@ -192,10 +192,20 @@ fn entry(entered: &str) -> Entry {
     }
 }
 
+/// A stream of the shell on pipes that failed.
+#[derive(Debug)]
+pub(crate) enum PipeError {
+    /// Reading the commands.
+    Reading(io::Error),
+    /// Writing an answer, or the error of a command.
+    Writing(io::Error),
+}
+
 /// Answers each command of `input` on `output` and says each failure on
 /// `errors`, going on after one as psql does. A command is the lines
 /// `entry` takes, or what is left when the input ends. How many commands
-/// failed, so a script can tell.
+/// failed, so a script can tell. Both writers are flushed at the end, so
+/// a write that fails there is told too.
 // `impl`: the binary passes the terminal's locked streams, tests pass
 // byte buffers and a writer that always fails.
 pub(crate) fn piped(
@@ -203,13 +213,32 @@ pub(crate) fn piped(
     mut input: impl BufRead,
     mut output: impl Write,
     mut errors: impl Write,
-) -> io::Result<usize> {
+) -> Result<usize, PipeError> {
+    let failed = answer_each(server, &mut input, &mut output, &mut errors)?;
+    match output.flush() {
+        // The reader has left, as `head` does after its lines.
+        Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
+            return Err(PipeError::Writing(error));
+        }
+        _ => {}
+    }
+    errors.flush().map_err(PipeError::Writing)?;
+    Ok(failed)
+}
+
+// `impl`: as `piped`, whose streams it borrows.
+fn answer_each(
+    server: &Server,
+    mut input: impl BufRead,
+    mut output: impl Write,
+    mut errors: impl Write,
+) -> Result<usize, PipeError> {
     let mut failed = 0;
     let mut entered = String::new();
     let mut line = String::new();
     loop {
         line.clear();
-        let read_bytes = input.read_line(&mut line)?;
+        let read_bytes = input.read_line(&mut line).map_err(PipeError::Reading)?;
         if read_bytes > 0 {
             if !entered.is_empty() {
                 entered.push('\n');
@@ -228,11 +257,11 @@ pub(crate) fn piped(
             Outcome::Print(text) => match output.write_all(text.as_bytes()) {
                 // The reader has left, as `head` does after its lines.
                 Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Ok(failed),
-                written => written?,
+                written => written.map_err(PipeError::Writing)?,
             },
             Outcome::Failed(error) => {
                 failed += 1;
-                writeln!(errors, "straum: {error}")?;
+                writeln!(errors, "straum: {error}").map_err(PipeError::Writing)?;
             }
         }
         if read_bytes == 0 {
@@ -575,7 +604,10 @@ mod tests {
             Vec::new(),
             Left,
         );
-        assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert!(
+            matches!(&failed, Err(PipeError::Writing(error)) if error.kind() == io::ErrorKind::BrokenPipe),
+            "{failed:?}"
+        );
     }
 
     fn history(state: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
