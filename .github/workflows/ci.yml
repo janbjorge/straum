@@ -57,6 +57,7 @@ jobs:
           toolchain: ${{ env.RUST }}
       - run: python3 scripts/check-layers.py
       - run: python3 scripts/check-domain-syntax.py
+      - run: python3 scripts/test-checks.py
 
   # The workspace tests on each major. 18, the tests' default, runs them
   # under coverage instead, so no major runs them twice.
