@@ -26,8 +26,9 @@ memory. This changes N rows in one transaction for several N while asking
 Straum back to back, and reports the time from the commit until Straum had
 applied it, the longest ask meanwhile, which is the lock hold as a client
 feels it, and how much Straum's resident set grew. After each N it checks
-the fares by payment type against PostgreSQL and fails if Straum started
-over. --max-transaction-rows takes its default from this table.
+the fares by payment type against PostgreSQL and fails if an answer
+differs or Straum stops answering. --max-transaction-rows takes its
+default from this table.
 
 shell: leaves you in `straum shell` at the trips.
 
