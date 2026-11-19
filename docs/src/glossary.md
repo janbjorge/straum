@@ -19,11 +19,11 @@ the end are open.
 - **ADR**: the settled decisions on one subject in `docs/adr/`
   (ADR-0001).
 - **Port**: a trait at the edge of `straum-app` that an outer crate
-  implements; there is one, `Source`
+  implements; `Source` is the only one
   ([Architecture](design.md#architecture)).
 - **Adapter**: a crate between the use cases and the outside:
-  `straum-pg`, which implements `Source`, `straum-http` and
-  `straum-notation` ([Architecture](design.md#architecture)).
+  `straum-http`, `straum-notation`, and `straum-pg`, which implements
+  `Source` ([Architecture](design.md#architecture)).
 
 ## Spec
 
@@ -188,7 +188,7 @@ the end are open.
   ([Load once](how-it-works.md#load-once-follow-every-commit)).
 - **Fail hard**: a failure ends the process with exit 1, and whatever
   runs Straum starts it again from a new slot
-  ([States](deploy.md#states)). A **restart** is that new start. Straum
+  ([States](deploy.md#states)). That new start is a **restart**. Straum
   never retries in the process.
 - **States**: Loading, Ready, Lagging, Exited, Stopping
   ([States](deploy.md#states)); no enum.
@@ -223,14 +223,15 @@ the end are open.
   truth" means PostgreSQL itself.
 - **Plain connection** (`Postgres::plain`): a connection beside the
   replication connection. `Postgres::plain` reads the WAL position each
-  second; the watchdog has its own, and the physical stream two more
+  second; the watchdog has one of its own, and the physical stream has
+  two more
   ([What Straum costs the
   server](postgresql.md#what-straum-costs-the-server)).
 - **WAL retained** (`Wal::retained`): bytes PostgreSQL keeps for the
   slot ([straum status](cli.md#straum-status)).
 - **Watchdog** (`SlotGuard`, `watchdog.rs`): two threads that end the
-  stream when the slot holds more than `--max-retained-wal`, or when no
-  reading of the slot comes for too long
+  stream when the slot holds more than `--max-retained-wal`, or when
+  they get no reading of the slot for too long
   ([What Straum costs the server](postgresql.md#what-straum-costs-the-server)).
 - **Status** (`Status`): what `GET /status` and `straum status` show;
   not the stream's status report (`StreamThread::report`).
