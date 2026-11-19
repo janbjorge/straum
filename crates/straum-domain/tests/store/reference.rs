@@ -204,10 +204,10 @@ fn groups<'r>(fact: &Fact, ask: &Ask, rows: &'r [Vec<Datum>], dims: &Dims) -> Gr
         for asked in &ask.keys {
             key.push(match asked {
                 AskKey::Key(name) if name.as_str() == "bucket" => {
-                    Datum::Int(Width { seconds: WIDTH }.bucket_start(time))
+                    Datum::Int(Width { seconds: WIDTH }.bucket_start(time).unwrap())
                 }
                 AskKey::Key(name) => value(row, name, dims),
-                AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(time)),
+                AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(time).unwrap()),
             });
         }
         groups.entry(key).or_default().push(row);

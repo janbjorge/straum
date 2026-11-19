@@ -121,10 +121,11 @@ fn group_key(ask: &Ask, row: &[Datum], joined: &JoinRow, at: i64) -> Vec<Datum> 
                 Width {
                     seconds: u32::try_from(HOUR).unwrap(),
                 }
-                .bucket_start(at),
+                .bucket_start(at)
+                .unwrap(),
             ),
             AskKey::Key(name) => value(row, joined, name),
-            AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(at)),
+            AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(at).unwrap()),
         });
     }
     key

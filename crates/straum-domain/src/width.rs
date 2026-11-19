@@ -47,8 +47,11 @@ pub const UNITS: [Unit; 4] = [
 
 impl Width {
     /// The start of the bucket `seconds` falls in. Buckets are UTC.
-    pub fn bucket_start(self, seconds: i64) -> i64 {
-        seconds.div_euclid(i64::from(self.seconds)) * i64::from(self.seconds)
+    /// `None` within a bucket of the earliest `i64`, where the start lies
+    /// before any `i64`.
+    pub fn bucket_start(self, seconds: i64) -> Option<i64> {
+        let width = i64::from(self.seconds);
+        seconds.div_euclid(width).checked_mul(width)
     }
 
     /// Whether `seconds` is the start of a bucket.

@@ -67,7 +67,7 @@ fn trips_by_day() -> Reference {
 /// Logins by week and toll: over every time, then over the two weeks
 /// from the week `START` falls in.
 fn logins_by_week() -> Vec<Reference> {
-    let from = WEEK.bucket_start(START);
+    let from = WEEK.bucket_start(START).unwrap();
     let to = from + 2 * i64::from(WEEK.seconds);
     let every = Reference {
         sql: "SELECT extract(epoch FROM date_bin('7 days', l.at, timestamptz 'epoch'))::int8,

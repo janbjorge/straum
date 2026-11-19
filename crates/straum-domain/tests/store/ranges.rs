@@ -310,6 +310,11 @@ fn time_key_start() {
         (-1, -900),
     ];
     for (time, start) in cases {
-        assert_eq!(width.bucket_start(time), start, "{time}");
+        assert_eq!(width.bucket_start(time), Some(start), "{time}");
     }
+    // The earliest `i64` is off the grid, and its bucket starts before
+    // any `i64`; the earliest edge `i64` holds starts its own bucket.
+    assert_eq!(width.bucket_start(i64::MIN), None);
+    let earliest_edge = -9_223_372_036_854_775_800;
+    assert_eq!(width.bucket_start(earliest_edge), Some(earliest_edge));
 }

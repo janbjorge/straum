@@ -97,6 +97,14 @@ fn width_and_range_errors_display() {
             "bound 9223372036854775807 is not on a 15 minutes bucket edge; \
              the nearest before it is 9223372036854775800",
         ),
+        (
+            AskError::RangeUnaligned {
+                at: i64::MIN,
+                width: Width { seconds: 900 },
+            },
+            "bound -9223372036854775808 is not on a 15 minutes bucket edge; \
+             the nearest after it is -9223372036854775800",
+        ),
     ];
     for (error, shown) in cases {
         assert_eq!(describe_ask_error(&error), shown);

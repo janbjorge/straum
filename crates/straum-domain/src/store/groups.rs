@@ -83,7 +83,9 @@ impl<'s> Grouping<'s> {
             ..
         } = self
         {
-            let start = width.bucket_start(bucket);
+            // PostgreSQL's times end far short of a bucket that starts
+            // before any `i64`; should one come, it joins the earliest.
+            let start = width.bucket_start(bucket).unwrap_or(i64::MIN);
             if bucket_starts.last() != Some(&start) {
                 bucket_starts.push(start);
                 return Entered::NewTimeKey;

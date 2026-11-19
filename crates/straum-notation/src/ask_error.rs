@@ -163,11 +163,17 @@ fn write_not_kept(formatter: &mut fmt::Formatter<'_>, width: Width, kept: &[Widt
 
 /// [`AskError::RangeUnaligned`], with the edges on either side, so the
 /// next try needn't work out the grid. Past the last edge `i64` holds,
-/// only the one before.
+/// only the one before; before the first, only the one after.
 fn write_unaligned(formatter: &mut fmt::Formatter<'_>, at: i64, width: Width) -> fmt::Result {
     write!(formatter, "bound {at} is not on a {width} bucket edge")?;
-    let before = width.bucket_start(at);
-    match before.checked_add(i64::from(width.seconds)) {
+    let seconds = i64::from(width.seconds);
+    let Some(before) = width.bucket_start(at) else {
+        // Off the grid, `at` is short of the next edge by less than a
+        // width, and that edge is past the earliest `i64`.
+        let after = at + (seconds - at.rem_euclid(seconds));
+        return write!(formatter, "; the nearest after it is {after}");
+    };
+    match before.checked_add(seconds) {
         Some(after) => write!(formatter, "; the nearest are {before} and {after}"),
         None => write!(formatter, "; the nearest before it is {before}"),
     }

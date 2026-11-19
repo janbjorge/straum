@@ -250,7 +250,7 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         having.push(random_having(rng, fact, measure));
     }
     let step = i64::from(row_width.seconds);
-    let first = row_width.bucket_start(START);
+    let first = row_width.bucket_start(START).unwrap();
     let buckets = (END - first) / step;
     let from = first + step * rng.int(-10, buckets);
     let to = from + step * rng.int(1, buckets + 20);
