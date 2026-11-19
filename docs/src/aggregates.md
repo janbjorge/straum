@@ -97,7 +97,8 @@ and `count(DISTINCT c)` cost by the distinct values in each cell. A
 percentile or mode beside a `min` or `max` on its column costs nothing
 more. A `min` or `max` keeps a value in as few bytes as its cell's
 values need: `max(fare_amount)` per hour and dropoff zone keeps
-14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
+14,943,826 fares of the [taxi trips](performance.md) in 76 MiB, 5.3
+bytes a fare. A
 `count(DISTINCT c)` of numbers keeps them the same way, in fewer bytes
 than a `max`. One of `text`, `uuid`, `date` or `boolean` keeps a hash
 map per cell, over 15 times as many bytes in a test of 40 values a
