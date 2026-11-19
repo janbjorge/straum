@@ -11,9 +11,10 @@ Helm chart, next to the apps that ask it: on
 
 Each [release](https://github.com/janbjorge/straum/releases) is an
 image, `ghcr.io/janbjorge/straum:X.Y.Z`, and the same binary on its own
-for Linux on x86-64 and arm64, with no libraries it needs. The image
-tagged `latest` is the newest stable release. To install the newest
-binary on x86-64:
+for Linux, `straum-x86_64-unknown-linux-musl` and
+`straum-aarch64-unknown-linux-musl`, statically linked. The image is
+also tagged `X.Y`, the newest release of that line, and `latest`, the
+newest stable release. To install the newest binary on x86-64:
 
 ```sh
 base=https://github.com/janbjorge/straum/releases/latest/download
@@ -27,8 +28,9 @@ janbjorge/straum` checks it was built by this repository's CI, and
 `gh attestation verify oci://ghcr.io/janbjorge/straum:X.Y.Z --repo
 janbjorge/straum` does the same for an image.
 
-The image holds the static binary and nothing else: no shell, no package
-manager. Its entrypoint is `straum`.
+The image is the binary at `/straum` on a distroless base, with no
+shell and no package manager. Its entrypoint is `/straum`, and it runs
+as user 65532.
 
 ## Run it
 
@@ -85,6 +87,9 @@ a new slot. SIGTERM leads to Stopping.*
 | Ready | 200 `ready` | Answered |
 | Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `as_of` |
 | Exited | No answer: the port is closed | Refused |
+| Stopping | No answer: the port is closed | Those in flight finish, for at most 10 s; new ones refused |
+
+Stopping ends with exit 0 ([straum run](cli.md#straum-run)).
 
 Straum reads the server's WAL position every second. Lag is the time
 since Straum last caught up with a position the server had reached. It
@@ -96,8 +101,8 @@ altered under it, or too much WAL retained for its slot. The last lines
 of its log say why. The connections close with it, and PostgreSQL drops
 the temporary slot. Straum keeps no state across a failure and never
 retries inside the process. Whatever runs it starts it again, with a
-wait of its own: Kubernetes restarts the pod with a backoff up to five
-minutes, and Docker Compose restarts the container unless it was
+wait of its own: Kubernetes restarts the container with a backoff of
+up to five minutes, and Docker Compose restarts it unless it was
 stopped. The new process loads every table from a new slot.
 
 ```text
@@ -113,32 +118,40 @@ The chart is
 [`deploy/helm/straum`](https://github.com/janbjorge/straum/tree/main/deploy/helm/straum).
 Each release publishes it at `oci://ghcr.io/janbjorge/charts/straum`,
 at that release's version, pulling that release's image. The chart in
-the repository names no release: its `appVersion` is 0.0.0. Its
+the repository names no release: its `appVersion` is 0.0.0, so an
+install from a checkout needs `image.tag`. Its
 [README](https://github.com/janbjorge/straum/blob/main/deploy/helm/straum/README.md)
 says what it requires, and
 [`values.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/helm/straum/values.yaml)
-documents every value.
+documents every value. The chart needs Kubernetes 1.30 or newer.
 
 It runs one pod. The spec is a ConfigMap. The DSN comes from a Secret,
 which the chart never holds. Readiness is `/readyz` and liveness is
 `/livez`, so a load or a lag takes the pod out of the Service and
-never restarts it. The new pod loads every table before the old one
-stops, so asks keep answering, and PostgreSQL holds two slots until
-the old pod is gone. Each replica holds its own slot and loads every
-table. The rollout waits an hour for that load. A stopping pod leaves
-the Service, pauses 5 seconds, then takes SIGTERM and finishes the
-asks in flight. The chart needs Kubernetes 1.30 or newer.
+never restarts it. Each replica holds its own slot and loads every
+table.
 
-It listens on `0.0.0.0:8080`, or `[::]:8080` on an IPv6-only cluster.
-With no `--listen`, Straum serves `127.0.0.1`, which no probe or
-Service reaches. Any pod that reaches the Service can ask
-([Who can ask](#who-can-ask)). For a release named `straum`, that is
-`http://straum:8080/ask`. The pod pins no user. On Kubernetes the
-image's user, 65532, applies. OpenShift's `restricted-v2` assigns one
-from the project's range, and refuses one pinned outside it. No
-ServiceAccount token: Straum never calls the Kubernetes API. Size
-`resources` by the [cells](how-it-works.md#cells) the spec keeps,
-request equal to limit.
+A new spec rolls the pod. The new pod loads every table before the old
+one stops, so asks keep answering, and PostgreSQL holds two slots until
+the old pod is gone. Kubernetes gives that load an hour before it
+calls the rollout failed. A stopping pod leaves the Service, pauses 5
+seconds, then takes SIGTERM and finishes the asks in flight, within
+its 30 second grace period.
+
+The chart passes `--listen 0.0.0.0:8080`, or `[::]:8080` on an
+IPv6-only cluster. With no `--listen`, Straum serves `127.0.0.1`,
+which no probe or Service reaches. Any pod that reaches the Service
+can ask ([Who can ask](#who-can-ask)). For a release named `straum`,
+that is `http://straum:8080/ask`. The pod pins no user. On Kubernetes
+the image's user, 65532, applies. OpenShift's `restricted-v2` assigns
+one from the project's range, and refuses one pinned outside it. No
+ServiceAccount token: Straum never calls the Kubernetes API.
+
+Size `resources` by the cells the spec keeps
+([Memory](performance.md#memory)), request equal to limit. With
+`--wal physical`, the page memory comes on top: keep `maxPageMemory`
+well under the memory limit, or the pod is killed before Straum's own
+limit stops it.
 
 A CA Straum does not already trust, such as Amazon RDS or Cloud SQL
 ([Connect](postgresql.md#2-connect)), is a Secret named by
