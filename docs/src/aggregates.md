@@ -81,7 +81,7 @@ false for the same reason.
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `var_samp(c)`, `var_pop(c)`, `stddev_samp(c)`, `stddev_pop(c)` | the same, and a sum of squares | adding all three | subtracting all three |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
-| `count(DISTINCT c)`, `sum(DISTINCT c)`, `avg(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | merging the values in order, counting each once and adding it | lowering the value's count |
+| `count(DISTINCT c)`, `sum(DISTINCT c)`, `avg(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | marking the values in a set of bits, counting each once and adding it | lowering the value's count |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)`, `mode() WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank, or to the value counted most | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
@@ -186,8 +186,9 @@ six months of [benchmark](performance.md) trips takes about 30 ms. A group
 of one cell is read in place, its values in order, with nothing gathered.
 A `mode()` gathers the same way and puts the values in order, so a value
 several cells hold is counted once, its counts added.
-A `count(DISTINCT c)` of numbers merges the values of several cells in
-order, holding one value of each cell at a time. One of other types unites
+A `count(DISTINCT c)` of numbers marks the values of several cells in a
+set of bits from the least to the greatest, then counts the marks; values
+too far apart for that are sorted instead. One of other types unites
 them by reference, without copying.
 
 Other systems answer with a sketch: a small summary that merges and gives

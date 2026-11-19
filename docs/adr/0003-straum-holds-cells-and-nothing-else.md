@@ -34,8 +34,9 @@ scaled `i64` with the scale per column. Sums are `i128`. A sum of
 squares is too while it fits; a column of them then widens to 256
 bits, a type of Straum's own, as `std` stops at 128. Floats are
 refused. Readable types are integer, that numeric, boolean, text,
-`timestamp`, `timestamptz` and enums cast to text (ADR-0004); `uuid`,
-`date`, domains, arrays and wider numerics are refused by name.
+`varchar`, `timestamp`, `timestamptz`, `date`, `uuid` and enums cast to
+text (ADR-0004); domains, arrays and wider numerics are refused by
+name.
 
 A min or max can't subtract, so a cell keeps every value with its
 count, as fixed-width records in runs: the value less the run's base
@@ -85,5 +86,6 @@ the column's scale for a variance and past its scale for a deviation.
   in range: milliseconds where a sum takes microseconds (ADR-0005).
 - `count(DISTINCT c)` of numbers holds less than a max on the same
   values, where its hash map per cell held over 15 times as much; an
-  ask merges several cells' values in order, one value of each held.
+  ask over several cells marks their values in a set of bits from the
+  least to the greatest, or sorts them when they lie too far apart.
   Text, uuid, date and boolean keep the map; its memory is open.
