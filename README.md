@@ -20,7 +20,7 @@ has every ask, including the median fare, which takes Straum 25.2 ms.
 machine, then inserts a trip, deletes it, and moves two zones into a
 borough of their own. It needs Docker and
 [uv](https://docs.astral.sh/uv/). The times it prints are not the
-8,283x above.
+7,754x above.
 
 **Not stable.** The spec, the asks and the flags may change. Straum
 needs PostgreSQL 17 or newer, with no extension and no superuser.
@@ -85,8 +85,9 @@ The [User guide](https://janbjorge.github.io/straum/) is built from `docs/`.
 An [llms.txt](https://janbjorge.github.io/straum/llms.txt) file indexes the
 guide for agents. Decisions are in [docs/adr/](docs/adr/). Research on
 the same topics is in [Straum and PostgreSQL](research/POSTGRESQL.md),
-[Joins: history and sources](research/JOINS.md) and
-[Aggregates: merge and delete](research/AGGREGATES.md).
+[Joins: history and sources](research/JOINS.md),
+[Aggregates: merge and delete](research/AGGREGATES.md) and
+[User-defined aggregates](research/UDAF.md).
 
 ## License
 
