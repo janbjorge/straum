@@ -114,6 +114,36 @@ fn each_comparison_keeps_the_groups_it_holds_for() {
             vec![1, 2],
         ),
         (vec![having("fare", Greater, Literal::Int(-1))], vec![1, 2]),
+        (
+            vec![having("all_tolled", Equal, Literal::Bool(true))],
+            vec![2],
+        ),
+        (
+            vec![having("all_tolled", NotEqual, Literal::Bool(true))],
+            vec![1],
+        ),
+        // Every condition must hold.
+        (
+            vec![
+                having("trips", GreaterOrEqual, Literal::Int(1)),
+                having("fare", Greater, Literal::Int(25)),
+            ],
+            vec![1],
+        ),
+    ];
+    for (conditions, kept) in cases {
+        let shown = format!("{conditions:?}");
+        assert_eq!(pays_kept(&store, conditions), kept, "{shown}");
+    }
+}
+
+/// A comparison is exact where a float would round, and holds for a
+/// value past what an `i128` holds at the measure's scale.
+#[test]
+fn a_comparison_is_exact_past_a_float_and_an_i128() {
+    use Comparison::{Equal, Greater, Less};
+    let store = store();
+    let cases = [
         // The average of 0.1 and 0.2 is 0.15 exactly; 0.15 has no exact
         // binary float, and a rounded one would miss either neighbour.
         (vec![having("tip_avg", Equal, decimal(15, 2))], vec![1]),
@@ -133,14 +163,6 @@ fn each_comparison_keeps_the_groups_it_holds_for() {
             )],
             vec![1],
         ),
-        (
-            vec![having("all_tolled", Equal, Literal::Bool(true))],
-            vec![2],
-        ),
-        (
-            vec![having("all_tolled", NotEqual, Literal::Bool(true))],
-            vec![1],
-        ),
         // Past what an i128 holds at the fare's scale.
         (
             vec![having("fare", Less, Literal::Int(i64::MAX))],
@@ -149,14 +171,6 @@ fn each_comparison_keeps_the_groups_it_holds_for() {
         (
             vec![having("fare", Greater, Literal::Int(i64::MIN))],
             vec![1, 2],
-        ),
-        // Every condition must hold.
-        (
-            vec![
-                having("trips", GreaterOrEqual, Literal::Int(1)),
-                having("fare", Greater, Literal::Int(25)),
-            ],
-            vec![1],
         ),
     ];
     for (conditions, kept) in cases {
