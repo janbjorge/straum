@@ -6,7 +6,8 @@ Straum is not stable yet. The spec, the asks and the flags may change.
 
 Pages other than the quick start, the command line and performance
 use the `usage` view over `public.events AS e` and
-`public.accounts AS a`. Those three use the January 2024 taxi trips.
+`public.accounts AS a`. Those three use the New York taxi trips: the
+quick start January 2024, performance January to June 2024.
 
 ## Summary
 

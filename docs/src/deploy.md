@@ -148,9 +148,10 @@ runs a release's image. `STRAUM_VERSION` names the release. The spec
 is `spec.sql` beside the file. The DSN is the file `dsn`, passed as a
 secret, so it never sits in the environment. The spec and the DSN must
 be readable by user 65532, the image's user. Straum listens on
-`127.0.0.1:8080` ([Who can ask](#who-can-ask)). The health check is
-`straum status`, and a failed check does not restart it: a load or a
-lag must not.
+`0.0.0.0:8080` inside the container, and Compose publishes it on the
+host's `127.0.0.1:8080` only ([Who can ask](#who-can-ask)). The health
+check is `straum status`, and a failed check does not restart it: a
+load or a lag must not.
 
 ## Amazon ECS
 
