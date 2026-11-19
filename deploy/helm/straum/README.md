@@ -34,7 +34,7 @@ TLS, so any pod that reaches the Service can ask.
 With `wal: physical`, set `maxPageMemory` well under
 `resources.limits.memory`. The rows it bounds come on top of the
 cells, and at the defaults, both `1Gi`, the pod is killed for its
-memory before straum's own limit can start it over.
+memory before straum's own limit can stop it with exit 1.
 
 ## Checks
 
