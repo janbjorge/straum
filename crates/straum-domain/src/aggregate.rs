@@ -4,7 +4,7 @@
 //! into a [`Value`] at the end. Every match on `Aggregate` is here, so a
 //! new aggregate is one variant and the arms the compiler asks for.
 
-use crate::column::Counts;
+use crate::column::{Counts, Squares};
 use crate::gathered::{Gathered, Pick, gathered_none};
 use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
@@ -250,6 +250,20 @@ fn any_value(mins: &[i64], maxs: &[i64]) -> bool {
         }
     }
     false
+}
+
+/// Adds the sum of squares of every cell into lane `at`. Only a variance
+/// or standard deviation fills `squares`, and only its cells hold them.
+fn merge_squares(squares: &mut [U256], at: usize, cell_squares: Option<&Squares>) {
+    let Some(cell_squares) = cell_squares else {
+        return;
+    };
+    if squares.is_empty() {
+        return;
+    }
+    for cell in 0..cell_squares.len() {
+        squares[at] = squares[at].wrapping_add(cell_squares.get(cell));
+    }
 }
 
 /// Whether any count is above zero.
@@ -611,13 +625,7 @@ impl<'s> Partials<'s> {
             ) => {
                 sums[at] += cell_sums.total();
                 counts[at] += rows.total() - nulls.total();
-                if let Some(cell_squares) = cell_squares
-                    && !squares.is_empty()
-                {
-                    for cell in 0..cell_squares.len() {
-                        squares[at] = squares[at].wrapping_add(cell_squares.get(cell));
-                    }
-                }
+                merge_squares(squares, at, cell_squares.as_ref());
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 for &min in mins {
