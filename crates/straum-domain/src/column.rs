@@ -506,10 +506,13 @@ impl Squares {
         column[cell] = column[cell].wrapping_add(square);
     }
 
-    /// Takes `square` out of the sum of `cell`, which holds it.
+    /// Takes `square` out of the sum of `cell`, widening the column if it
+    /// must: a cell whose rows go out before they come in runs below zero.
     pub(crate) fn sub(&mut self, cell: usize, square: U256) {
         if let Squares::Narrow(sums) = self {
-            if let Some(square) = narrow(square) {
+            if let Some(square) = narrow(square)
+                && sums.get(cell).checked_sub(square).is_some()
+            {
                 sums.add(cell, -square);
                 return;
             }
@@ -821,6 +824,27 @@ mod tests {
             }
             assert!(matches!(squares, Squares::Wide(_)), "seed {seed} widened");
         }
+    }
+
+    /// Squares taken out of a cell that never held them run below the
+    /// least `i128`: the column widens and stays exact, as it does going
+    /// past the greatest, and a take that fits stays narrow.
+    #[test]
+    fn squares_taken_below_an_i128_widen() {
+        // Its square is just below 2^127, the most a narrow take holds.
+        let root: u128 = 13_000_000_000_000_000_000;
+        let square = U256::product(root, root);
+        let mut squares = Squares::new();
+        squares.push();
+        squares.sub(0, square);
+        assert!(matches!(squares, Squares::Narrow(_)));
+        assert_eq!(squares.get(0), U256::ZERO.wrapping_sub(square));
+        squares.sub(0, square);
+        assert!(matches!(squares, Squares::Wide(_)));
+        let twice = square.wrapping_add(square);
+        assert_eq!(squares.get(0), U256::ZERO.wrapping_sub(twice));
+        squares.add(0, twice);
+        assert_eq!(squares.get(0), U256::ZERO);
     }
 
     /// Sums at the ends of each width take that width and no more.
