@@ -381,9 +381,10 @@ impl Walker {
         let mut from = Bound::Open;
         let mut to = Bound::Open;
         let mut bounded: Option<Identifier> = None;
+        let mut conditions = Vec::new();
         for part in parts {
             let Some(BucketBound { name, end, value }) = bucket_bound(part) else {
-                self.read_conditions(part, &mut filter, &mut Names::Ask(parameters));
+                conditions.push(part);
                 continue;
             };
             let Ok(name) = self.read_identifier(name) else {
@@ -412,6 +413,9 @@ impl Walker {
                 Err(Reported) => Bound::Bad,
             };
         }
+        for condition in self.without_repeats(conditions) {
+            self.read_conditions(condition, &mut filter, &mut Names::Ask(parameters));
+        }
         Where {
             filter,
             from,
@@ -433,7 +437,7 @@ impl Walker {
             and_parts(expression, &mut parts);
         }
         let mut conditions = Vec::with_capacity(parts.len());
-        for part in parts {
+        for part in self.without_repeats(parts) {
             let sql::Expr::BinaryOp { left, op, right } = part else {
                 let what = match part {
                     sql::Expr::Nested(_) => PARENTHESES,

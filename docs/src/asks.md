@@ -65,7 +65,9 @@ and only the time takes `>=` or `<`.
 Leave one out and that end is open: the ask reads from the first bucket
 held, or to the end of the last. With no `WHERE` it reads every bucket
 held; `WHERE true` is refused. The bounds and the conditions come in
-any order. No condition is put in parentheses.
+any order. No condition is put in parentheses, and none, in `WHERE`
+or `HAVING`, is written twice: `kind = $1 AND kind = $1` is refused,
+naming `kind = $1`.
 
 A parameter may be used more than once, but the text the uses come to
 is at most 1 MiB, what one ask's body holds. It is `$1`, never `$01`.

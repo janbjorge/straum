@@ -407,6 +407,25 @@ fn the_time_is_buckets_not_date_bin() {
     assert!(parse(CANON).is_ok());
 }
 
+/// A condition written again in a FILTER or the view's WHERE is
+/// refused by name; one on the same key with another value is read.
+#[test]
+fn a_view_condition_comes_once() {
+    let paid = "FILTER (WHERE orders.status = 'paid')";
+    let twice = "FILTER (WHERE orders.status = 'paid' AND orders.status = 'paid')";
+    assert_eq!(
+        error_lines(&canon(paid, twice)),
+        ["line 9: orders.status = 'paid' given twice"]
+    );
+    let where_twice = "WHERE orders.status = 'paid' AND orders.status = 'paid'\nGROUP BY";
+    assert_eq!(
+        error_lines(&canon("GROUP BY", where_twice)),
+        ["line 13: orders.status = 'paid' given twice"]
+    );
+    let other = "FILTER (WHERE orders.status = 'paid' AND orders.status = 'sent')";
+    assert!(parse(&canon(paid, other)).is_ok());
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {

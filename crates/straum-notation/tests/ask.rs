@@ -196,6 +196,34 @@ fn a_parameter_has_no_leading_zero() {
     assert_eq!(ask.filter, [condition("kind", vec![Literal::Int(1)])]);
 }
 
+/// A condition written again, the same in key, operator and value, is
+/// refused by name in WHERE and HAVING; the same key with another value
+/// is read.
+#[test]
+fn a_condition_comes_once() {
+    let two = [text("cab"), text("bus")];
+    for (query, error) in [
+        (
+            "SELECT trips FROM t WHERE kind = $1 AND kind = $1",
+            "line 1: kind = $1 given twice",
+        ),
+        (
+            "SELECT trips FROM t WHERE kind IN ($1, $2) AND kind IN ($1, $2)",
+            "line 1: kind IN ($1, $2) given twice",
+        ),
+        (
+            "SELECT trips FROM t HAVING trips > $1 AND trips > $1",
+            "line 1: trips > $1 given twice",
+        ),
+    ] {
+        assert_eq!(errors(query, &two), [error], "{query}");
+    }
+    let ask = parse_ask("SELECT trips FROM t WHERE kind = $1 AND kind = $2", &two).unwrap();
+    assert_eq!(ask.filter.len(), 2);
+    let ask = parse_ask("SELECT trips FROM t HAVING trips > $1 AND trips < $2", &two).unwrap();
+    assert_eq!(ask.having.len(), 2);
+}
+
 #[test]
 fn bucket_bounds_come_once_each() {
     assert_each_names_what_is_wrong(&[
@@ -759,12 +787,14 @@ fn a_comment_or_a_trailing_semicolon_is_not_in_straum_sql() {
     assert!(parse_ask("SELECT trips FROM t", &[]).is_ok());
 }
 
-/// An ask with `terms` more conditions on `kind` after the first.
+/// An ask with `terms` more conditions after the first, each on a key
+/// of its own, since a condition comes once.
 fn chain(terms: usize) -> String {
-    format!(
-        "SELECT trips FROM t WHERE kind = $1{}",
-        " AND kind = $1".repeat(terms)
-    )
+    let mut conditions = vec!["kind = $1".to_owned()];
+    for term in 0..terms {
+        conditions.push(format!("kind_{term} = $1"));
+    }
+    format!("SELECT trips FROM t WHERE {}", conditions.join(" AND "))
 }
 
 /// A chain of operators is a tree as deep as the chain, which reading it

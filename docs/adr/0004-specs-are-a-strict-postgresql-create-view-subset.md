@@ -28,7 +28,8 @@ names too, are lowercase; keywords (`SELECT`, `GROUP BY`) take any
 case; a width is in the largest unit that divides it; a position,
 parameter or integer literal has no leading zero, and `0` no sign; a
 fraction is written shortest, `0.5` not `0.50` or `00.5`, `1` not
-`1.0`; an ask holds no comment or trailing `;`; a bound is
+`1.0`; a condition, in a `FILTER` or `WHERE` or `HAVING`, is written
+once; an ask holds no comment or trailing `;`; a bound is
 `YYYY-MM-DDTHH:MM:SS` with `Z` or a nonzero offset, no fraction; a
 spec is never empty and never `OR REPLACE`. The canon is the grammar
 in `docs/src/spec.md` and `docs/src/asks.md`, whose examples the

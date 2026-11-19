@@ -551,6 +551,24 @@ impl Walker {
         }
     }
 
+    /// The parts, each written again after its first refused by name: the
+    /// same key, operator and value twice is one condition spelled twice.
+    // Borrows the parts from the tree, which outlives the walk.
+    fn without_repeats<'tree>(&mut self, parts: Vec<&'tree sql::Expr>) -> Vec<&'tree sql::Expr> {
+        let mut seen: Vec<String> = Vec::with_capacity(parts.len());
+        let mut kept = Vec::with_capacity(parts.len());
+        for part in parts {
+            let written = part.to_string();
+            if seen.contains(&written) {
+                self.error(line(part), format!("{written} given twice"));
+                continue;
+            }
+            seen.push(written);
+            kept.push(part);
+        }
+        kept
+    }
+
     /// `key IN (values)`, every value walked even after one fails.
     fn in_list(
         &mut self,

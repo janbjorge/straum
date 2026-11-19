@@ -15,7 +15,8 @@ use straum_domain::{
 };
 
 use super::{
-    Clause, Names, NullTest, Reported, SqlError, Walker, line, statements, without_leading_zeros,
+    Clause, Names, NullTest, Reported, SqlError, Walker, and_parts, line, statements,
+    without_leading_zeros,
 };
 pub(super) use measures::{Call, is_call, width_literal};
 
@@ -371,15 +372,25 @@ impl Walker {
 
     /// The view's WHERE and a measure's FILTER alike: `=`, `IN`, `IS NULL`
     /// and `IS NOT NULL` on columns, joined by AND, each reaching the key
-    /// that reads the column. Stops at the first condition that fails.
+    /// that reads the column, none written twice. Stops at the first
+    /// condition that fails.
     fn read_filter(
         &mut self,
         scope: &Scope,
         conditions: &[&sql::Expr],
         clause: Clause,
     ) -> Result<Vec<Condition>, Reported> {
-        let mut filter = Vec::new();
+        let mut parts = Vec::new();
         for condition in conditions {
+            and_parts(condition, &mut parts);
+        }
+        let before = self.met();
+        let parts = self.without_repeats(parts);
+        if self.met() > before {
+            return Err(Reported);
+        }
+        let mut filter = Vec::new();
+        for condition in parts {
             let before = self.met();
             self.read_conditions(condition, &mut filter, &mut Names::View(scope, clause));
             if self.met() > before {
