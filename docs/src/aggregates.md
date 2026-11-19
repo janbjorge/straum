@@ -9,8 +9,8 @@ them into one answer per group. The second is whether a row can leave. A
 `DELETE` or `UPDATE` in PostgreSQL takes a row out of a cell, and the cell
 must then read as if the row had never been there.
 
-Which aggregates Straum has, and what each cell keeps for them, follow
-from these two questions.
+These two questions decide which aggregates Straum has and what each
+cell keeps for them.
 
 ## Merging
 
@@ -61,8 +61,9 @@ The `min` was 10. The new minimum is 20, and a cell that kept only "10" has
 no way to know that. PostgreSQL would scan the rows again; Straum has no
 rows.
 
-So there is a second split, apart from the first. An aggregate whose state
-can subtract takes a delete, and one that keeps only the winner does not.
+So aggregates split a second way, independent of the first. An aggregate
+whose state can subtract takes a delete, and one that keeps only the
+winner does not.
 `min` and `max` merge well and delete badly.
 
 Straum's way out is to keep more than the answer. For `min` and `max` a
@@ -90,7 +91,7 @@ delete, and every answer is exact. Sums are integers for that reason. A
 float sum gives a different answer by the order it was added in, and it
 can't be subtracted from exactly, so Straum refuses float columns.
 
-Two things follow that a spec's author can see. The first is memory. The
+A spec's author sees two effects of this. The first is memory. The
 first four rows cost a few numbers a cell. `min`, `max`, `percentile_disc`
 and `count(DISTINCT c)` cost by the distinct values in each cell. A
 percentile or mode beside a `min` or `max` on its column costs nothing
@@ -173,7 +174,7 @@ type.
 What Straum refuses where PostgreSQL takes more is under
 [Measures](spec.md#measures).
 
-The cost is in the ask. A `sum` merges a number a cell. A percentile
+A percentile costs time in the ask. A `sum` merges a number a cell. A percentile
 gathers every value of every cell in its range and finds the one at its
 rank, splitting the values left at their middle one each step without
 sorting them all. An ask over a long range of many values takes
