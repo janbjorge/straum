@@ -54,6 +54,20 @@ pub(crate) const WAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a physical start waits before it takes the load's snapshot
 /// again.
 const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
+/// How long a start waits for a lock on a spec table as it reads the
+/// catalog and holds the tables. A lock request queues behind a waiting
+/// `ALTER TABLE`, which may itself wait on a long transaction.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// The SQLSTATE of a statement that gave up at `lock_timeout`.
+const LOCK_NOT_AVAILABLE: &str = "55P03";
+
+/// What a catalog read under the lock timeout goes on to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AfterRead {
+    Nothing,
+    /// Hold the tables until the snapshot's transaction ends.
+    HoldTables,
+}
 
 /// Slots made by this process, for unique names.
 static SLOTS: AtomicU64 = AtomicU64::new(0);
@@ -174,7 +188,13 @@ fn snapshot(
         // names no fix; the setup check says what to change.
         Err(error) => {
             connection.execute("ROLLBACK")?;
-            catalog::read(&mut connection, spec, publication, Replication::Logical)?;
+            read_in_time(
+                &mut connection,
+                spec,
+                publication,
+                Replication::Logical,
+                AfterRead::Nothing,
+            )?;
             return Err(error);
         }
     };
@@ -183,8 +203,13 @@ fn snapshot(
     guard.watch(dsn, &slot, LOGICAL_FROM, vec![connection.closer()?])?;
     let at = (first_row_value(&created, 1).and_then(parse_lsn))
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
-    let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
-    hold_tables(&mut connection, &tables)?;
+    let tables = read_in_time(
+        &mut connection,
+        spec,
+        publication,
+        Replication::Logical,
+        AfterRead::HoldTables,
+    )?;
     let versions = catalog::column_versions(&mut connection, &followed(&tables))?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
@@ -212,7 +237,13 @@ fn physical_snapshot(
 ) -> Result<Snapshot, Error> {
     let physical = Replication::Physical { max_page_memory };
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
-    let tables = catalog::read(&mut connection, spec, publication, physical)?;
+    let tables = read_in_time(
+        &mut connection,
+        spec,
+        publication,
+        physical,
+        AfterRead::Nothing,
+    )?;
     let checked = checked(tables);
     // After the slot: a rewrite between the two would be in neither the
     // layouts nor the WAL read.
@@ -248,31 +279,14 @@ fn physical_snapshot(
     // or background writer round. Superusers, and roles granted it, may.
     let _ = connection.execute("SELECT pg_log_standby_snapshot()");
     wait_consistent(&mut stream, wait)?;
-    let waited = wait.as_secs();
-    // PostgreSQL logs a commit before snapshots see it, and waits for
-    // synchronous standbys in between: a snapshot blind to one the stream
-    // read as before its start would lose it, so another is taken.
-    let deadline = Instant::now() + wait;
-    let at = loop {
-        connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
-        let taken = connection.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
-        let seen = (first_row_value(&taken, 0).and_then(TransactionSnapshot::parse))
-            .ok_or(Error::Protocol(Unexpected::SnapshotShape))?;
-        let written = (first_row_value(&taken, 1).and_then(parse_lsn))
-            .ok_or(Error::Protocol(Unexpected::NoWalPosition))?;
-        match stream.see(seen, written)? {
-            Sight::Through(at) => break at,
-            Sight::Blind(xids) => {
-                connection.execute("ROLLBACK")?;
-                if Instant::now() >= deadline {
-                    return Err(waited_for(waited, WaitProblem::InvisibleCommits(xids)));
-                }
-                thread::sleep(SNAPSHOT_AGAIN);
-            }
-        }
-    };
-    let tables = catalog::read(&mut connection, spec, publication, physical)?;
-    hold_tables(&mut connection, &tables)?;
+    let at = seen_snapshot(&mut connection, &mut stream, wait)?;
+    let tables = read_in_time(
+        &mut connection,
+        spec,
+        publication,
+        physical,
+        AfterRead::HoldTables,
+    )?;
     let unloaded = unloaded(&tables);
     // The physical stream reads a rewrite in the WAL and stops.
     Ok(Snapshot {
@@ -284,6 +298,84 @@ fn physical_snapshot(
         unloaded,
         stream: Some(stream),
     })
+}
+
+/// Begins the load's transaction on `connection` once its snapshot sees
+/// every commit `stream` read before it, waiting at most `wait`, and
+/// returns where the stream's commits after the snapshot begin.
+fn seen_snapshot(
+    connection: &mut Connection,
+    stream: &mut Stream,
+    wait: Duration,
+) -> Result<Lsn, Error> {
+    // PostgreSQL logs a commit before snapshots see it, and waits for
+    // synchronous standbys in between: a snapshot blind to one the stream
+    // read as before its start would lose it, so another is taken.
+    let deadline = Instant::now() + wait;
+    loop {
+        connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+        let taken = connection.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
+        let seen = (first_row_value(&taken, 0).and_then(TransactionSnapshot::parse))
+            .ok_or(Error::Protocol(Unexpected::SnapshotShape))?;
+        let written = (first_row_value(&taken, 1).and_then(parse_lsn))
+            .ok_or(Error::Protocol(Unexpected::NoWalPosition))?;
+        let xids = match stream.see(seen, written)? {
+            Sight::Through(at) => return Ok(at),
+            Sight::Blind(xids) => xids,
+        };
+        connection.execute("ROLLBACK")?;
+        if Instant::now() >= deadline {
+            let problem = WaitProblem::InvisibleCommits(xids);
+            return Err(waited_for(wait.as_secs(), problem));
+        }
+        thread::sleep(SNAPSHOT_AGAIN);
+    }
+}
+
+/// Reads the catalog, and holds the tables when `after` says so, waiting
+/// at most `LOCK_WAIT` for each lock: `pg_publication_tables` locks each
+/// table it reads. Later statements wait on no lock timeout.
+pub(crate) fn read_in_time(
+    connection: &mut Connection,
+    spec: &Spec,
+    publication: &str,
+    replication: Replication,
+    after: AfterRead,
+) -> Result<Tables, Error> {
+    connection.execute(&format!("SET lock_timeout = '{}s'", LOCK_WAIT.as_secs()))?;
+    let tables = match catalog::read(connection, spec, publication, replication) {
+        Ok(tables) => tables,
+        Err(error) => return Err(name_locked(error, connection, spec)),
+    };
+    if after == AfterRead::HoldTables
+        && let Err(error) = hold_tables(connection, &tables)
+    {
+        return Err(name_locked(error, connection, spec));
+    }
+    connection.execute("SET lock_timeout = 0")?;
+    Ok(tables)
+}
+
+/// `error`, or, when it gave up at the lock timeout, the spec tables
+/// another session locks against a read.
+fn name_locked(error: Error, connection: &mut Connection, spec: &Spec) -> Error {
+    let Error::Server { code, .. } = &error else {
+        return error;
+    };
+    if code != LOCK_NOT_AVAILABLE {
+        return error;
+    }
+    // The failed statement ended any transaction; the locks read outside.
+    if connection.execute("ROLLBACK").is_err() {
+        return error;
+    }
+    let Ok(tables) = catalog::locked_tables(connection, spec) else {
+        return error;
+    };
+    if tables.is_empty() {
+        return error;
+    }
+    waited_for(LOCK_WAIT.as_secs(), WaitProblem::Locked(tables))
 }
 
 /// Holds every spec table against a rewrite until the snapshot's

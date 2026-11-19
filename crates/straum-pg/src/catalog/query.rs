@@ -1,7 +1,8 @@
 //! Reading PostgreSQL's catalog (its system tables: `pg_class`,
 //! `pg_attribute`, `pg_type`, `pg_enum`, `pg_publication_tables`) into a
 //! `Catalog` for the setup check: the server's settings, then the spec's
-//! tables, their columns and their enums' labels, a query each.
+//! tables, their columns and their enums' labels, a query each. Also,
+//! from `pg_locks`, the spec tables another session locks against a read.
 
 use postgres_protocol::escape::escape_literal;
 use straum_domain::Spec;
@@ -29,6 +30,33 @@ pub(crate) fn query(
     read_columns(connection, &publication, &tables, &mut catalog.classes)?;
     catalog.labels = labels(connection, &tables)?;
     Ok(catalog)
+}
+
+/// The spec's tables another session holds, or waits for, an
+/// `ACCESS EXCLUSIVE` lock on, the one lock that blocks a read, as
+/// `schema.table`.
+pub(crate) fn locked_tables(
+    connection: &mut Connection,
+    spec: &Spec,
+) -> Result<Vec<String>, Error> {
+    let rows = connection.rows(&format!(
+        "SELECT DISTINCT n.nspname || '.' || c.relname
+           FROM pg_locks l
+           JOIN pg_class c ON c.oid = l.relation
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE l.pid <> pg_backend_pid() AND l.mode = 'AccessExclusiveLock'
+            AND (n.nspname, c.relname) IN (VALUES {})
+          ORDER BY 1",
+        table_list(spec)
+    ))?;
+    let mut tables = Vec::new();
+    for row in rows {
+        let Some(Some(table)) = row.into_iter().next() else {
+            return Err(shape("locks"));
+        };
+        tables.push(table);
+    }
+    Ok(tables)
 }
 
 /// The spec's tables as an SQL list of `(schema, table)` pairs.

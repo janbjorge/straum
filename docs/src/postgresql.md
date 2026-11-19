@@ -207,6 +207,16 @@ Straum finds it and stops, and the next start loads it whole:
 usage: public.events was rewritten as Straum started
 ```
 
+Reading the publication and holding the tables each take a lock on a
+spec table. A session that holds `ACCESS EXCLUSIVE` on one, or waits
+for it, as an `ALTER TABLE` behind a long transaction does, would make
+the start wait as long. Straum waits at most 5 seconds for each lock,
+then names the tables and stops:
+
+```text
+the start waited 5 s for a lock on public.events; another session holds or waits for one that blocks a read, as ALTER TABLE takes
+```
+
 Logical decoding also needs the publication and `REPLICA IDENTITY
 FULL`. PostgreSQL makes the logical slot once every writing
 transaction that was open when the slot began has ended, on any table

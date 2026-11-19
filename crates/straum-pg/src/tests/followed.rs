@@ -15,7 +15,7 @@ use straum_domain::{Ask, Store, Value};
 use super::references::{SPEC, TABLES, TASKS, TASKS_SPEC, compare, task_oracles};
 use super::support::*;
 use crate::catalog;
-use crate::source::{Replication, hold_tables};
+use crate::source::{AfterRead, Replication, hold_tables, read_in_time};
 use crate::wire::{Connection, ConnectionKind};
 
 /// The table made again under its name: the same columns as the one
@@ -208,6 +208,55 @@ fn a_rewrite_before_the_tables_are_held_fails_the_start() {
             db.sql("trips: $S.trips was rewritten as Straum started")
         );
     }
+}
+
+/// A table another session locks, or waits to lock, against a read fails
+/// the start at the lock timeout, naming the table, rather than hanging
+/// it; once let go, the tables are read and held, and what follows waits
+/// on no lock timeout. A whole start would wait first on the locker's
+/// transaction as its slot is made, so the reading runs alone.
+#[test]
+fn a_table_locked_away_fails_the_start_in_time() {
+    let pg = postgres();
+    let db = Db::new(&pg, "lockedaway", TABLES);
+    let spec = db.spec(SPEC);
+    let mut locker = db.another_connection();
+    locker.run("BEGIN; LOCK TABLE $S.trips IN ACCESS EXCLUSIVE MODE");
+    let mut connection = Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap();
+    // A hang would otherwise outlast the test.
+    let hang = Duration::from_secs(30);
+    connection.set_read_timeout(hang).unwrap();
+    let begin = "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ";
+    connection.execute(begin).unwrap();
+    let logical = Replication::Logical;
+    let clock = Instant::now();
+    let read = read_in_time(
+        &mut connection,
+        &spec,
+        &db.name,
+        logical,
+        AfterRead::HoldTables,
+    );
+    assert!(clock.elapsed() < hang, "the start waited out the lock");
+    assert_eq!(
+        read.err().unwrap().to_string(),
+        db.sql(
+            "the start waited 5 s for a lock on $S.trips; another session holds or waits \
+             for one that blocks a read, as ALTER TABLE takes"
+        )
+    );
+    locker.run("ROLLBACK");
+    connection.execute(begin).unwrap();
+    read_in_time(
+        &mut connection,
+        &spec,
+        &db.name,
+        logical,
+        AfterRead::HoldTables,
+    )
+    .unwrap();
+    let shown = connection.rows("SHOW lock_timeout").unwrap();
+    assert_eq!(shown, [[Some("0".to_owned())]]);
 }
 
 /// `ALTER COLUMN .. TYPE` to the same type, `USING` an expression,

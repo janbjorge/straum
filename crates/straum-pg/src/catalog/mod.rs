@@ -25,7 +25,7 @@ mod followed;
 mod query;
 
 pub(crate) use followed::{ColumnVersions, Followed, column_versions, still_followed};
-pub(crate) use query::{labels, query};
+pub(crate) use query::{labels, locked_tables, query};
 
 /// `server_version_num` is the major times 10 000, plus the minor.
 pub(crate) const VERSION_NUM_PER_MAJOR: u32 = 10_000;

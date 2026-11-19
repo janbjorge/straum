@@ -215,6 +215,9 @@ pub(crate) enum WaitProblem {
     /// These transactions, whose commits the stream read, to show in a
     /// snapshot: the load's, or that of the layouts read after DDL.
     InvisibleCommits(Vec<Xid>),
+    /// Locks on these spec tables, `schema.table`, that another session
+    /// holds or waits for against a read.
+    Locked(Vec<String>),
 }
 
 impl fmt::Display for Problem {
@@ -459,6 +462,12 @@ fn write_wait(
             "--wal physical waited {waited_seconds} s for transactions it read the commits of \
              to end: xid {}; a synchronous standby that doesn't answer holds them",
             xid_list(xids)
+        ),
+        WaitProblem::Locked(tables) => write!(
+            formatter,
+            "the start waited {waited_seconds} s for a lock on {}; another session holds \
+             or waits for one that blocks a read, as ALTER TABLE takes",
+            tables.join(", ")
         ),
     }
 }
