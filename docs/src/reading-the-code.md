@@ -11,24 +11,31 @@ Read the crates from the inside out. Each one only uses the ones
 before it.
 
 1. `straum-domain`: what a view is and how its cells add up. No I/O.
-   Start with `spec.rs` (the parsed views), then `store/mod.rs`
-   (where rows land), `store/ask.rs` and `store/cell_loop.rs` (how an
-   ask reads the cells). `lib.rs` lists the rest in reading order.
+   Start with `spec.rs` (the parsed views) and `ask.rs` (what an ask
+   may say), then `store/mod.rs` (where rows land), `store/ask.rs`
+   and `store/cell_loop.rs` (how an ask reads the cells). `lib.rs`
+   says where the rest fits: `rollup/`, `projection.rs`,
+   `aggregate.rs` and the compact columns under them.
 2. `straum-notation`: reads Straum SQL, the `CREATE VIEW` statements
-   and the asks, into the domain's types.
+   and the asks, into the domain's types. The walker is in `sql/`;
+   `ask_error.rs` words an ask error.
 3. `straum-app`: the use cases. `app.rs` holds `App`, which answers
    asks, and `Writer`, the loop that loads the tables and applies the
-   stream. `source.rs` is the one trait PostgreSQL sits behind.
+   stream. `source.rs` is the one trait PostgreSQL sits behind;
+   `lag.rs` keeps the WAL readings `as_of` comes from.
 4. `straum-pg`: talks to PostgreSQL. `source.rs` is where it meets
-   `straum-app`; `wal/` reads the physical WAL. Read `wal.rs` first,
-   then the files in the order bytes pass through them: `reader.rs`
-   (pages into records), `record.rs` (one record), `heap.rs` and
-   `heap/` (row changes), `xact.rs` and `transactions.rs` (commits),
-   `tuple.rs` and `messages.rs` (values and messages), `pipeline.rs`
-   (all of it in a row).
+   `straum-app`: it checks the setup (`catalog/`), loads each table
+   (`load.rs`), then hands a thread the stream (`stream.rs`), which
+   reads pgoutput (`pgoutput.rs`, `decode.rs`) or the physical WAL
+   (`physical.rs`, `wal/`). For `wal/`, read `wal.rs` first, then the
+   files in the order bytes pass through them: `reader.rs` (pages into
+   records), `record.rs` (one record), `heap.rs` and `heap/` (row
+   changes), `xact.rs` and `transactions.rs` (commits), `messages.rs`
+   and `tuple.rs` (messages and values), `pipeline.rs` (all of it in a
+   row).
 5. `straum-http`: serves asks and status over HTTP. `lib.rs` is the
    server loop; `routes.rs` picks the handler for each request, once
-   `host.rs` allows its `Host`.
+   `host.rs` has checked its `Host` header.
 6. `straum`: the binary. `main.rs` starts it all.
 
 Every file opens with a few lines saying what it holds. Read those
@@ -47,41 +54,43 @@ owns its text or list; the second borrows one. `Box<[u32]>` is a list
 that owns its items and never grows.
 
 **`Option<T>`: maybe a value.** `Some(value)` or `None`, never null.
-`Option<usize>` is "a position, if there is one".
+`Store::cells` returns an `Option<usize>`: the view's cell count, or
+`None` for a name no view has.
 
 **`Result<T, E>`: a value or an error.** `Ok(value)` or `Err(error)`.
-Every error type is an `enum` listing what can go wrong, such as
-`RowError` or `ClientError`, with the text a person reads written in
-its `Display`.
+An error type is most often an `enum` listing what can go wrong, such
+as `RowError` or `ClientError`, with the text a person reads written
+in its `Display`.
 
 **`?`: return the error.** `self.remove_row(table, old)?;` means: if
 that returned `Err`, return the same error from here; otherwise carry
 on with the value. Most functions read as a straight line of steps
 because of it.
 
+**Errors kept in a list: `Reported`.** The Straum SQL walker in
+`straum-notation` reports the errors in a spec at once, the first 50
+and a count of the rest, so it pushes each one onto a list instead of
+returning it. A walk that failed returns `Err(Reported)`: an empty
+marker saying the error is already on the list. The caller stops
+there and adds nothing of its own. A plain `Option` is left for
+"there is none", which is no error.
+
 **`let ... else`: stop early.**
 
 ```rust
-let Some(bound) = &mut self.bound[fact] else {
+let Some(bound) = &mut self.bound[fact.0] else {
     return Ok(());
 };
 ```
 
 reads: take the value out of `Some`; if there is none, return. After
-it, `bound` is the value itself.
+it, `bound` is the value itself. (`fact.0` is explained under named
+index types below.)
 
 **`if let` and `match`.** `if let Some(dim) = self.dim_index(table)`
 runs its block only when there is a value. `match` picks one arm per
 case of an enum, and the compiler refuses a `match` that forgets one.
 `matches!(value, Pattern)` is `true` when the value has that shape.
-
-**Errors kept in a list: `Reported`.** The Straum SQL walker in
-`straum-notation` reports the errors in a spec at once, the first 50
-and a count of the rest, so it pushes each one onto a list instead of
-returning it. A walk that failed
-returns `Err(Reported)`: an empty marker saying the error is already
-on the list. The caller stops there and adds nothing of its own. A
-plain `Option` is left for "there is none", which is no error.
 
 **`if let ... && ...`: several conditions at once.**
 
@@ -170,8 +179,8 @@ it uses. `load::copy` takes one as `each: impl FnMut(&[Datum])`, "any
 function of a batch", and calls it on every batch as it comes, so a
 table never sits in memory whole. `Counts::each` hands each count to
 one because a loop calling `Counts::get` per cell measured half again
-slower. Everywhere else a `for` loop or a named function does the
-work.
+slower (`an_ask_stays_within_its_time_per_cell`). Everywhere else a
+`for` loop or a named function does the work.
 
 **Threads: `Arc` and `RwLock`.** `App` keeps its state in
 `Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP
@@ -182,14 +191,13 @@ The writer's progress sits beside it in `Arc<Mutex<Progress>>`: a
 fields read and set in an instant. `progress()` takes it.
 
 **Modules.** `mod store;` pulls in `store.rs`, or `store/mod.rs`
-when the module is a folder of files. `pub` is visible to
-other crates, `pub(crate)` only inside this one, `pub(super)` only
-in the folder's other files, `pub(in crate::sql)` only inside the
-module named and the ones under it, nothing at all only inside the
-file.
-`#[cfg(test)] mod tests` at the end of a file holds its unit tests;
-`tests/` beside `src/` holds the tests that use the crate from
-outside.
+when the module is a folder of files. `pub` is visible to other
+crates, `pub(crate)` only inside this one, `pub(super)` only in the
+folder's other files, `pub(in crate::sql)` only inside the module
+named and the ones under it, nothing at all only inside the file.
+`#[cfg(test)] mod tests` at the end of a file holds its unit tests,
+written in place or in a `tests.rs` beside the file; `tests/` beside
+`src/` holds the tests that use the crate from outside.
 
 **Type aliases.** `type TransactionId = u32;` gives `u32` a second
 name, so `xid: TransactionId` says what the number is. The two are the
@@ -215,6 +223,7 @@ when they had to be changed, such as decompressed, owned
 
 **Dense code.** Where a loop would be slower in a way a benchmark
 measured, the code keeps a denser form and a comment names the
-benchmark. Everywhere else it is a plain `for` loop. `#[inline]` above a
-function is such a case: it asks the compiler to copy the function into
-each caller, which four functions an ask calls per cell need.
+benchmark. Everywhere else it is a plain `for` loop. `#[inline]` above
+a function is such a case: it asks the compiler to copy the function
+into each caller, which four functions an ask calls per cell need
+(`Lookup::code` in `store/lookup.rs` names the benchmark).
