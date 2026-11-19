@@ -811,7 +811,7 @@ GROUP BY 1, 2, 3";
             "GROUP BY",
             "AND EXISTS (SELECT 1 FROM public.q AS q WHERE q.k = p.x)\nGROUP BY",
             "GROUP BY 1, 2, 3",
-            "join ON q.<key> = f.<column>",
+            "p.x is read outside its EXISTS; p is a semi join, which keeps no row to read",
         ),
         // An inner join that selects nothing.
         (

@@ -6,7 +6,7 @@
 use sqlparser::ast as sql;
 use straum_domain::{Identifier, Ref, RefKind, Table, Via};
 
-use super::columns::left_key_message;
+use super::columns::{left_key_message, outside_exists_message};
 use super::{JoinedRef, Qualified, Scope};
 use crate::sql::{NamedTable, Reported, Walker, and_parts, line};
 
@@ -41,6 +41,12 @@ enum Near {
     Via(Via),
     /// No column a join can go through.
     Unknown,
+    /// A column of a semi or anti join, which keeps no row to go through.
+    Existential {
+        alias: Identifier,
+        column: Identifier,
+        kind: RefKind,
+    },
     /// A key column of a `LEFT OUTER JOIN`, joined on `via`.
     LeftKey {
         alias: Identifier,
@@ -251,6 +257,15 @@ impl Walker {
         let via = match near(scope, near_side) {
             Near::Via(via) => via,
             Near::Unknown => return Err(NotEquality::Shape),
+            Near::Existential {
+                alias: near_alias,
+                column,
+                kind,
+            } => {
+                let message = outside_exists_message(&near_alias, &column, kind);
+                self.error(line(right.as_ref()), message);
+                return Err(NotEquality::Reported);
+            }
             Near::LeftKey {
                 alias: near_alias,
                 column,
@@ -422,9 +437,16 @@ fn near(scope: &Scope, near_side: Qualified) -> Near {
         return Near::Unknown;
     };
     let joined = &scope.refs[through];
-    match joined.reference.kind {
+    let kind = joined.reference.kind;
+    match kind {
         RefKind::Left | RefKind::Inner => {}
-        RefKind::Semi | RefKind::Anti => return Near::Unknown,
+        RefKind::Semi | RefKind::Anti => {
+            return Near::Existential {
+                alias,
+                column,
+                kind,
+            };
+        }
     }
     // A key column of an inner-joined dim is the column it was joined on,
     // the fact's or, in a chain, a dim's joined before. Of a left-joined

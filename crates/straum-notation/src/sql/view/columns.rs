@@ -295,13 +295,8 @@ impl Walker {
         let joined = &scope.refs[through];
         let kind = joined.reference.kind;
         if let RefKind::Semi | RefKind::Anti = kind {
-            self.error(
-                line(expression),
-                format!(
-                    "{alias}.{column} is read outside its EXISTS; {alias} is {kind}, \
-                     which keeps no row to read"
-                ),
-            );
+            let message = outside_exists_message(&alias, &column, kind);
+            self.error(line(expression), message);
             return Err(Reported);
         }
         // Under INNER JOIN a dim's key column reads the column it was
@@ -453,6 +448,19 @@ fn joined_column(via: &Via) -> ResolvedColumn {
             column: column.clone(),
         },
     }
+}
+
+/// Why a column of a semi or anti join can't be read outside its
+/// `EXISTS`, selected or joined through alike.
+pub(super) fn outside_exists_message(
+    alias: &Identifier,
+    column: &Identifier,
+    kind: RefKind,
+) -> String {
+    format!(
+        "{alias}.{column} is read outside its EXISTS; {alias} is {kind}, \
+         which keeps no row to read"
+    )
 }
 
 /// Why a key column of a `LEFT OUTER JOIN` can't be read, and what to
