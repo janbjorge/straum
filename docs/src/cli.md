@@ -44,8 +44,8 @@ and no proxy that rewrites the reply into chunks, which the client
 refuses. When nothing answers there, the error says so and ends with
 `try: --url URL, or set STRAUM_URL`.
 
-Connecting, sending and the reply share the one `--timeout` wait. A
-byte arriving inside the wait does not start it again. The shell reads
+Connecting, sending and reading the reply share one `--timeout` wait.
+A byte that arrives inside the wait does not start it again. The shell reads
 the views before each prompt, so each prompt may wait that long on a
 Straum that has stopped answering.
 
@@ -64,8 +64,8 @@ and `ask` while Straum is loading; a Straum that lags still answers
 asks. A script waits on 3 and asks again; the other failures need a
 change first.
 
-`straum shell` on a pipe goes on past a failed command, a not ready one
-too, and exits with 1 if any failed. `straum run` exits with 1 on any
+On a pipe, `straum shell` goes on past a failed command, including one
+that met a Straum not ready, and exits with 1 if any failed. `straum run` exits with 1 on any
 failure to load or follow, for whatever runs it to start it again
 ([States](deploy.md#states)).
 
@@ -195,8 +195,8 @@ until straum status > /dev/null; do sleep 1; done
 
 `--json` prints the same facts as one JSON object, null where unknown:
 the body `GET /status` sends with `Accept: application/json`
-([endpoints](asks.md#endpoints)). A script reads it rather than the
-lines, whose layout may change:
+([endpoints](asks.md#endpoints)). The layout of the lines may change,
+so a script reads the JSON:
 
 ```sh
 straum status --json | jq -e .ready
@@ -409,16 +409,16 @@ off the dimming.
 ### On a pipe
 
 With its input or its output anywhere but a terminal, the shell prints
-no prompt, completes nothing and times nothing, so a script can drive
-it and reads the same output each run:
+no prompt, completes nothing and times nothing. A script can drive it
+and gets the same output each run:
 
 ```sh
 printf '%s\n' '\d' '\rows trips' | straum shell
 ```
 
 An ask takes lines there as at a terminal, and the end of input ends
-one too. So a file of asks written over several lines, a blank line or
-a semicolon after each, reads as it would typed.
+one too. A file of asks written over several lines, with a blank line
+or a semicolon after each, reads as it would when typed.
 
 Answers go to stdout. A command that fails says why on stderr and the
 next is read, as in psql. If any failed, the shell exits with 1 after
