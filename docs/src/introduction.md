@@ -1,14 +1,14 @@
 # Straum
 
-Straum keeps aggregates of PostgreSQL tables in memory and answers asks about them
-over HTTP. Counts and sums come back in microseconds.
+Straum keeps aggregates of PostgreSQL tables in memory and answers
+asks about them over HTTP. Counts and sums come back in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once,
 keeps each group as a cell in memory, and follows every commit. You
 declare what to keep as a view, in a small subset of PostgreSQL's
-`CREATE VIEW`, here over an `events` table and the `accounts` it
-belongs to:
+`CREATE VIEW`. A file of views is a spec. This one is over an `events`
+table and the `accounts` it belongs to:
 
 ```sql
 CREATE VIEW usage AS
@@ -62,9 +62,10 @@ loads the tables and follows them. Apps ask over HTTP.*
 ## What it is good for
 
 Straum suits a question asked often, about tables that keep changing,
-whose answer is counts, sums, averages, minima or maxima by a few keys
-over time. Dashboard tiles and charts fit well: events per hour, amounts
-by region, the same `GROUP BY` on every page load.
+whose answer is counts, sums, averages, minima, maxima or percentiles
+by a few keys over time ([Measures](spec.md#measures)). Dashboard
+tiles and charts fit well: events per hour, amounts by region, the
+same `GROUP BY` on every page load.
 
 Numbers an app shows its own users fit too, such as usage this month or
 orders today. Make the account a key, and your app's backend puts the
@@ -80,17 +81,18 @@ answer is exact.
 ## What it is not
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
-answers only what its spec declares, so it has no ad hoc queries, no
-rows and [no sketch](aggregates.md#median-and-percentiles). It keeps
-nothing on disk: every start loads every table again, and a crash
-leaves no slot behind holding WAL. PostgreSQL stays the source of
-truth.
+answers only what its spec declares, so it has no ad hoc queries,
+keeps no table rows and uses
+[no sketch](aggregates.md#median-and-percentiles). It keeps nothing on
+disk: every start loads every table again, and a crash leaves no slot
+behind holding WAL. PostgreSQL stays the source of truth.
 
-Straum supports PostgreSQL 17 and newer as shipped, with no extension
-and no superuser, so managed services work. It reads a publication, or
-with `--wal physical` the WAL the server already writes
-([setup](postgresql.md)). The name is Nynorsk for a stream or current:
-Straum's input is PostgreSQL's replication stream.
+Straum supports PostgreSQL 17 and newer as shipped. It needs no
+extension, and connects as a role that is not a superuser, so managed
+services work. It reads a publication, or with `--wal physical` the
+WAL the server already writes ([setup](postgresql.md)). The name is
+Nynorsk for a stream or current: Straum's input is PostgreSQL's
+replication stream.
 
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
