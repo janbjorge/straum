@@ -353,7 +353,7 @@ fn unfit_tables(commits: &[Commit]) -> Vec<String> {
     let mut names = Vec::new();
     for commit in commits {
         for change in &commit.changes {
-            if let straum_app::Change::Unfit { table } = change {
+            if let straum_app::Change::Unfit { table, .. } = change {
                 names.push(table.to_string());
             }
         }

@@ -17,7 +17,7 @@ use straum_domain::{
 };
 
 use crate::lag::Lag;
-use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
+use crate::source::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};
 
 /// The store may be half updated, so nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
@@ -455,7 +455,14 @@ fn apply_change(store: &mut Store, change: &Change) -> Result<(), Unfitting> {
             store.clear(table.as_str());
             return Ok(());
         }
-        Change::Unfit { .. } => return Err(Unfitting::Altered),
+        Change::Unfit {
+            drift: Drift::Altered,
+            ..
+        } => return Err(Unfitting::Altered),
+        Change::Unfit {
+            drift: Drift::Renamed,
+            ..
+        } => return Err(Unfitting::Renamed),
     }
     .map_err(Unfitting::Row)
 }
@@ -623,6 +630,8 @@ pub enum Unfitting {
     /// The stream no longer carries what Straum reads of the table: it was
     /// altered or rewritten, or a change came without its old row.
     Altered,
+    /// A value a column of the table reads was renamed.
+    Renamed,
 }
 
 impl fmt::Display for Unfitting {
@@ -632,6 +641,10 @@ impl fmt::Display for Unfitting {
             Unfitting::Altered => formatter.write_str(
                 "the stream no longer carries what Straum reads of it: the table was altered \
                  or rewritten, or a change came without its old row",
+            ),
+            Unfitting::Renamed => formatter.write_str(
+                "a value of a column Straum reads was renamed, and the rows held carry the \
+                 old one",
             ),
         }
     }
@@ -704,7 +717,9 @@ mod tests {
 
     use straum_domain::{Cut, Start, Window};
 
-    use super::{AnswerError, App, Change, Commit, Following, Limits, Lsn, Step, Wal, Writer};
+    use super::{
+        AnswerError, App, Change, Commit, Drift, Following, Limits, Lsn, Step, Wal, Writer,
+    };
     use crate::lag::Lag;
     use crate::source::{Source, SourceError};
 
@@ -776,7 +791,10 @@ mod tests {
                     table: id("trips"),
                     row: vec![Datum::Int(0)],
                 },
-                Change::Unfit { table: id("trips") },
+                Change::Unfit {
+                    table: id("trips"),
+                    drift: Drift::Altered,
+                },
             ],
         });
         assert!(applied.is_err());
@@ -785,6 +803,37 @@ mod tests {
         assert!(state.store.cells("trips").unwrap() > 0);
         drop(state);
         assert!(matches!(app.ask(&count()), Err(AnswerError::NotReady)));
+    }
+
+    #[test]
+    fn an_unfit_table_says_why() {
+        for (drift, words) in [
+            (Drift::Altered, "the table was altered or rewritten"),
+            (
+                Drift::Renamed,
+                "a value of a column Straum reads was renamed",
+            ),
+        ] {
+            let app = app();
+            follow(&app);
+            let error = app
+                .write()
+                .apply(&Commit {
+                    lsn: Lsn(2),
+                    committed: SystemTime::UNIX_EPOCH,
+                    changes: vec![Change::Unfit {
+                        table: id("trips"),
+                        drift,
+                    }],
+                })
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with("a change no longer fits trips: "),
+                "{error}"
+            );
+            assert!(error.contains(words), "{error}");
+        }
     }
 
     #[test]

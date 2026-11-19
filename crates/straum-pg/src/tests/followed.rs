@@ -9,7 +9,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::{Change, Source, Step};
+use straum_app::{Change, Drift, Source, Step};
 use straum_domain::{Ask, Store, Value};
 
 use super::references::{SPEC, TABLES, TASKS, TASKS_SPEC, compare, task_oracles};
@@ -60,7 +60,13 @@ fn a_table_renamed_away_and_made_again_stops_the_stream() {
     db.run(MADE_AGAIN);
     db.run(&Rng::new(1).trip(1).replace("$S.trips", "$S.trips_old"));
     let commit = source.next_commit(LONG).unwrap().unwrap();
-    assert_eq!(commit.changes, [Change::Unfit { table: id("trips") }]);
+    assert_eq!(
+        commit.changes,
+        [Change::Unfit {
+            table: id("trips"),
+            drift: Drift::Altered,
+        }]
+    );
     let error = source.wal().unwrap_err().to_string();
     assert_eq!(
         error,
@@ -131,11 +137,10 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
             Err(error) => break error.to_string(),
         }
     };
-    assert!(
-        error.starts_with("a change no longer fits tasks: ")
-            || error.contains("a label of an enum"),
-        "{error}"
-    );
+    // The stream marks the table unfit at the rename's commit, and the
+    // catalog check once a second sees the label too: whichever comes
+    // first, the error names the rename.
+    assert!(error.contains("was renamed"), "{error}");
 }
 
 /// A rewrite gives its rows the xid of the transaction that made it, so

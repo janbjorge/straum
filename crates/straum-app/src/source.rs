@@ -101,7 +101,18 @@ pub enum Change {
     /// from.
     Unfit {
         table: Identifier,
+        drift: Drift,
     },
+}
+
+/// Why a table no longer reads as Straum holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drift {
+    /// Altered or rewritten, or a change came without its old row.
+    Altered,
+    /// A value a column reads was renamed, so the rows held carry the old
+    /// one and the rows to come the new.
+    Renamed,
 }
 
 impl Change {
@@ -112,7 +123,7 @@ impl Change {
             | Change::Update { table, .. }
             | Change::Delete { table, .. }
             | Change::Truncate { table }
-            | Change::Unfit { table } => table,
+            | Change::Unfit { table, .. } => table,
         }
     }
 }

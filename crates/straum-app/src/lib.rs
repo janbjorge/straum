@@ -14,4 +14,4 @@ pub use app::{
     AnswerError, Answered, App, Error, Held, HeldDim, HeldKey, HeldView, Limits, Status, Step,
     Unfitting, ViewKey, Writer, format_mebibytes,
 };
-pub use source::{Change, Commit, Lsn, Source, SourceError, Wal};
+pub use source::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};

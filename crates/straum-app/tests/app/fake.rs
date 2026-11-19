@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
+use straum_app::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};
 use straum_domain::{ColumnType, Datum, Identifier, RowError, Spec, Store};
 
 /// A row as a table holds it.
@@ -276,7 +276,10 @@ fn apply_write(tables: &mut Tables, write: Write) -> Change {
                     new: row,
                 }
             } else {
-                Change::Unfit { table: id(table) }
+                Change::Unfit {
+                    table: id(table),
+                    drift: Drift::Altered,
+                }
             }
         }
         Write::Delete { table, key } => {
@@ -288,14 +291,20 @@ fn apply_write(tables: &mut Tables, write: Write) -> Change {
                     old: before,
                 }
             } else {
-                Change::Unfit { table: id(table) }
+                Change::Unfit {
+                    table: id(table),
+                    drift: Drift::Altered,
+                }
             }
         }
         Write::Truncate { table } => {
             tables.get_mut(table).unwrap().rows.clear();
             Change::Truncate { table: id(table) }
         }
-        Write::Alter { table } => Change::Unfit { table: id(table) },
+        Write::Alter { table } => Change::Unfit {
+            table: id(table),
+            drift: Drift::Altered,
+        },
     }
 }
 

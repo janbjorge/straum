@@ -289,7 +289,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use straum_app::Change;
+    use straum_app::{Change, Drift};
     use straum_domain::{ColumnType, Datum, Identifier};
 
     use super::*;
@@ -681,6 +681,7 @@ mod tests {
         assert_eq!(*asked.borrow(), [100]);
         let unfit = Change::Unfit {
             table: Identifier::new("t").unwrap(),
+            drift: Drift::Altered,
         };
         let mut changes = Vec::new();
         for commit in &commits {
@@ -781,6 +782,7 @@ mod tests {
     fn a_rewrite_the_load_saw_is_unfit_at_once() {
         let unfit = Change::Unfit {
             table: Identifier::new("t").unwrap(),
+            drift: Drift::Altered,
         };
         let asked = RefCell::new(Vec::new());
         let mut wal = Wal {
@@ -810,6 +812,7 @@ mod tests {
     fn a_table_made_unfit_before_any_running_transactions_is_unfit_at_once() {
         let unfit = Change::Unfit {
             table: Identifier::new("t").unwrap(),
+            drift: Drift::Altered,
         };
         let asked = RefCell::new(Vec::new());
         let mut wal = Wal {

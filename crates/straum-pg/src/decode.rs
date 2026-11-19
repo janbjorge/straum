@@ -7,7 +7,7 @@
 
 use std::{mem, slice};
 
-use straum_app::{Change, Commit, Lsn};
+use straum_app::{Change, Commit, Drift, Lsn};
 use straum_domain::{ColumnType, Datum, FastMap, Identifier};
 
 use crate::catalog::Checked;
@@ -99,7 +99,7 @@ impl Decoder {
                 let table = &self.tables[mapping.table.0];
                 let change = match mapping.change(table, message)? {
                     Some(change) => change,
-                    None => unfit(table),
+                    None => unfit(table, Drift::Altered),
                 };
                 self.transaction.hold(change)?;
             }
@@ -110,11 +110,11 @@ impl Decoder {
     /// Every table of the spec `relation` holds no longer reads as
     /// loaded, though no message says how: the physical stream's tables
     /// rewritten or dropped. Between a Begin and its Commit.
-    pub(crate) fn unfit(&mut self, relation: Oid) {
+    pub(crate) fn unfit(&mut self, relation: Oid, drift: Drift) {
         for mapping in self.relations.get(&relation).into_iter().flatten() {
             self.transaction
                 .changes
-                .push(unfit(&self.tables[mapping.table.0]));
+                .push(unfit(&self.tables[mapping.table.0], drift));
         }
     }
 
@@ -139,7 +139,7 @@ impl Decoder {
                 continue;
             }
             if same_name != same_table {
-                self.transaction.changes.push(unfit(table));
+                self.transaction.changes.push(unfit(table, Drift::Altered));
                 continue;
             }
             let mut positions = Vec::new();
@@ -155,7 +155,7 @@ impl Decoder {
                 types.push(column_type);
             }
             if table.types != types {
-                self.transaction.changes.push(unfit(table));
+                self.transaction.changes.push(unfit(table, Drift::Altered));
                 table.types.clone_from(&types);
             }
             mappings.push(Mapping {
@@ -218,9 +218,10 @@ fn read_as(table: &Checked, column: &RelationColumn) -> Option<ColumnType> {
     None
 }
 
-fn unfit(table: &Checked) -> Change {
+fn unfit(table: &Checked, drift: Drift) -> Change {
     Change::Unfit {
         table: table.name.clone(),
+        drift,
     }
 }
 
@@ -341,7 +342,10 @@ mod tests {
     }
 
     fn unfit_named(name: &str) -> Change {
-        Change::Unfit { table: id(name) }
+        Change::Unfit {
+            table: id(name),
+            drift: Drift::Altered,
+        }
     }
 
     /// `pg_class.oid` of `public.zones` when it was loaded.
@@ -633,8 +637,8 @@ mod tests {
         decoder.feed(&zones()).unwrap();
         decoder.feed(&begin).unwrap();
         // Not a relation the decoder knows: nothing to say.
-        decoder.unfit(8);
-        decoder.unfit(7);
+        decoder.unfit(8, Drift::Altered);
+        decoder.unfit(7, Drift::Altered);
         let got = decoder.feed(&commit).unwrap().unwrap();
         assert_eq!(got.changes, [unfit_named("zones"), unfit_named("visits")]);
     }
@@ -693,7 +697,10 @@ mod tests {
                     table: id("visits"),
                     row: vec![text("Bronx")]
                 },
-                Change::Unfit { table: id("zones") },
+                Change::Unfit {
+                    table: id("zones"),
+                    drift: Drift::Altered,
+                },
             ]
         );
 

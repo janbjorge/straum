@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use straum_app::Commit;
+use straum_app::{Commit, Drift};
 use straum_domain::{Datum, FastMap, FastSet};
 
 use super::heap::{HeapChange, HeapTuple};
@@ -54,7 +54,7 @@ pub(crate) struct Publisher {
     /// Tables whose `Relation` the decoder has.
     announced: FastSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
-    unfit: Vec<Oid>,
+    unfit: Vec<(Oid, Drift)>,
     scratch: Scratch,
 }
 
@@ -124,7 +124,7 @@ impl Publisher {
                     self.tables.insert(file, table.clone());
                     self.announced.remove(&file);
                 }
-                _ => self.unfit.push(oid),
+                _ => self.unfit.push((oid, Drift::Altered)),
             }
         }
         for (oid, label) in fresh.labels {
@@ -143,8 +143,8 @@ impl Publisher {
     fn unfit_reading(&mut self, enum_type: Oid) {
         for table in self.tables.values() {
             let oid = table.relation.id;
-            if reads_enum(table, enum_type) && !self.unfit.contains(&oid) {
-                self.unfit.push(oid);
+            if reads_enum(table, enum_type) && !self.unfit.contains(&(oid, Drift::Renamed)) {
+                self.unfit.push((oid, Drift::Renamed));
             }
         }
     }
@@ -195,7 +195,7 @@ impl Publisher {
         decoder.feed(&Message::Begin {
             final_lsn: committed.lsn,
         })?;
-        for oid in std::mem::take(&mut self.unfit) {
+        for (oid, drift) in std::mem::take(&mut self.unfit) {
             // The decoder knows a table by its Relation.
             if let Some(file) = self.file_with_oid(oid)
                 && let Some(table) = self.tables.get(&file)
@@ -203,7 +203,7 @@ impl Publisher {
             {
                 decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
-            decoder.unfit(oid);
+            decoder.unfit(oid, drift);
         }
         for change in &committed.changes {
             let file = match change {
@@ -682,7 +682,10 @@ mod tests {
         );
         let mut publisher = Publisher::new(loaded);
         publisher.relayout(&[], labels(&[(CALM, "relaxed"), (TIDE, "low")]));
-        let unfit = Change::Unfit { table: zones() };
+        let unfit = Change::Unfit {
+            table: zones(),
+            drift: Drift::Renamed,
+        };
         assert_eq!(
             insert_labelled(&mut publisher, CALM),
             [unfit, labelled_insert("calm")]
@@ -784,7 +787,13 @@ mod tests {
             // Said even by a commit that changed no row.
             let commit = publisher.publish(&invalidating(5, 77), &mut decoder);
             let commit = commit.unwrap().unwrap();
-            assert_eq!(commit.changes, [Change::Unfit { table: zones() }]);
+            assert_eq!(
+                commit.changes,
+                [Change::Unfit {
+                    table: zones(),
+                    drift: Drift::Altered,
+                }]
+            );
             // Said once.
             assert_eq!(
                 publisher
