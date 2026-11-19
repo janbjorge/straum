@@ -1,20 +1,15 @@
 # Try it on your data
 
-Does Straum answer the queries you run? Write a spec and run one
-command, and Straum's shell opens on a copy of your tables. The copy
-lives in Docker until you remove it. Your database is only read: it
-gets no publication or role, and its `wal_level` stays as it is.
+Does Straum answer the queries you run? Write a spec, run one command,
+and Straum's shell opens on a copy of your tables in Docker. Your
+database is only read.
 
-You need:
-
-- Docker with Compose.
-- A role that can `SELECT` the tables the spec reads. Read-only is
-  enough.
-- A database Docker can reach.
+You need Docker with Compose, and a role that can `SELECT` the tables
+the spec reads.
 
 ## 1. Write a spec
 
-Make an empty directory and save this in it as `usage.sql`:
+In an empty directory, save this as `usage.sql`:
 
 ```sql
 CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
@@ -29,55 +24,36 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4;
 ```
 
-Write the `GROUP BY` your app runs most: the time column in
-`date_bin`, the columns it filters and groups by as keys, its
-aggregates as measures ([Spec](spec.md)). Here `kind` is an enum,
-which Straum reads as text through `::text`
-([Enum columns](spec.md#enum-columns)). The file must be named
-`usage.sql`, whatever its views are called.
+Write the `GROUP BY` your app runs most ([Spec](spec.md)). The file
+must be named `usage.sql`, whatever its views are called.
 
-## 2. Get the Compose file
+## 2. Run
 
 In the same directory:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml
-```
-
-## 3. Point it at your database
-
-```sh
 export DATABASE_URL='postgres://reader:secret@db.example.com:5432/app?sslmode=require'
-```
-
-Any connection string `psql` takes works, including
-`host=... user=... password=... dbname=...`. Your `PG*` variables do
-not reach the containers, so put everything in this one string. Inside
-Docker, `localhost` is the container: for a database on your machine,
-write `host.docker.internal`.
-
-## 4. Start
-
-```sh
 docker compose -f try.yaml run --rm shell
 ```
 
-This copies the tables, starts Straum on the copy and waits until it
-has loaded. Large tables take a while. When the prompt shows, it is
-ready:
+`DATABASE_URL` is any connection string `psql` takes. Your `PG*`
+variables don't reach the containers. For a database on your own
+machine, write `host.docker.internal`, not `localhost`.
+
+The command copies the columns the spec reads, starts Straum on the
+copy and opens the shell once it has loaded:
 
 ```text
 Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
 straum>
 ```
 
-`\d` lists the views, `\d usage` prints a view's `CREATE VIEW`, and
-`\rows usage` prints its rows.
+`\d` lists the views and `\rows usage` prints a view's rows.
 
-## 5. Ask and compare
+## 3. Ask and compare
 
-Ask in the shell, or from another terminal. Events and amounts by
-region over November:
+Ask in the shell, or with `curl`:
 
 ```sh
 curl --json '{
@@ -86,7 +62,7 @@ curl --json '{
 }' http://127.0.0.1:8080/ask
 ```
 
-Run the SQL anyone would write over the copy, and compare:
+Then ask the copy in SQL, and compare:
 
 ```sh
 docker compose -p straum-try exec postgres psql -U postgres -c "
@@ -96,118 +72,64 @@ docker compose -p straum-try exec postgres psql -U postgres -c "
    GROUP BY a.region"
 ```
 
-Write to the copy through the same `psql` and ask again, and the
-answer follows the write. [Asks](asks.md) explains the query and the answer.
+Write to the copy through that `psql` and ask again, and the answer
+follows the write. [Asks](asks.md) explains the query and the answer.
 
-## 6. Change the spec, or stop
+## 4. Stop
 
-`\q` leaves the shell. Straum keeps running on `127.0.0.1:8080`, so
-stop a quick start on that port first. To open the shell again:
-
-```sh
-docker compose -p straum-try exec straum /straum shell
-```
-
-To load a changed spec, remove the copy and run step 4 again. This
-reads your database again:
+`\q` leaves the shell. Straum keeps running on `127.0.0.1:8080`;
+`docker compose -p straum-try exec straum /straum shell` opens it
+again. This removes everything:
 
 ```sh
 docker compose -p straum-try down --volumes
 ```
 
-Run the same command when you are done.
+To try a changed spec, run that, then step 2 again.
 
 ## When it fails
 
-The command stops at the first step that fails. Each step has a log:
+The command stops at the first step that fails. The export's log names
+every column it can't copy and why
+([`straum plan --copy`](cli.md#straum-plan) lists the reasons):
 
 ```sh
 docker compose -p straum-try logs export
 ```
 
-`export` reads your database, `load` fills the copy, `straum` runs
-Straum. Before it copies anything, the export names every column it
-can't copy: a table or column the role can't see, a composite column,
-a type an extension provides. A row security policy that would hide
-rows stops it too.
+The copy has the rows of the columns the spec reads, without indexes,
+keys or defaults. The file in the repository is
+`docs/compose/try.yaml`, with a comment on each step.
 
-Ctrl-C while it waits stops only the wait, and the containers keep
-running. Remove them as in step 6.
+## Copy once, from a clone
 
-The copy holds the rows, with only the columns the spec reads. It has
-no indexes, keys or defaults.
-
-## What the command does
-
-```text
-scripts ─► export ─► load ─► plan ─► apply ─► straum ─► shell
-                     ▲
-postgres ────────────┘
-```
-
-1. `scripts`: [`straum plan --copy`](cli.md#straum-plan) writes two
-   psql scripts, `export.sql` and `load.sql`.
-2. `export`: `psql` runs `export.sql` on `DATABASE_URL`. In one
-   read-only snapshot it writes the columns the spec reads to CSV
-   files.
-3. `postgres`: a new PostgreSQL 18 with logical decoding on. `load`
-   runs `load.sql` there, which creates the tables and loads the CSVs.
-4. `plan` and `apply`: `straum plan` writes the setup SQL for the copy,
-   and `psql` runs it.
-5. `straum`: `straum run` loads the copy and follows it.
-6. `shell`: `straum shell`, once Straum is ready.
-
-The containers run as the Compose project `straum-try`. The copy is
-the database `postgres` in it.
-
-## From a clone: make the copy once
-
-The Compose file reads your database on every start. From a clone of
-the repository, `just try` loads a copy you made once instead, and can
-try the [physical stream](postgresql.md#physical-wal):
+Step 2 reads your database each time. From a clone of the repository,
+make the copy once and load it as often as you like. This also lets
+you try the [physical stream](postgresql.md#physical-wal):
 
 ```sh
 straum plan usage.sql --copy copy
-psql "$DATABASE_URL" -f copy/export.sql
+psql -f copy/export.sql
 just try usage.sql --data copy
 ```
 
-The first line writes the scripts into `copy/`. The second fills it
-with CSV files; `psql` reads your `PG*` variables here, so a
-`DATABASE_URL` is optional. The third loads it into a throwaway
-PostgreSQL, starts Straum and opens the shell. Leaving the shell
-removes both containers; `copy/` stays.
-
-One copy can serve several specs: give `straum plan --copy` all of
-them, then `just try` each. A run first removes the containers a
-killed run of the same stack left behind.
-[`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
-is the script behind it:
-
-| Flag | Default | |
-| --- | --- | --- |
-| `SPEC` or `--spec FILE` | required | the spec |
-| `--data DIR` | required | the directory `straum plan --copy` wrote, after its `export.sql` ran |
-| `--wal logical\|physical` | `logical` | the stream Straum reads |
-| `--postgres N` | `18` | PostgreSQL major |
-| `--image IMAGE` | `ghcr.io/janbjorge/straum` | Straum image; a local tag works |
-| `--stack NAME` | `straum-try-` and the spec's name | Compose project to run in |
-| `--port N` | a free one | local port Straum answers on |
+[`straum plan --copy`](cli.md#straum-plan) writes the scripts into
+`copy/`, `psql` runs the export on the database your `PG*` variables
+name, and
+`just try` loads `copy/` and opens the shell. `just try --help` lists
+its flags.
 
 ## On the database itself
 
-Once the answers hold, point Straum at the database:
+Once the answers hold:
 
-1. `straum plan FILE` prints the setup SQL, or what is wrong with the
-   spec. A table owner runs the SQL once. You do not edit it.
-2. `straum run FILE` with `STRAUM_DSN` or libpq's `PGHOST` and the
-   rest set, then ask.
+1. `straum plan usage.sql` prints the setup SQL. A table owner runs it
+   once ([Setting up PostgreSQL](postgresql.md)).
+2. `straum run usage.sql`, with `STRAUM_DSN` or libpq's `PGHOST` and
+   the rest set, then ask.
 
-[Setting up PostgreSQL](postgresql.md) is that SQL for either stream,
-and what a failed line means.
-
-Start with few keys. Memory follows cells, one per distinct
-combination of keys and bucket ([Cells](how-it-works.md#cells)).
+Start with few keys: memory grows with each distinct combination of
+keys and bucket ([Cells](how-it-works.md#cells)).
 
 Next: [How Straum works](how-it-works.md), what Straum keeps and how it
 stays current.
