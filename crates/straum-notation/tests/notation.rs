@@ -143,6 +143,24 @@ fn buckets_parse() {
         [Width { seconds: 86_400 }, Width { seconds: 604_800 }]
     );
 
+    // Any number of widths, each a whole multiple of the one before.
+    let text = base(
+        "buckets(f.at, '1 hour')",
+        "buckets(f.at, '15 minutes', '1 hour', '1 day', '7 days', '28 days')",
+    );
+    let many = parse(&text).unwrap();
+    let time = &many.fact("t").unwrap().time;
+    assert_eq!(time.width, Width { seconds: 900 });
+    assert_eq!(
+        time.wider,
+        [
+            Width { seconds: 3_600 },
+            Width { seconds: 86_400 },
+            Width { seconds: 604_800 },
+            Width { seconds: 2_419_200 },
+        ]
+    );
+
     let text = base("'1 hour')", "'1 hour', '90 minutes', '1 day')");
     assert_eq!(
         spec_errors(&text),
