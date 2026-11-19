@@ -1,7 +1,9 @@
 //! The distinct values a group meets for `count(DISTINCT c)`,
 //! `sum(DISTINCT c)` and `avg(DISTINCT c)`: the count per value of each
-//! cell, read in place, merged in value order for several cells, and
-//! [`Tally`], how many there were and what they add up to.
+//! cell, read in place; for several cells, marked in a set of bits from
+//! the least value to the greatest, or listed and sorted when they lie
+//! too far apart; and [`Tally`], how many there were and what they add
+//! up to.
 
 use crate::hash::{FastMap, FastSet};
 use crate::rollup::DistinctCells;
