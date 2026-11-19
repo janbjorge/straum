@@ -1,25 +1,35 @@
 # Performance
 
-This page says what to expect from Straum and how to measure it yourself.
-Its benchmark sends Straum and PostgreSQL the same asks about six months of
-New York taxi trips, checks that the answers are equal, decimals to the
-last digit, an `avg` at the places Straum gives it, and times both.
-[Memory](#memory) at the end is what two real tables measured.
+How fast does Straum answer, and how much memory does it take? This page
+gives one benchmark's numbers and the commands to measure them yourself.
+
+The benchmark sends Straum and PostgreSQL the same asks about six months
+of New York taxi trips. It checks that the answers are equal, then times
+both. [Transactions](#transactions) measures what one large transaction
+costs Straum, [Physical WAL](#physical-wal) how fast Straum reads the
+physical WAL, and [Memory](#memory) how many bytes a cell takes, on the
+taxi month and on a copy of a warehouse's tables.
 
 The data is the TLC yellow trips of January to June 2024, 20,332,093
-trips, and the 265 rows of `taxi_zone_lookup.csv`. The loader pins
-each file's SHA-256 and stops if the TLC republished one, since these
-counts hold only for those bytes.
+trips, and the 265 rows of `taxi_zone_lookup.csv`. The loader pins each
+file's SHA-256 and stops if the TLC republished one, since these counts
+hold only for those bytes.
 
 ## Results
 
-Sixteen fixed asks over the benchmark's two views, each sent to PostgreSQL
-as SQL over the raw tables and to Straum as an ask over HTTP. One run on
-an Apple M2 Pro with 16 GB, on 2026-11-19: PostgreSQL 18.7 in Docker
-Desktop with 10 CPUs, and Straum's release build on the same machine.
-Each time is the median over at least a second, from one Python client:
-asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
-answer's.
+Sixteen fixed asks over the benchmark's two [views](#the-views), each
+sent to PostgreSQL as SQL over the raw tables and to Straum as an ask
+over HTTP. Rows are the answer's. One run on an Apple M2 Pro with
+16 GB, on 2026-11-19: PostgreSQL 18.7 in Docker Desktop with 10 CPUs,
+and Straum's release build on the same machine. Each time is the median
+over at least a second and five runs, from one Python client: asyncpg
+for PostgreSQL, aiohttp and orjson for Straum.
+
+PostgreSQL reads with its defaults, two parallel workers per query,
+except `shared_buffers`, which is 2 GB; the rest of the table comes from
+the OS cache. The other settings in `bench/taxi.py` only speed the load.
+`yellow_trips` has an index on `pickup_at`, which the week and day asks
+use.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
@@ -41,46 +51,42 @@ answer's.
 | Tips by dropoff borough | 8 | 1,746.0 ms | 225 µs | 7,754x |
 
 The target is under 1 ms for every ask
-([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md));
-the percentile, mode and distinct asks over every trip miss it, and so
-does the month
-of hourly rows by borough, which writes 4,454 rows.
-
-Straum was ready 16.3 s after it started and held 305 MiB resident, the
-265 zone rows' projection included. Runs the same day held 190 MiB
-without the fare's variance, standard deviation, mode and distinct
-values, 205 MiB with the first two, and 204 MiB with the mode too: the
-sums of squares take about 15 MiB, and the mode reads the counts the
-percentiles keep. The distinct fares take the other 101 MiB, as
-`count(DISTINCT c)` keeps a count per value of its own. The bench now
-reads what Straum holds from macOS's footprint, which counts the pages
-the system compressed; one resident set read 21 MiB on a busy machine.
-In PostgreSQL the table and its indexes take 2,475 MiB.
-
-Reads run with PostgreSQL's defaults, two parallel workers per query,
-except `shared_buffers`, which is 2 GB. The rest of the table comes from
-the OS cache. The other settings in `bench/taxi.py` only speed the load.
-`yellow_trips` has an index on `pickup_at`, which the week and day asks
-use. The gap is smallest there, where PostgreSQL reads least.
+([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md)).
+The percentile, mode and distinct asks over every trip miss it, and so
+does the month of hourly rows by borough, which writes 4,454 rows.
 
 PostgreSQL's time follows the rows it reads: every trip, except for the
-week and day asks, which read a week's or a day's. Straum's time hardly
-changes from ask to ask. Most of its time is the HTTP round trip, reading
-the query and writing JSON.
+week and day asks, which read a week's or a day's through the index. The
+gap is smallest there. Straum's time hardly changes from ask to ask.
+Most of it is the HTTP round trip, reading the query and writing JSON.
 
 The percentile and mode asks are the exception. Straum gathers every
 fare of the cells in range, so their time follows the fares the range
 holds, as [Median and percentiles](aggregates.md#median-and-percentiles)
-says. The distinct ask is the same: a group by payment type over six months
-meets every weekly cell of every zone, 1,426,949 fares in 6,398 cells
-for the largest, and marks each in a set of bits from the least fare to
-the greatest. Count, sum and average of the distinct fares mark them
-once and share the tally. Merging them in order on a heap, once per
-measure, took 423.3 ms; marking them once per measure, 24.4 ms.
+says. The distinct ask is the same. A group by payment type over six
+months meets every weekly cell of every zone, 1,426,949 fares in 6,398
+cells for the largest group, and marks each in a set of bits from the
+least fare to the greatest. Count, sum and average of the distinct fares
+mark them once and share the tally. Merging them in order on a heap,
+once per measure, took 423.3 ms; marking them once per measure took
+24.4 ms.
+
+Straum was ready 16.3 s after it started and held 305 MiB, the 265 zone
+rows' projection included. In PostgreSQL the table and its indexes take
+2,475 MiB. Runs the same day show where Straum's memory goes. Without
+the fare's variance, standard deviation, mode and distinct values it
+held 190 MiB; with the first two, 205 MiB; with the mode too, 204 MiB.
+The sums of squares take about 15 MiB, and the mode reads the counts the
+percentiles keep. The distinct fares take the other 101 MiB, as
+`count(DISTINCT c)` keeps a count per value of its own.
+
+On macOS the bench reads what Straum holds from the process's footprint,
+which counts the pages the system compressed; on a busy machine one
+resident set read 21 MiB. Elsewhere it reads the resident set.
 
 Straum answers only what the views keep: these keys, on hour edges.
 PostgreSQL answers any query over the raw rows. Straum keeps its cells
-current as trips change. A summary table in PostgreSQL would have to be
+current as trips change; a summary table in PostgreSQL would have to be
 rebuilt or maintained.
 
 ## Running it yourself
@@ -89,37 +95,50 @@ rebuilt or maintained.
 bench/taxi.py
 ```
 
-`bench/taxi.py shell` sets up the same, then leaves you in
-[`straum shell`](cli.md#straum-shell) at the trips in place of
-running the asks. Leaving the shell removes PostgreSQL.
-
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
-six months into `bench/data/`, which git ignores. Then it builds Straum,
-starts a throwaway `postgres:18`, or the major `STRAUM_TEST_POSTGRES`
-names (`just postgres=17 taxi`), loads the months with
-`bench/load_taxi_trips.py`, runs the SQL `straum plan` prints and
-starts `straum run`. Each ask goes to PostgreSQL as SQL
-over the raw tables and to Straum as an [ask](asks.md) over HTTP, and a
-run stops at the first answer that differs. A run takes about 80 seconds
-once the data is there.
+six months into `bench/data/`, which git ignores. Then it:
 
-`bench/taxi.py transactions` does the same setup, then one transaction of
-1,000 to 1,000,000 changed rows while a client asks Straum back to back,
-under [Transactions](#transactions).
+1. builds Straum;
+2. starts a throwaway `postgres:18`, or the major `STRAUM_TEST_POSTGRES`
+   names;
+3. loads the months with `bench/load_taxi_trips.py`;
+4. runs the SQL `straum plan` prints and starts `straum run`;
+5. sends each ask to both sides, and stops at the first answer that
+   differs.
+
+Answers are equal when every decimal matches to the last digit, with
+PostgreSQL's `avg`, variance and standard deviation rounded half to even
+at the places Straum gives them. A run takes about 80 seconds once the
+data is there.
+
+The script has three modes:
+
+- `bench/taxi.py` or `bench/taxi.py asks`: the [Results](#results).
+- `bench/taxi.py transactions`: the same setup, then one transaction of
+  1,000 to 1,000,000 changed rows while a client asks Straum back to
+  back, under [Transactions](#transactions).
+- `bench/taxi.py shell`: the same setup, then
+  [`straum shell`](cli.md#straum-shell) at the trips in place of the
+  asks. Leaving the shell removes PostgreSQL.
 
 Each mode takes `--wal physical` to have Straum read the
-[physical WAL](postgresql.md#physical-wal) in place of
-logical decoding. It turns `full_page_writes` back on after the load and
-checkpoints, since the physical stream needs page images.
+[physical WAL](postgresql.md#physical-wal) in place of logical decoding.
+The script then turns `full_page_writes` back on after the load and
+takes a checkpoint, since the physical stream needs page images.
+
+`just taxi [asks|transactions|shell]` runs the same, with `wal=physical`
+for the physical WAL and `postgres=17` for another major, as in
+`just postgres=17 wal=physical taxi`.
 
 ## The views
 
-`bench/trips.sql` opens with `trips`, the [quick start's
-view](quick-start.md#2-the-spec) with a median and a p99 fare
-added: what a dashboard over these trips would declare. `dropoffs` is
-the other end of the same trips: tips, the average distance and fares
-per hour and dropoff zone.
+`bench/trips.sql` holds two views. `trips` is the [quick start's
+view](quick-start.md#2-the-spec) with more measures over the fare:
+variance, standard deviation, median, p99, mode, and the count, sum and
+average of distinct fares. It is what a dashboard over these trips would
+declare. `dropoffs` is the other end of the same trips: tips, the
+average distance and fares per hour and dropoff zone.
 
 ```sql
 CREATE VIEW dropoffs AS
@@ -138,7 +157,7 @@ GROUP BY 1, 2, 3;
 Over the 20,332,093 trips, `trips` keeps 1,157,581 cells at its hour
 width and `dropoffs` 713,457. Neither keeps
 [bound cells](https://github.com/janbjorge/straum/blob/main/docs/adr/0006-refs-are-bound-at-ask-time.md):
-each joins on one of its own keys, so they would be as many again.
+each joins on one of its own keys, so bound cells would double them.
 
 ## The asks
 
@@ -237,9 +256,10 @@ SELECT z.borough, count(*), sum(t.tip_amount), avg(t.trip_distance),
  GROUP BY z.borough;
 ```
 
-Straum gets the same asks over the views, with every value a
-parameter; `bench/taxi.py` holds both. Where the SQL has no range, the
-ask's is 2000 to 2030, which holds every trip:
+Straum gets the same asks over the views, with every value a parameter;
+`bench/taxi.py` holds both. Where the SQL has no range, the ask's is
+2000 to 2030, which holds every trip. Fares per week leaves its range
+open instead, so it reads every bucket Straum holds. An example:
 
 ```sql
 -- Trips by pickup borough
@@ -251,20 +271,24 @@ SELECT borough, trips FROM trips
 ## Transactions
 
 Straum holds a transaction until its commit and applies it whole under
-its write lock, so its rows wait in memory and every ask waits for the
+its write lock. Its rows wait in memory, and every ask waits for the
 apply. `bench/taxi.py transactions` updates the fare of the first N
-trips, which both views follow, in one transaction while a client asks
-for one day of hour buckets as fast as the answers come. It measures
-three things: the time from the commit until Straum has applied it, the
-longest ask meanwhile, which is the lock hold as a client feels it, and
-how much Straum's resident set grew. After each, it checks the fares by
-payment type against PostgreSQL. A failure ends Straum, and the run
-with it.
-One run on 2026-11-17, the machine and PostgreSQL of the
-[Results](#results), with `synchronous_commit` back on once the trips
-are loaded, so a commit counts from its flush as on a real server;
-Straum held 121 MiB resident after the load and an idle ask took
-204 µs:
+trips, which both views follow, in one transaction. Meanwhile a client
+asks for one day of hour buckets as fast as the answers come. The bench
+measures three things:
+
+- the time from the commit until Straum has applied it;
+- the longest ask meanwhile, which is the lock hold as a client feels
+  it;
+- how much Straum's resident set grew.
+
+After each transaction it checks the fares by payment type against
+PostgreSQL. An answer that differs ends the run.
+
+One run on 2026-11-17, on the machine and PostgreSQL of the
+[Results](#results). `synchronous_commit` is back on once the trips are
+loaded, so a commit counts from its flush, as on a real server. Straum
+held 121 MiB after the load, and an idle ask took 204 µs.
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |
@@ -274,15 +298,17 @@ Straum held 121 MiB resident after the load and an idle ask took
 | 1,000,000 | 8.5 s | 1,238.7 ms | 457 MiB |
 
 Most of the time goes to PostgreSQL decoding the transaction and Straum
-reading it, outside the lock; the lock itself is held for about 1.2 ms
+reading it, outside the lock. The lock itself is held for about 1.2 ms
 per 1,000 rows, half of it moving each changed fare between the
 percentiles' value counts. Memory is what grows: the rows of a
 transaction wait in Straum until its commit, about 480 bytes each, so a
-million-row transaction holds nearly four times what both views do. That
-sets the default of `--max-transaction-rows` at 100,000: a transaction
-at the limit holds the lock for 118 ms, and anything larger is cheaper to
-[stop and load again](how-it-works.md#following), which takes the rows
-through the bulk `COPY` instead.
+million-row transaction holds nearly four times what both views do.
+
+That sets the default of `--max-transaction-rows` at 100,000. A
+transaction at the limit holds the lock for 118 ms. Anything larger is
+cheaper to [stop and load again](how-it-works.md#following), which
+takes the rows through the bulk `COPY` instead. The bench raises the
+limit out of the way, since it measures what the limit prevents.
 
 ## Physical WAL
 
@@ -290,27 +316,33 @@ through the bulk `COPY` instead.
 cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
 ```
 
-It measures how fast Straum reads
+`just wal-bench` runs the same. It measures how fast Straum reads
 [physical WAL](https://github.com/janbjorge/straum/blob/main/docs/adr/0008-straum-reads-physical-wal-where-logical-decoding-is-off.md).
+
 It loads the taxi month with `bench/load_taxi_trips.py` into a
 PostgreSQL under `wal_level = replica`, so it needs uv. Then it takes a
-checkpoint and opens a physical slot. Four phases each change 1,000,000
-trips of `yellow_trips`: `COPY` in transactions of 250,000 rows, then
-`INSERT`, `UPDATE` and `DELETE` in transactions of 10,000. The slot
-streams the WAL, and Straum keeps it in memory. Straum then reads it
-again three times each way (`STRAUM_BENCH_RUNS`), with no socket in the
-way, and the fastest read counts. "Records read" splits pages into
-records only. "Pipeline read" goes all the way to the commits for
-`crates/straum-notation/tests/taxi.sql`. Every row changed must come
-out, and nothing may be unfit. "Pass-through read" goes through a
-pipeline that reads no table, as the WAL of every other table and
-database does: the reader passes those records by from their block
-headers, without copying or checksumming them, so it outruns splitting
-every record. Autovacuum is off and the checkpoint
-interval is an hour, so each run writes the same records.
-`STRAUM_TEST_POSTGRES` picks the major.
+checkpoint and opens a physical replication slot. Four phases each
+change 1,000,000 trips of `yellow_trips`: `COPY` in transactions of
+250,000 rows, then `INSERT`, `UPDATE` and `DELETE` in transactions of
+10,000. The replication slot streams the WAL, and Straum keeps it in
+memory. Autovacuum is off and the checkpoint interval is an hour, so
+each run writes the same records. `STRAUM_TEST_POSTGRES` picks the
+major.
 
-One run on 2026-11-16, the machine of the [Results](#results), one
+Straum then reads the captured WAL again, with no socket in the way,
+three times each way (`STRAUM_BENCH_RUNS`, or `just runs=6 wal-bench`).
+The fastest read counts. The three ways:
+
+- "Records read" splits pages into records only.
+- "Pipeline read" goes all the way to the commits for
+  `crates/straum-notation/tests/taxi.sql`. Every row changed must come
+  out, and nothing may be unfit.
+- "Pass-through read" goes through a pipeline that reads no table, as
+  the WAL of every other table and database does. The reader passes
+  those records by from their block headers, without copying or
+  checksumming them, so it outruns splitting every record.
+
+One run on 2026-11-16, on the machine of the [Results](#results), one
 thread, PostgreSQL 18, six reads each way:
 
 | Phase | WAL | Records | Images | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL | Pass-through read |
@@ -321,35 +353,37 @@ thread, PostgreSQL 18, six reads each way:
 | delete | 137.7 MiB | 1,010,911 | 10,712 | 480.2 ms | 2,977 MiB/s | 457 MiB/s | 3,321,773 | 1.6x | 5,945 MiB/s |
 | all | 795.9 MiB | | | 5.4 s | 2,452 MiB/s | 520 MiB/s | 2,613,459 | 3.5x | 6,200 MiB/s |
 
-"Against PostgreSQL" divides the time PostgreSQL took to write a
-phase's WAL by the time the pipeline took to read it. Below 1x, a
-writer that keeps that pace for long leaves Straum behind, and once the
-lag passes `--max-lag`, `/readyz` turns off.
 Images are the full-page images: the first change to a page after the
-checkpoint brings one. The pipeline held at most 429.5 MiB of rows,
-most of them the open `COPY` transactions' rows, which wait for their
-commit.
+checkpoint brings one. "Against PostgreSQL" divides the time PostgreSQL
+took to write a phase's WAL by the time the pipeline took to read it.
+Below 1x, a writer that keeps that pace for long leaves Straum behind,
+and once the lag passes `--max-lag`, `/readyz` turns off. The pipeline
+held at most 429.5 MiB of rows, most of them the open `COPY`
+transactions' rows, which wait for their commit.
 
 Timings drift with the machine, so two tests in
 `crates/straum-pg/src/wal/pipeline.rs` hold what this bench gained by
-counting allocations instead: a row of a spec table may allocate three
-times, for its page's slot list, its bytes and its decoded values, and
-a row of another table not once.
+counting allocations instead. A row of a spec table may allocate three
+times, for its page's slot list, its bytes and its decoded values. A row
+of another table allocates nothing.
 
 ## Memory
 
-Memory follows cells, as [How Straum works](how-it-works.md#cells)
-says. The rollup key, the columns in `GROUP BY`, decides how many
-there are. Two runs on 2026-11-11 measure it: the taxi month under a
-wide key, and a warehouse's tables under a narrow one whose dims carry
-the ids. The resident set came to 177 and 104 bytes a cell, measures
-and projections included, before bound cells. A cell has taken fewer
-bytes since ([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)):
-the benchmark's two views held 65 MiB for their 2,078,586 cells, 33
-bytes a cell, before `trips` kept its fares for the percentiles; with
-them they held 113 MiB on 2026-11-15, and 305 MiB on 2026-11-19 with
-the fare's variance, standard deviation, mode and distinct values
-besides.
+Memory follows cells, as [How Straum works](how-it-works.md#cells) says.
+The rollup key, the columns in `GROUP BY`, decides how many there are.
+
+Two runs on 2026-11-11 measure it: the taxi month under a wide key, and
+a warehouse's tables under a narrow one whose dims carry the ids. The
+resident set came to 177 and 104 bytes a cell, measures and projections
+included, before bound cells.
+
+A cell has taken fewer bytes since
+([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
+The benchmark's two views held 65 MiB for their 2,078,586 cells, 33
+bytes a cell, before `trips` kept its fares for the percentiles. With
+them they held 113 MiB on 2026-11-15. With the fare's variance,
+standard deviation, mode and distinct values besides, they held 305 MiB
+on 2026-11-19.
 
 ### The taxi month under a wide key
 
@@ -357,16 +391,23 @@ besides.
 cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
 ```
 
-It loads the month with `bench/load_taxi_trips.py`, so it needs uv, and
-reads it with `crates/straum-notation/tests/taxi.sql`, a wider view than
-the benchmark's: 15 minute buckets with day and week widths, keyed by
+`just taxi-month` runs the same. It loads the month with
+`bench/load_taxi_trips.py`, so it needs uv. It reads the month with
+`crates/straum-notation/tests/taxi.sql`, a wider view than the
+benchmark's: 15 minute buckets with day and week widths, keyed by
 payment type, vendor, pickup zone, dropoff zone and the pickup zone's
-borough, zone and service zone, with two filtered counts. The test
-compares asks with the view body in PostgreSQL six times: after the
-load, after 200 streamed commits, after an update, after a zone is
-renamed, after a zone moves to a new key, and after a trip in the
-renamed zone changes. Nothing stops. Release build, Docker on
-the same laptop:
+borough, zone and service zone, with two filtered counts.
+
+The test compares asks with the view body in PostgreSQL six times:
+
+1. after the load;
+2. after 200 streamed commits;
+3. after an update;
+4. after a zone is renamed;
+5. after a zone moves to a new key;
+6. after a trip in the renamed zone changes.
+
+Nothing stops. Release build, Docker on the same laptop:
 
 | Step or ask | Groups | Straum | PostgreSQL |
 | --- | ---: | ---: | ---: |
@@ -379,9 +420,11 @@ the same laptop:
 | By pickup borough | 8 | 11.3 to 16.3 ms | 4.1 to 4.3 s |
 
 The ask over every key reads every 15 minute cell, maps each through
-the zones' projection and answers nearly as many groups, so it is only
-2.0 to 2.4 times faster than the view in PostgreSQL. Cells per width,
-each a `count(DISTINCT ...)` of that key and the bucket over the month:
+the zones' projection and answers nearly as many groups. So it is only
+2.0 to 2.4 times faster than the view in PostgreSQL.
+
+Cells per width, each a `count(DISTINCT ...)` of that key and the
+bucket over the month:
 
 | Rollup | Cells | Trips a cell |
 | --- | ---: | ---: |
@@ -398,30 +441,32 @@ collapses 5.2 times.
 
 ### A warehouse's tables
 
-Tasks keyed by organization, whether the task is live, its group's
-category and its storage location's type, over hour buckets with a
-day width beside them. The category and the type are columns of two
-dims, so the cells are keyed by the group and location ids and Straum
-holds each dim's projection beside them: its key and the one column
-the view reads. The tables are a copy of a production database and
-are not in the repository: 13,116,878 tasks, 5,690,651 task groups
-and 851,964 storage locations, 2,645 MiB of tasks in PostgreSQL. The
-machine and build of the [results](#results).
+The view keys tasks by organization, whether the task is live, its
+group's category and its storage location's type, over hour buckets
+with a day width beside them. The category and the type are columns of
+two dims. So the cells are keyed by the group and location ids, and
+Straum holds each dim's projection beside them: its key and the one
+column the view reads.
+
+The tables are a copy of a production database and are not in the
+repository: 13,116,878 tasks, 5,690,651 task groups and 851,964 storage
+locations, 2,645 MiB of tasks in PostgreSQL. The machine and build are
+those of the [Results](#results).
 
 | Rollup | Cells |
 | --- | ---: |
 | 1 hour | 11,932,307 |
 | 1 day | 11,930,678 |
 
-A group holds one task or two, and every task has its own hour, so
-both widths hold about a cell a task; the day width collapses nothing,
-since the group id is in its key. Keyed by the category and the type
-instead, as a view that never followed a dim change could be, the
-widths would hold 311,969 and 66,107 cells.
+A group holds one task or two, and every task has its own hour, so both
+widths hold about a cell a task. The day width collapses nothing, since
+the group id is in its key. Keyed by the category and the type instead,
+as a view that never followed a dim change could be, the widths would
+hold 311,969 and 66,107 cells.
 
 Straum was ready 10 s after it started and held 2,378 MiB: the cells
 and the two projections, 6,542,615 dim rows. A run right before held
-1,998 MiB; 88 to 104 bytes a cell, projections included.
+1,998 MiB. That is 88 to 104 bytes a cell, projections included.
 
 Every ask equalled PostgreSQL after the load and after each streamed
 change. Each change is one transaction; the time runs from the commit
@@ -438,11 +483,11 @@ until Straum had applied it:
 | Task groups deleted, one in a hundred | 56,875 | 3.8 s |
 
 The last three change dims. Each is applied to the projection, no cell
-moves, and the next ask reads the new category or type; Straum never
+moves, and the next ask reads the new category or type. Straum never
 stopped.
 
-The asks, PostgreSQL run twice on the loaded tables and Straum the better
-of two:
+The asks, with PostgreSQL run twice on the loaded tables and Straum the
+better of two:
 
 | Ask | Rows | PostgreSQL, first | PostgreSQL, second | Straum |
 | --- | ---: | ---: | ---: | ---: |
@@ -451,10 +496,10 @@ of two:
 | Live picks by location type, one day | 3 | 127 ms | 100 ms | 6.7 ms |
 | Picks per hour for one organization, one day | 16 | 14 ms | 5 ms | 0.6 ms |
 
-PostgreSQL has an index on `completed` here, and these are the plain
+PostgreSQL has an index on `completed` here. The SQL is the plain
 queries the asks mirror, not a dashboard's own. Straum reads the cells
 of one width in the range, about a cell a task, and maps each through
 the projections, so an ask over a week costs more than one over a day.
 
-Every rule of a [spec](spec.md), every [ask and endpoint](asks.md)
-and every [command and flag](cli.md) are in the reference.
+Every rule of a [spec](spec.md), every [ask and endpoint](asks.md) and
+every [command and flag](cli.md) are in the reference.
