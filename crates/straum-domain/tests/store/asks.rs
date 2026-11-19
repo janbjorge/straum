@@ -216,7 +216,10 @@ fn ask_without_by_answers_one_row() {
                 null.clone(),
                 null.clone(),
                 null.clone(),
-                // The four variances and deviations: of no values, none.
+                // The two modes and the four variances and deviations: of
+                // no values, none.
+                null.clone(),
+                null.clone(),
                 null.clone(),
                 null.clone(),
                 null.clone(),

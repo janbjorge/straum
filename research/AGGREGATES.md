@@ -314,7 +314,7 @@ a new answer over a state, or one more column in one.
 | Order | Aggregate | State | Note |
 | --- | --- | --- | --- |
 | built | `var_pop`, `var_samp`, `stddev_pop`, `stddev_samp` | `Sum` and a column of squares | §4.5, §4.6; `variance` and `stddev` refused, one spelling (ADR-0004) |
-| 2 | `mode() WITHIN GROUP (ORDER BY c)` | `Extent` | ties take the first value (U) |
+| built | `mode() WITHIN GROUP (ORDER BY c)` | `Extent` | ties take the least value, as PostgreSQL's tests agree (R) |
 | 3 | `sum(DISTINCT c)`, `avg(DISTINCT c)` | `Distinct` | |
 | open | `percentile_cont` | `Extent` | PostgreSQL answers in `double precision` |
 | no | `min_by`, `max_by` | | not PostgreSQL (ADR-0004) |
@@ -324,8 +324,8 @@ a new answer over a state, or one more column in one.
 | no | `string_agg`, `array_agg` | | holds every value |
 | no | top-k, any sketch | | not exact |
 
-`mode` and `percentile_cont` are refused by name in ADR-0003, which
-changes with them.
+`percentile_cont` is refused by name in ADR-0003, which changes with
+it.
 
 ### 4.5 Variance merges exactly
 
@@ -401,7 +401,9 @@ takes.
   that leaves x^2 in; `add_from` that drops a cell's squares when it
   moves; an ask that merges only the first cell's squares when one
   group takes a bucket; a `var_samp` over n^2; a sample of one that
-  answers 0; a lost carry in `U256::product`.
+  answers 0; a lost carry in `U256::product`. For `mode()`: a tie
+  taken by the larger value, and several cells' values left unsorted;
+  the workloads fail on both, PostgreSQL on the first.
 
 ## Open points
 

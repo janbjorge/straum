@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::common::{
-    SPREAD_PLACES, bool_or_null, holds, in_range, int_or_null, percentile_disc, spread,
+    SPREAD_PLACES, bool_or_null, holds, in_range, int_or_null, mode, percentile_disc, spread,
 };
 use crate::view::{
     AT, BLOCKED, CUSTOMER, CUSTOMERS, DIM_NAMES, Dims, EVEN, HOUR, Kinds, Loaded, PRODUCT,
@@ -219,6 +219,7 @@ fn reference_value(measure: &Measure, group: &[ViewRow<'_>]) -> Value {
         Aggregate::Max(_) => int_or_null(quantities(&rows).into_iter().max()),
         Aggregate::Min(_) => int_or_null(quantities(&rows).into_iter().min()),
         Aggregate::PercentileDisc { fraction, .. } => percentile_disc(quantities(&rows), *fraction),
+        Aggregate::Mode(_) => mode(quantities(&rows)),
         Aggregate::CountDistinct(_) => {
             let mut seen = HashSet::new();
             for row in &rows {

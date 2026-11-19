@@ -82,7 +82,7 @@ false for the same reason.
 | `var_samp(c)`, `var_pop(c)`, `stddev_samp(c)`, `stddev_pop(c)` | the same, and a sum of squares | adding all three | subtracting all three |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
 | `count(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | merging the values in order | lowering the value's count |
-| `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank | lowering the value's count |
+| `percentile_disc(f) WITHIN GROUP (ORDER BY c)`, `mode() WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank, or to the value counted most | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
 Every state is a count or a sum, so every one both merges and takes a
@@ -93,13 +93,14 @@ can't be subtracted from exactly, so Straum refuses float columns.
 Two things follow that a spec's author can see. The first is memory. The
 first four rows cost a few numbers a cell. `min`, `max`, `percentile_disc`
 and `count(DISTINCT c)` cost by the distinct values in each cell. A
-percentile beside a `min` or `max` on its column costs nothing more. A
-`min` or `max` keeps a value in as few bytes as its cell's values need:
-`max(fare_amount)` per hour and dropoff zone keeps 14,943,826 fares of the
-[taxi trips](performance.md) in 76 MiB. A `count(DISTINCT c)` of numbers
-keeps them the same way, in fewer bytes than a `max`. One of `text`, `uuid`,
-`date` or `boolean` keeps a hash map per cell, over 15 times as many bytes
-in a test of 40 values a cell. Either holds every distinct value.
+percentile or mode beside a `min` or `max` on its column costs nothing
+more. A `min` or `max` keeps a value in as few bytes as its cell's
+values need: `max(fare_amount)` per hour and dropoff zone keeps
+14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
+`count(DISTINCT c)` of numbers keeps them the same way, in fewer bytes
+than a `max`. One of `text`, `uuid`, `date` or `boolean` keeps a hash
+map per cell, over 15 times as many bytes in a test of 40 values a
+cell. Either holds every distinct value.
 
 The second is rows counted twice. A dim that holds a key twice adds the
 fact row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
@@ -183,6 +184,8 @@ sorting them all. An ask over a long range of many values takes
 milliseconds where the others take microseconds: the median fare over the
 six months of [benchmark](performance.md) trips takes about 30 ms. A group
 of one cell is read in place, its values in order, with nothing gathered.
+A `mode()` gathers the same way and puts the values in order, so a value
+several cells hold is counted once, its counts added.
 A `count(DISTINCT c)` of numbers merges the values of several cells in
 order, holding one value of each cell at a time. One of other types unites
 them by reference, without copying.

@@ -21,8 +21,8 @@ Cell state is per input column, shared by measures, one enum with no
 accumulator trait. Sum and avg share a sum and a null count; the
 variances and standard deviations keep a sum of squares beside them,
 in the same state, so `sum` on their column adds nothing;
-`count(column)` keeps a null count; min, max and `percentile_disc`
-share value counts; `count(DISTINCT c)` keeps value counts of its own
+`count(column)` keeps a null count; min, max, `percentile_disc` and
+`mode()` share value counts; `count(DISTINCT c)` keeps value counts of its own
 while its column holds only numbers, and a hash map per cell from its
 first value of another type; `bool_and` and `bool_or` share counts of
 true and false. Filtered measures keep no state: a `FILTER` names rollup-key
@@ -54,9 +54,11 @@ passed over: it needs a rule for when, and an unpack per ask.
 value counts and picks rank `ceil(f * n)`, at least 1, computed in
 float8 as PostgreSQL does: 0.07 of 100 values is the 8th. Sketches
 were rejected: t-digest and KLL can't delete, and an estimate under a
-PostgreSQL name differs from PostgreSQL. `percentile_cont`, `median`,
-`mode` and `every` are refused by name, and `variance` and `stddev`
-for `var_samp` and `stddev_samp`.
+PostgreSQL name differs from PostgreSQL. `mode()` reads the same
+counts: the value counted most, the least of those tied, the first
+PostgreSQL meets in order. `percentile_cont`, `median` and `every` are
+refused by name, and `variance` and `stddev` for `var_samp` and
+`stddev_samp`.
 
 A variance is `(n * s2 - s1^2) / (n * (n - 1))`, or over `n^2` for
 `var_pop`, of the count, sum and sum of squares an ask merged; a

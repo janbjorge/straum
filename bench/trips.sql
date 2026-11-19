@@ -14,7 +14,8 @@ SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
        var_samp(trips.fare_amount) AS fare_variance,
        stddev_samp(trips.fare_amount) AS fare_deviation,
        percentile_disc(0.5) WITHIN GROUP (ORDER BY trips.fare_amount) AS median_fare,
-       percentile_disc(0.99) WITHIN GROUP (ORDER BY trips.fare_amount) AS p99_fare
+       percentile_disc(0.99) WITHIN GROUP (ORDER BY trips.fare_amount) AS p99_fare,
+       mode() WITHIN GROUP (ORDER BY trips.fare_amount) AS common_fare
 FROM public.yellow_trips AS trips
 LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
 GROUP BY 1, 2, 3, 4;

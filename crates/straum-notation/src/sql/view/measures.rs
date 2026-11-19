@@ -136,6 +136,15 @@ impl Walker {
                     filter,
                 });
             }
+            Some("mode") => {
+                let aggregate = self.mode(scope, function, &call);
+                let filter =
+                    self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
+                return Ok(Aggregated {
+                    aggregate: aggregate?,
+                    filter,
+                });
+            }
             Some("percentile_cont") => {
                 self.refuse(at, "percentile_cont, use percentile_disc,", function);
                 return Err(Reported);
@@ -241,12 +250,53 @@ impl Walker {
             self.refuse(at, "arguments, write one fraction,", function);
             Err(Reported)
         };
+        let column = self.ordered_column(scope, function, call, "percentile_disc");
+        Ok(Aggregate::PercentileDisc {
+            fraction: fraction?,
+            column: column?,
+        })
+    }
+
+    /// `mode() WITHIN GROUP (ORDER BY alias.column)`: no argument, the
+    /// column in the order, as PostgreSQL spells it.
+    fn mode(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+        call: &Call,
+    ) -> Result<Aggregate, Reported> {
+        let at = line(function);
+        self.reject_if_present(at, call.distinct, "DISTINCT outside count");
+        if !call.arguments.is_empty() {
+            self.refuse(
+                at,
+                "arguments, write mode() WITHIN GROUP (ORDER BY alias.column),",
+                function,
+            );
+        }
+        let column = self.ordered_column(scope, function, call, "mode()")?;
+        if !call.arguments.is_empty() {
+            return Err(Reported);
+        }
+        Ok(Aggregate::Mode(column))
+    }
+
+    /// The one column `WITHIN GROUP (ORDER BY alias.column)` names, for
+    /// `aggregate`, ascending as written.
+    fn ordered_column(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+        call: &Call,
+        aggregate: &str,
+    ) -> Result<Identifier, Reported> {
+        let at = line(function);
         let [order] = call.within_group else {
             let what = match call.within_group {
-                [] => "percentile_disc without WITHIN GROUP (ORDER BY alias.column)",
-                _ => "WITHIN GROUP of more than one column",
+                [] => format!("{aggregate} without WITHIN GROUP (ORDER BY alias.column)"),
+                _ => "WITHIN GROUP of more than one column".to_owned(),
             };
-            self.refuse(at, what, function);
+            self.refuse(at, &what, function);
             return Err(Reported);
         };
         let sql::OrderByExpr {
@@ -258,11 +308,7 @@ impl Walker {
         self.reject_if_present(at, sort.is_some(), "ASC, DESC or USING in WITHIN GROUP");
         self.reject_if_present(at, nulls_first.is_some(), "NULLS FIRST or LAST");
         self.reject_if_present(at, with_fill.is_some(), "WITH FILL");
-        let column = self.uncast_fact_column(scope, column, "an aggregated column");
-        Ok(Aggregate::PercentileDisc {
-            fraction: fraction?,
-            column: column?,
-        })
+        self.uncast_fact_column(scope, column, "an aggregated column")
     }
 
     /// A fraction from 0 to 1 as digits, with places after a point or

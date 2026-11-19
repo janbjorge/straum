@@ -17,6 +17,7 @@ mod closest;
 mod codes;
 mod column;
 mod date;
+mod gathered;
 mod hash;
 mod identifier;
 mod index;

@@ -269,7 +269,8 @@ SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
        avg(f.x) AS mean, count(DISTINCT f.x) AS uniq, sum(f.z_id) AS ids,
        count(f.x) AS known, bool_and(f.a) AS every_a, bool_or(f.a) AS any_a,
        var_samp(f.x) AS var_s, var_pop(f.x) AS var_p,
-       stddev_samp(f.x) AS sd_s, stddev_pop(f.x) AS sd_p
+       stddev_samp(f.x) AS sd_s, stddev_pop(f.x) AS sd_p,
+       mode() WITHIN GROUP (ORDER BY f.x) AS common
 FROM public.t AS f
 INNER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
@@ -299,6 +300,7 @@ GROUP BY 1, 2, 3, 4";
             &Aggregate::VarPop(id("x")),
             &Aggregate::StddevSamp(id("x")),
             &Aggregate::StddevPop(id("x")),
+            &Aggregate::Mode(id("x")),
         ]
     );
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);

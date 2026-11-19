@@ -390,6 +390,21 @@ fn one_measure_spelling() {
         ),
         (
             "count(*) AS orders",
+            "mode(orders.id) AS orders",
+            "arguments, write mode() WITHIN GROUP (ORDER BY alias.column), `mode(orders.id)`",
+        ),
+        (
+            "count(*) AS orders",
+            "mode() AS orders",
+            "mode() without WITHIN GROUP (ORDER BY alias.column) `mode()`",
+        ),
+        (
+            "count(*) AS orders",
+            "mode() WITHIN GROUP (ORDER BY orders.id DESC) AS orders",
+            "ASC, DESC or USING in WITHIN GROUP",
+        ),
+        (
+            "count(*) AS orders",
             "var_samp(DISTINCT orders.id) AS orders",
             "DISTINCT outside count `var_samp(DISTINCT orders.id)`",
         ),

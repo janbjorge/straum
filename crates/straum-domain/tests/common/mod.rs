@@ -1,5 +1,5 @@
 //! Helpers the test binaries share: builders for spec pieces, the SQL
-//! rules a reference needs (`=`, `percentile_disc`, the variances and an
+//! rules a reference needs (`=`, `percentile_disc`, `mode`, the variances and an
 //! ask's range), and a seeded random number source.
 
 // Every test binary compiles this module and uses only some of it.
@@ -48,6 +48,29 @@ pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
     let rank = (fraction * values.len() as f64).ceil() as usize;
     match values.get(rank.max(1) - 1) {
         Some(&value) => Value::Int(value),
+        None => Value::Null,
+    }
+}
+
+/// PostgreSQL's `mode()`: the value most rows hold, the least of those
+/// tied, as it walks the values sorted; null for none.
+pub fn mode(mut values: Vec<i128>) -> Value {
+    values.sort_unstable();
+    let mut best: Option<(i128, usize)> = None;
+    let mut start = 0;
+    while start < values.len() {
+        let mut end = start;
+        while end < values.len() && values[end] == values[start] {
+            end += 1;
+        }
+        let count = end - start;
+        if best.is_none_or(|(_, most)| count > most) {
+            best = Some((values[start], count));
+        }
+        start = end;
+    }
+    match best {
+        Some((value, _)) => Value::Int(value),
         None => Value::Null,
     }
 }

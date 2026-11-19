@@ -171,6 +171,10 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
         ),
         // Beside the fare's sum and the distance's average, so they share
         // one state; the tip's on its own.
+        // Beside the tip's min, max and percentiles, so it reads their
+        // counts; the distance's on its own.
+        new_measure("tip_mode", Aggregate::Mode(id("tip")), vec![]),
+        new_measure("distance_mode", Aggregate::Mode(id("dist")), vec![]),
         new_measure("fare_var", Aggregate::VarSamp(id("fare")), vec![]),
         new_measure("tip_var_pop", Aggregate::VarPop(id("tip")), vec![]),
         new_measure("distance_sd", Aggregate::StddevSamp(id("dist")), vec![]),
