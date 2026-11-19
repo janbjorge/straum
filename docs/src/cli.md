@@ -1,7 +1,7 @@
 # Command line
 
-`straum` is one binary with nine commands: `run`, `plan`, `copy`,
-`status`, `views`, `ask`, `shell`, `version` and `help`.
+`straum` is one binary with eight commands: `run`, `plan`, `status`,
+`views`, `ask`, `shell`, `version` and `help`.
 `straum <command> --help` prints a command's flags with their defaults.
 A flag takes its value as the next word or after `=`:
 `--url http://straum:8080` or `--url=http://straum:8080`. The examples
