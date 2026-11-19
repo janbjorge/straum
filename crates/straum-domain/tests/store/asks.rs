@@ -41,15 +41,12 @@ fn filter_values_are_of_their_column_type() {
         condition("shared", vec![Literal::Int(1)]),
         condition("pickup_borough", vec![Literal::Bool(true)]),
     ];
-    let errors: Vec<String> = (store.ask(&trips_filtered(wrong)).unwrap_err().iter())
-        .map(ToString::to_string)
-        .collect();
     assert_eq!(
-        errors,
+        store.ask(&trips_filtered(wrong)).unwrap_err(),
         [
-            r#"pay is an integer, so it can't be the text "1""#,
-            "shared is a boolean, so it can't be the integer 1",
-            "pickup_borough is text, so it can't be the boolean true",
+            wrong_type("pay", ColumnType::Int, lit("1")),
+            wrong_type("shared", ColumnType::Bool, Literal::Int(1)),
+            wrong_type("pickup_borough", ColumnType::Text, Literal::Bool(true)),
         ]
     );
 
@@ -62,9 +59,22 @@ fn filter_values_are_of_their_column_type() {
     types[PAY] = ColumnType::Numeric { scale: 2 };
     store.set_types("trips", &types).unwrap();
     assert_eq!(
-        store.ask(&pay).unwrap_err()[0].to_string(),
-        "pay is a numeric of scale 2, so it can't be the integer 1"
+        store.ask(&pay).unwrap_err(),
+        [wrong_type(
+            "pay",
+            ColumnType::Numeric { scale: 2 },
+            Literal::Int(1)
+        )]
     );
+}
+
+/// A filter value not of its key's type.
+fn wrong_type(key: &str, column: ColumnType, value: Literal) -> AskError {
+    AskError::WrongType {
+        key: id(key),
+        column,
+        value,
+    }
 }
 
 /// The trips whose `pay` is the value `text` spells.
@@ -96,8 +106,8 @@ fn dates_and_uuids_are_filtered_by_their_text() {
     assert_eq!(trips_paid(&store, "infinity"), Ok(Value::Int(1)));
     assert_eq!(trips_paid(&store, "2024-01-17"), Ok(Value::Int(0)));
     assert_eq!(
-        trips_paid(&store, "2024-1-15").unwrap_err()[0].to_string(),
-        r#"pay is a date, so it can't be the text "2024-1-15"; write a date as YYYY-MM-DD, such as 2024-01-15"#
+        trips_paid(&store, "2024-1-15").unwrap_err(),
+        [wrong_type("pay", ColumnType::Date, lit("2024-1-15"))]
     );
 
     let uuid = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
@@ -114,9 +124,8 @@ fn dates_and_uuids_are_filtered_by_their_text() {
         Ok(Value::Int(0))
     );
     assert_eq!(
-        trips_paid(&store, "2024-01-15").unwrap_err()[0].to_string(),
-        "pay is a uuid, so it can't be the text \"2024-01-15\"; write a uuid as lowercase hex \
-         in groups of 8-4-4-4-12, such as a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+        trips_paid(&store, "2024-01-15").unwrap_err(),
+        [wrong_type("pay", ColumnType::Uuid, lit("2024-01-15"))]
     );
 }
 

@@ -143,7 +143,7 @@ impl fmt::Display for SpecError {
                 key,
             } => write!(
                 f,
-                "view {fact}: WHERE filters on {key}, which names no key of the view"
+                "view {fact}: the view filters on {key}, which names no key of the view"
             ),
             SpecError::NoMeasures { fact } => write!(f, "view {fact}: no measures"),
         }

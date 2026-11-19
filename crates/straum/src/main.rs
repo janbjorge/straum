@@ -27,7 +27,7 @@ use std::thread;
 use rustyline::error::ReadlineError;
 use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
-use straum_http::QueryError;
+use straum_http::{AskSyntax, QueryError};
 use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, PgEnv, Postgres, Replication};
 
@@ -468,7 +468,12 @@ fn run(
         .spawn(move || run_writer(writer))
         .map_err(Failure::StartingWriter)?;
 
-    straum_http::serve_until_signal(listener, app, read_ask, definitions, say_stopping)
+    // Asks are Straum SQL: read and their errors worded by straum-notation.
+    let syntax = AskSyntax {
+        read: read_ask,
+        describe: straum_notation::describe_ask_error,
+    };
+    straum_http::serve_until_signal(listener, app, syntax, definitions, say_stopping)
         .map_err(Failure::Serving)?;
     log("stopped");
     // Leaving closes the replication connections, and PostgreSQL drops

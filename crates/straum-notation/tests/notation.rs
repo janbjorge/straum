@@ -7,8 +7,8 @@
 mod common;
 
 use common::{
-    BASE, ask_view_t, attribute, base, by_key, condition, edit, id, key_text, spec_errors,
-    sql_errors,
+    BASE, ask_view_t, attribute, base, by_key, condition, described, edit, id, key_text,
+    spec_errors, sql_errors,
 };
 use straum_domain::{Aggregate, ByKey, Fraction, Literal, RefKind, Spec, SpecError, Via, Width};
 use straum_notation::{SqlError, parse};
@@ -119,12 +119,11 @@ fn keys_go_by_their_select_name() {
         spec.check_ask(&ask_view_t(&["kind", "zone", "label"]))
             .is_ok()
     );
-    let shown: Vec<String> = (spec
-        .check_ask(&ask_view_t(&["a", "name", "z"]))
-        .unwrap_err()
-        .iter())
-    .map(ToString::to_string)
-    .collect();
+    let shown = described(
+        &spec
+            .check_ask(&ask_view_t(&["a", "name", "z"]))
+            .unwrap_err(),
+    );
     assert_eq!(
         shown,
         [

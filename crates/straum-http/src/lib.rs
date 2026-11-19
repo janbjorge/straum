@@ -5,7 +5,7 @@
 //! the views, `status.rs` the status; `ask.rs` and `json.rs` read an ask.
 //!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
-//!   query read by the `ReadAsk` that `serve` is given; the answer as JSON
+//!   query read by the `AskSyntax` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer,
 //!   503 while a table it reads isn't ready. With `Accept: text/plain` the
@@ -52,7 +52,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::App;
-use straum_domain::{Ask, Definition, Literal};
+use straum_domain::{Ask, AskError, Definition, Literal};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -86,6 +86,18 @@ impl fmt::Display for QueryError {
 /// written.
 pub type ReadAsk = fn(&str, &[Literal]) -> Result<Ask, Vec<QueryError>>;
 
+/// Says what is wrong with an ask that read but doesn't fit its view, in
+/// the words of the syntax it was written in.
+pub type DescribeAskError = fn(&AskError) -> String;
+
+/// The language asks are written in, which the binary picks: how to read
+/// one, and how to say what is wrong with one.
+#[derive(Debug, Clone, Copy)]
+pub struct AskSyntax {
+    pub read: ReadAsk,
+    pub describe: DescribeAskError,
+}
+
 /// Serves `app` on `listener`, and each view's `definitions`, until
 /// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
@@ -94,7 +106,7 @@ pub type ReadAsk = fn(&str, &[Literal]) -> Result<Ask, Vec<QueryError>>;
 pub async fn serve(
     listener: net::TcpListener,
     app: App,
-    read_ask: ReadAsk,
+    syntax: AskSyntax,
     definitions: Vec<Definition>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
@@ -114,7 +126,7 @@ pub async fn serve(
         match accepted {
             None => break,
             Some(Ok((stream, _))) => {
-                spawn_connection(stream, &app, read_ask, &definitions, &graceful);
+                spawn_connection(stream, &app, syntax, &definitions, &graceful);
             }
             Some(Err(_)) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
@@ -136,7 +148,7 @@ pub async fn serve(
 pub fn serve_until_signal(
     listener: net::TcpListener,
     app: App,
-    read_ask: ReadAsk,
+    syntax: AskSyntax,
     definitions: Vec<Definition>,
     stopping: fn(),
 ) -> io::Result<()> {
@@ -163,7 +175,7 @@ pub fn serve_until_signal(
         either_signal(&mut terminate_again, &mut interrupt_again).await;
         either_signal(&mut terminate_again, &mut interrupt_again).await;
     };
-    let served = serve(listener, app, read_ask, definitions, shutdown);
+    let served = serve(listener, app, syntax, definitions, shutdown);
     let result = runtime.block_on(until_done_or(served, second));
     // An answer still running on a blocking thread is not waited for.
     runtime.shutdown_background();
@@ -204,7 +216,7 @@ async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {
 fn spawn_connection(
     stream: TcpStream,
     app: &Arc<App>,
-    read_ask: ReadAsk,
+    syntax: AskSyntax,
     definitions: &Arc<[Definition]>,
     graceful: &GracefulShutdown,
 ) {
@@ -216,12 +228,7 @@ fn spawn_connection(
     // hyper takes the handler as a closure; each request gets its own
     // handle on the app and the definitions.
     let service = service_fn(move |request| {
-        routes::handle(
-            request,
-            Arc::clone(&app),
-            read_ask,
-            Arc::clone(&definitions),
-        )
+        routes::handle(request, Arc::clone(&app), syntax, Arc::clone(&definitions))
     });
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())

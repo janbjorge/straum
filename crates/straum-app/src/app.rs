@@ -683,14 +683,10 @@ impl fmt::Display for AnswerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AnswerError::NotReady => formatter.write_str("not ready"),
+            // Their words name Straum SQL, so the adapter that knows it
+            // says each (ADR-0002).
             AnswerError::Invalid(errors) => {
-                for (index, error) in errors.iter().enumerate() {
-                    if index > 0 {
-                        writeln!(formatter)?;
-                    }
-                    write!(formatter, "{error}")?;
-                }
-                Ok(())
+                write!(formatter, "errors in the ask: {}", errors.len())
             }
         }
     }

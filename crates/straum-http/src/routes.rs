@@ -1,6 +1,6 @@
 //! The route handlers: `handle` takes one request from the server loop in
 //! `lib.rs`, picks the handler by method and path, and returns the reply.
-//! An ask sent as JSON goes body, then `ask.rs`, then the `ReadAsk`, then
+//! An ask sent as JSON goes body, then `ask.rs`, then the `AskSyntax`, then
 //! the app on a blocking thread, then `answer.rs`; the other routes read the app and
 //! hand what they read to `status.rs` or `views.rs`, or reply with a
 //! view's definition as the spec wrote it.
@@ -18,7 +18,7 @@ use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Definition, Start, Window};
 
 use crate::json::quoted;
-use crate::{ReadAsk, answer, ask, status, views};
+use crate::{AskSyntax, DescribeAskError, answer, ask, status, views};
 
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
@@ -112,7 +112,7 @@ impl Format {
 pub(crate) async fn handle(
     request: Request<Incoming>,
     app: Arc<App>,
-    read_ask: ReadAsk,
+    syntax: AskSyntax,
     definitions: Arc<[Definition]>,
 ) -> Result<Reply, Infallible> {
     let (parts, body) = request.into_parts();
@@ -121,7 +121,7 @@ pub(crate) async fn handle(
         (&Method::POST, "/ask") => {
             let format = Format::of(accept, Format::Json);
             if is_json(parts.headers.get(CONTENT_TYPE)) {
-                post_ask(body, &app, read_ask, format).await
+                post_ask(body, &app, syntax, format).await
             } else {
                 let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
                 format.errors(StatusCode::UNSUPPORTED_MEDIA_TYPE, &[error])
@@ -146,7 +146,7 @@ pub(crate) async fn handle(
             let named = &path[ROWS_PREFIX.len()..];
             match named.strip_suffix(SPEC_SUFFIX) {
                 Some(view) => get_spec(&definitions, view),
-                None => get_rows(&app, named, parts.uri.query()).await,
+                None => get_rows(&app, syntax.describe, named, parts.uri.query()).await,
             }
         }
         (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET"),
@@ -167,7 +167,7 @@ fn is_json(content_type: Option<&HeaderValue>) -> bool {
     media_type.eq_ignore_ascii_case(JSON)
 }
 
-async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) -> Reply {
+async fn post_ask(body: Incoming, app: &App, syntax: AskSyntax, format: Format) -> Reply {
     let start = Instant::now();
     let collected = Limited::new(body, MAX_ASK_BYTES).collect();
     let Ok(collected) = tokio::time::timeout(BODY_TIMEOUT, collected).await else {
@@ -191,7 +191,7 @@ async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) 
     let parsing = Instant::now();
     // Reading a 1 MiB ask takes time an async thread can't spare: the
     // health routes queue behind it.
-    let read = tokio::task::spawn_blocking(move || read_body(&body, read_ask)).await;
+    let read = tokio::task::spawn_blocking(move || read_body(&body, syntax)).await;
     let asked = match read {
         Ok(Ok(asked)) => asked,
         Ok(Err(errors)) => return format.errors(StatusCode::BAD_REQUEST, &errors),
@@ -201,16 +201,24 @@ async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) 
         format,
         window: None,
     };
-    answer(app, asked, writing, parsing.elapsed(), start).await
+    answer(
+        app,
+        asked,
+        writing,
+        syntax.describe,
+        parsing.elapsed(),
+        start,
+    )
+    .await
 }
 
 /// The ask a body holds, or every error in it.
-fn read_body(body: &Bytes, read_ask: ReadAsk) -> Result<Ask, Vec<String>> {
+fn read_body(body: &Bytes, syntax: AskSyntax) -> Result<Ask, Vec<String>> {
     let sent = match ask::read(body) {
         Ok(sent) => sent,
         Err(errors) => return Err(lines(&errors)),
     };
-    match read_ask(&sent.query, &sent.parameters) {
+    match (syntax.read)(&sent.query, &sent.parameters) {
         Ok(asked) => Ok(asked),
         Err(errors) => Err(lines(&errors)),
     }
@@ -246,7 +254,7 @@ fn get_spec(definitions: &[Definition], view: &str) -> Reply {
     )
 }
 
-async fn get_rows(app: &App, view: &str, query: Option<&str>) -> Reply {
+async fn get_rows(app: &App, describe: DescribeAskError, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
     let Some(asked) = app.rows_ask(view) else {
         return text(
@@ -262,7 +270,7 @@ async fn get_rows(app: &App, view: &str, query: Option<&str>) -> Reply {
         format: Format::Text,
         window: Some(window),
     };
-    answer(app, asked, writing, Duration::ZERO, start).await
+    answer(app, asked, writing, describe, Duration::ZERO, start).await
 }
 
 /// The rows `GET /views/NAME` writes, from `start` and `count` in its
@@ -329,6 +337,7 @@ async fn answer(
     app: &App,
     asked: Ask,
     writing: Writing,
+    describe: DescribeAskError,
     parse_time: Duration,
     start: Instant,
 ) -> Reply {
@@ -343,7 +352,7 @@ async fn answer(
     let answered = tokio::task::spawn_blocking(move || answer_timed(&app, &asked, writing)).await;
     match answered {
         Ok(Ok(timed)) => answered_reply(timed, format, parse_time, start),
-        Ok(Err(error)) => answer_error(&error, format),
+        Ok(Err(error)) => answer_error(&error, describe, format),
         Err(_) => failed(format),
     }
 }
@@ -411,9 +420,15 @@ fn answered_reply(timed: Timed, format: Format, parse_time: Duration, start: Ins
     reply
 }
 
-fn answer_error(error: &AnswerError, format: Format) -> Reply {
+fn answer_error(error: &AnswerError, describe: DescribeAskError, format: Format) -> Reply {
     match error {
-        AnswerError::Invalid(invalid) => format.errors(StatusCode::BAD_REQUEST, invalid),
+        AnswerError::Invalid(invalid) => {
+            let mut lines = Vec::with_capacity(invalid.len());
+            for ask_error in invalid {
+                lines.push(describe(ask_error));
+            }
+            format.errors(StatusCode::BAD_REQUEST, &lines)
+        }
         AnswerError::NotReady => format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error]),
     }
 }

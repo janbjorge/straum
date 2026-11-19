@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Literal};
-use straum_http::{QueryError, ReadAsk};
+use straum_http::{AskSyntax, QueryError, ReadAsk};
 use straum_notation::SqlError;
 use tokio::sync::oneshot;
 
@@ -56,6 +56,16 @@ fn serve(app: App) -> Server {
 }
 
 fn serve_with(app: App, read_ask: ReadAsk) -> Server {
+    serve_in(
+        app,
+        AskSyntax {
+            read: read_ask,
+            describe: straum_notation::describe_ask_error,
+        },
+    )
+}
+
+fn serve_in(app: App, syntax: AskSyntax) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = oneshot::channel::<()>();
@@ -68,7 +78,7 @@ fn serve_with(app: App, read_ask: ReadAsk) -> Server {
         runtime.block_on(straum_http::serve(
             listener,
             app,
-            read_ask,
+            syntax,
             definitions,
             async {
                 stopped.await.ok();

@@ -36,9 +36,13 @@ Six crates, dependencies inward only, enforced by
   or a change needs is a plain struct, enum or function.
 - `straum-app` holds the use cases and the one port, `Source`, the
   trait PostgreSQL sits behind.
-- The adapters never meet: `straum-http` is handed a query reader by
-  the binary (`ReadAsk` in `straum-http`), so HTTP never knows Straum
+- The adapters never meet: `straum-http` is handed the ask syntax by
+  the binary (`AskSyntax` in `straum-http`: a reader and the words for
+  `AskError`, both from `straum-notation`), so HTTP never knows Straum
   SQL.
+- The domain holds what an ask means, not how it is written: its
+  errors are data, worded in `straum-notation`
+  (`scripts/check-domain-syntax.py`).
 
 Data moves the other way at run time: PostgreSQL feeds `straum-pg`,
 which hands commits to the writer, which applies them to the store;

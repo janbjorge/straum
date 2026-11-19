@@ -8,7 +8,7 @@ use crate::rows::base_trip_with;
 use crate::views::{spec, trip_types, typed};
 use crate::{AT, END, FARE, PAY, START, TIP, TOLLED};
 use straum_domain::{
-    Ask, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Identifier, Literal,
+    Ask, AskError, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Identifier, Literal,
     MeasureCondition, Start, Store, Window,
 };
 
@@ -199,29 +199,23 @@ fn each_wrong_condition_says_what_is_wrong() {
             having("fare", Greater, decimal(1, 39)),
         ],
     );
-    let mut errors = Vec::new();
+    // What each error says is straum-notation's; here, which errors.
+    let mut variants = Vec::new();
     for error in store.ask(&wrong).unwrap_err() {
-        errors.push(error.to_string());
+        variants.push(variant(&error));
     }
     assert_eq!(
-        errors,
+        variants,
         [
-            "fare is a measure; compare it in HAVING",
-            "pay is a key; filter it in WHERE",
-            "HAVING compares tip_max, which the ask doesn't select",
-            "unknown measure colour; the view's measures are trips, fare, tip_min, \
-             tip_max, tip_median, tip_lowest, tip_highest, fare_p07, card_tip_p90, \
-             tip_mode, distance_mode, distinct_fares, distinct_fare_count, \
-             card_distinct_tips, card_distinct_tip, fare_var, tip_var_pop, distance_sd, card_tip_sd_pop, \
-             tip_avg, distance, riders, pickups, card, shared_fare, mq_fare, m_riders, \
-             far_tip, zone_four_distance, tipped, far_riders, all_tolled, any_tolled, \
-             card_tolled",
-            r#"fare is a number, so it can't be compared with the text "1""#,
-            "trips is a number, so it can't be compared with the boolean true",
-            "all_tolled is a boolean, so it can't be compared with the integer 1",
-            "all_tolled is a boolean; compare it with = or <>, not <=",
-            "fare can't be compared with the number 0.000000000000000000000000000000000000001: \
-             at most 38 digits after the point",
+            "MeasureInWhere",
+            "KeyInHaving",
+            "HavingNotSelected",
+            "UnknownMeasure",
+            "NotANumber",
+            "NotANumber",
+            "NotABoolean",
+            "BooleanOrder",
+            "TooManyDigits",
         ]
     );
     let right = ask(
@@ -235,21 +229,11 @@ fn each_wrong_condition_says_what_is_wrong() {
     assert!(store.ask(&right).is_ok());
 }
 
-#[test]
-fn comparisons_print_as_an_ask_writes_them() {
-    let comparisons = [
-        Comparison::Equal,
-        Comparison::NotEqual,
-        Comparison::Less,
-        Comparison::LessOrEqual,
-        Comparison::Greater,
-        Comparison::GreaterOrEqual,
-    ];
-    let mut written = Vec::new();
-    for comparison in comparisons {
-        written.push(comparison.to_string());
-    }
-    assert_eq!(written, ["=", "<>", "<", "<=", ">", ">="]);
+/// The name of `error`'s variant.
+fn variant(error: &AskError) -> String {
+    let debug = format!("{error:?}");
+    let name = debug.split([' ', '(', '{']).next().unwrap_or_default();
+    name.to_owned()
 }
 
 /// The rows of `total` a window shows, as a Python slice gives them:

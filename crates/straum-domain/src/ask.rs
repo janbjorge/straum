@@ -11,7 +11,7 @@ use crate::aggregate::Answers;
 use crate::closest::closest;
 use crate::identifier::Identifier;
 use crate::spec::{Condition, Fact, Literal, Spec};
-use crate::value::{ColumnType, MAX_SCALE, decimal};
+use crate::value::{ColumnType, MAX_SCALE};
 use crate::width::Width;
 
 /// One `SELECT` over a view: its measures, the keys it groups by, its
@@ -67,20 +67,6 @@ impl Comparison {
             Comparison::Greater => order == Ordering::Greater,
             Comparison::GreaterOrEqual => order != Ordering::Less,
         }
-    }
-}
-
-/// As the ask writes it.
-impl fmt::Display for Comparison {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Comparison::Equal => "=",
-            Comparison::NotEqual => "<>",
-            Comparison::Less => "<",
-            Comparison::LessOrEqual => "<=",
-            Comparison::Greater => ">",
-            Comparison::GreaterOrEqual => ">=",
-        })
     }
 }
 
@@ -376,21 +362,6 @@ impl Instead {
         }
         Instead::Every(every)
     }
-
-    /// `; did you mean x?`, or `; the {kind} are a, b`, after an error.
-    fn write(&self, formatter: &mut fmt::Formatter<'_>, kind: &str) -> fmt::Result {
-        match self {
-            Instead::Closest(name) => write!(formatter, "; did you mean {name}?"),
-            Instead::Every(names) if names.is_empty() => Ok(()),
-            Instead::Every(names) => {
-                let mut texts = Vec::with_capacity(names.len());
-                for name in names {
-                    texts.push(name.as_str());
-                }
-                write!(formatter, "; the {kind} are {}", texts.join(", "))
-            }
-        }
-    }
 }
 
 /// One thing wrong with an ask.
@@ -478,131 +449,6 @@ pub enum AskError {
         at: i64,
         width: Width,
     },
-}
-
-impl fmt::Display for AskError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AskError::UnknownView { name, instead } => {
-                write!(f, "unknown view {name}")?;
-                instead.write(f, "views")
-            }
-            AskError::UnknownMeasure { name, instead } => {
-                write!(f, "unknown measure {name}")?;
-                instead.write(f, "view's measures")
-            }
-            AskError::UnknownKey { name, instead } => {
-                write!(f, "{name} is not a key of the view")?;
-                instead.write(f, "view's keys")
-            }
-            AskError::KeyNotGrouped(name) => write!(f, "{name} is a key; add it to GROUP BY"),
-            AskError::NoMeasures => write!(f, "no measures asked"),
-            AskError::TimeKeyTwice => write!(f, "more than one time key"),
-            AskError::DateBinOwnWidth { name, width } => write!(
-                f,
-                "date_bin('{width}', {name}) is the view's own width; write {name}"
-            ),
-            AskError::NotTime { name, time } => write!(
-                f,
-                "{name} is not the view's time; date_bin and the range read {time}"
-            ),
-            AskError::TimeInWhere(name) => write!(
-                f,
-                "{name} is the view's time; bound it with {name} >= and {name} <"
-            ),
-            AskError::WidthNotKept { width, kept } => write_not_kept(f, *width, kept),
-            AskError::AskedTwice(name) => write!(f, "{name} asked twice"),
-            AskError::MeasureInWhere(name) => {
-                write!(f, "{name} is a measure; compare it in HAVING")
-            }
-            AskError::KeyInHaving(name) => write!(f, "{name} is a key; filter it in WHERE"),
-            AskError::HavingNotSelected(name) => {
-                write!(f, "HAVING compares {name}, which the ask doesn't select")
-            }
-            AskError::NotANumber { measure, value } => {
-                write_incomparable(f, measure, "number", value)
-            }
-            AskError::NotABoolean { measure, value } => {
-                write_incomparable(f, measure, "boolean", value)
-            }
-            AskError::BooleanOrder {
-                measure,
-                comparison,
-            } => write!(
-                f,
-                "{measure} is a boolean; compare it with = or <>, not {comparison}"
-            ),
-            AskError::TooManyDigits { measure, value } => {
-                let value = described(value);
-                write!(
-                    f,
-                    "{measure} can't be compared with {value}: \
-                     at most {MAX_SCALE} digits after the point"
-                )
-            }
-            AskError::WrongType { key, column, value } => {
-                let value = described(value);
-                write!(f, "{key} is {column}, so it can't be {value}")?;
-                match column.spelling() {
-                    Some(spelling) => write!(f, "; {spelling}"),
-                    None => Ok(()),
-                }
-            }
-            AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
-            AskError::RangeUnaligned { at, width } => write_unaligned(f, *at, *width),
-        }
-    }
-}
-
-impl std::error::Error for AskError {}
-
-/// A HAVING value of another kind than its measure's.
-fn write_incomparable(
-    formatter: &mut fmt::Formatter<'_>,
-    measure: &Identifier,
-    kind: &str,
-    value: &Literal,
-) -> fmt::Result {
-    let value = described(value);
-    write!(
-        formatter,
-        "{measure} is a {kind}, so it can't be compared with {value}"
-    )
-}
-
-/// [`AskError::WidthNotKept`], naming every width the view keeps.
-fn write_not_kept(formatter: &mut fmt::Formatter<'_>, width: Width, kept: &[Width]) -> fmt::Result {
-    let mut texts = Vec::with_capacity(kept.len());
-    for kept_width in kept {
-        texts.push(kept_width.to_string());
-    }
-    write!(
-        formatter,
-        "date_bin width '{width}' is not kept by the view; it keeps {}",
-        texts.join(", ")
-    )
-}
-
-/// [`AskError::RangeUnaligned`], with the edges on either side, so the
-/// next try needn't work out the grid. Past the last edge `i64` holds,
-/// only the one before.
-fn write_unaligned(formatter: &mut fmt::Formatter<'_>, at: i64, width: Width) -> fmt::Result {
-    write!(formatter, "bound {at} is not on a {width} bucket edge")?;
-    let before = width.bucket_start(at);
-    match before.checked_add(i64::from(width.seconds)) {
-        Some(after) => write!(formatter, "; the nearest are {before} and {after}"),
-        None => write!(formatter, "; the nearest before it is {before}"),
-    }
-}
-
-/// A value as an error names it.
-fn described(value: &Literal) -> String {
-    match value {
-        Literal::Int(integer) => format!("the integer {integer}"),
-        Literal::Text(text) => format!("the text {text:?}"),
-        Literal::Bool(boolean) => format!("the boolean {boolean}"),
-        Literal::Decimal { units, scale } => format!("the number {}", decimal(*units, *scale)),
-    }
 }
 
 /// As an answer names its column.

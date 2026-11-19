@@ -7,7 +7,7 @@ mod common;
 
 use common::{
     BASE, FEB, JAN, any_contains, any_message, ask_view_t, attribute, base, by_key, condition,
-    edit, error_lines, id, key_text, rejects, spec_errors, sql_errors, strings,
+    described, edit, error_lines, id, key_text, rejects, spec_errors, sql_errors, strings,
 };
 use straum_domain::{Ask, AskError, AskKey, ByKey, Instead, Literal, Spec, SpecError, Via};
 use straum_notation::{Error, SqlError, parse};
@@ -815,6 +815,6 @@ fn checked(spec: &Spec, query: &str, parameters: &[Literal]) -> Result<(), Vec<S
     let ask = straum_notation::parse_ask(query, parameters).unwrap();
     match spec.check_ask(&ask) {
         Ok(_) => Ok(()),
-        Err(errors) => Err(strings(&errors)),
+        Err(errors) => Err(described(&errors)),
     }
 }

@@ -193,8 +193,6 @@ fn answer_error_display() {
         },
         AskError::NoMeasures,
     ]);
-    assert_eq!(
-        invalid.to_string(),
-        "unknown measure nope\nno measures asked"
-    );
+    // Each error's words name Straum SQL, so straum-notation says them.
+    assert_eq!(invalid.to_string(), "errors in the ask: 2");
 }

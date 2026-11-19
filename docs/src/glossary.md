@@ -141,6 +141,11 @@ the end are open.
   ([Asks](asks.md)). `straum-http` calls the parsed form `asked`.
 - **Query**: an ask's one `SELECT` over a view
   ([The query](asks.md#the-query)).
+- **Ask error** (`AskError`): one thing wrong with an ask that read but
+  doesn't fit its view; data in the domain, worded by
+  `describe_ask_error` in `straum-notation`.
+- **Ask syntax** (`AskSyntax`): what the binary hands `straum-http`:
+  how to read an ask (`ReadAsk`) and how to word its errors.
 - **Parameter** (`Literal`): a `$n` value of an ask
   ([Parameters](asks.md#parameters)).
 - **Literal** (`Literal`): a constant in a spec's `FILTER` or `WHERE`.

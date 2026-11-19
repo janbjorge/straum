@@ -1,6 +1,6 @@
 # ADR-0002: Crates depend inward around a synchronous core
 
-Status: Accepted 2026-11-10; revised 2026-11-17
+Status: Accepted 2026-11-10; revised 2026-11-19
 
 ## Context
 
@@ -18,9 +18,15 @@ Straum is clean architecture as Cargo crates: `straum-domain`, with no
 dependencies and no I/O; `straum-app`, with the use cases and the
 ports; the adapters `straum-notation`, `straum-pg` and `straum-http`;
 and the `straum` binary as composition root. Crates depend inward only,
-enforced by `scripts/check-layers.py`. Traits exist only at the port
-(`Source`); the per-row path is concrete structs, enums and
-functions.
+enforced by `scripts/check-layers.py`. The domain holds what a spec and
+an ask mean, never Straum SQL's syntax: no keyword, function or
+operator of it in a domain string, enforced by
+`scripts/check-domain-syntax.py`. An `AskError` is data; straum-notation
+words it, and the binary hands those words to straum-http beside the
+ask reader (`AskSyntax`). A dependency check alone let ask syntax
+collect in the domain's error text: 13 strings at e4e18d1.
+Traits exist only at the port (`Source`); the per-row path is concrete
+structs, enums and functions.
 
 Straum is synchronous. `App` is a core that never waits, driven by a
 `Writer` loop that does the I/O and applies commits in order.
@@ -46,7 +52,8 @@ the last two are the next step if the lock ever matters.
 - A new adapter touches only its crate and the composition root.
 - Test helpers can't cross crates, so small ones (`Rng`, `id()`) are
   copied per crate. `straum-http` knows no Straum SQL; the binary
-  hands it a reader.
+  hands it a reader and the words for an ask's errors.
+- `AskError` has no `Display`: the crate that knows the syntax says it.
 - Readers never wait on PostgreSQL, and asks on other tables go on
   during a load.
 - A panic aborts the process, since the store may be half written. A

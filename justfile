@@ -34,9 +34,9 @@ changed := `{ git diff --name-only HEAD -- crates; git ls-files -o --exclude-sta
 default:
     @just --list
 
-# fmt, clippy, test and layers for the changed crates
+# fmt, clippy, test, layers and domain syntax for the changed crates
 [group('check')]
-check crates=changed: (_named crates) fmt (lint crates) (test crates) layers
+check crates=changed: (_named crates) fmt (lint crates) (test crates) layers domain-syntax
 
 # Format the workspace
 [group('check')]
@@ -62,6 +62,11 @@ cov crates=changed: (_named crates)
 [group('check')]
 layers:
     scripts/check-layers.py
+
+# No Straum SQL in straum-domain's strings
+[group('check')]
+domain-syntax:
+    scripts/check-domain-syntax.py
 
 # Physical stream against random workloads, as CI's correctness job
 [group('check')]

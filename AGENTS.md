@@ -12,6 +12,7 @@ cargo clippy -p <crate> --all-targets -- -D warnings
 cargo test -p <crate>
 cargo llvm-cov -p <crate> --all-targets --fail-under-lines 98
 scripts/check-layers.py
+scripts/check-domain-syntax.py
 ```
 
 Coverage: touched crates plus crates whose tests exercise them
@@ -38,7 +39,8 @@ which the `usage` view over `public.events AS e` and
 - Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
 
 The `justfile` is the entry point to every tool: `just check`, `just fmt`,
-`just lint`, `just test`, `just cov`, `just layers`, `just correctness`,
+`just lint`, `just test`, `just cov`, `just layers`, `just domain-syntax`,
+`just correctness`,
 `just chart`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,
@@ -97,6 +99,11 @@ change.
   lacks.
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
+- `straum-domain` holds what a spec and an ask mean, never how Straum
+  SQL writes them: no keyword, function or operator of it in a domain
+  string, error text included. Its errors are data; `straum-notation`
+  words them (`describe_ask_error`), and the binary hands that to
+  `straum-http`. `scripts/check-domain-syntax.py` enforces it.
 - No `unsafe`, no macros of our own, traits only at ports. Two
   exceptions: the counting allocators in `straum-domain/tests/cost.rs`
   and `straum-pg/src/wal/test_support.rs` (ADR-0013).
@@ -120,7 +127,8 @@ change.
   several test binaries share, where `#[expect]` fails in the binary
   that uses all of it.
 - Errors: hand-written enums with `Display` and `From` impls. No
-  `thiserror`, no `anyhow`. Input never panics.
+  `thiserror`, no `anyhow`. Input never panics. The one exception is
+  `AskError`, whose words name Straum SQL: `straum-notation` says it.
 - The Straum SQL walker rejects anything it doesn't list, naming the
   construct. One spelling per meaning, nothing inferred (ADR-0004).
 - Only `straum-http` runs tokio.

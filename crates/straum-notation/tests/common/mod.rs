@@ -8,9 +8,10 @@
 use std::fmt;
 
 use straum_domain::{
-    Ask, AskKey, Attribute, ByKey, Condition, Identifier, KeyPart, Literal, Spec, SpecError,
+    Ask, AskError, AskKey, Attribute, ByKey, Condition, Identifier, KeyPart, Literal, Spec,
+    SpecError,
 };
-use straum_notation::{Error, SqlError, parse};
+use straum_notation::{Error, SqlError, describe_ask_error, parse};
 
 /// 2024-01-01, 00:00 UTC.
 pub const JAN: i64 = 1_704_067_200;
@@ -64,6 +65,15 @@ pub fn attribute(name: &str, column: &str) -> Attribute {
 pub fn edit(text: &str, from: &str, to: &str) -> String {
     assert!(text.contains(from), "{from}");
     text.replacen(from, to, 1)
+}
+
+/// Each ask error as a client reads it.
+pub fn described(errors: &[AskError]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(errors.len());
+    for error in errors {
+        lines.push(describe_ask_error(error));
+    }
+    lines
 }
 
 /// Each error as printed.

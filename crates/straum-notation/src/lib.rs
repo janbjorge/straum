@@ -3,19 +3,22 @@
 //! parses the text into a tree; the walker in `sql/` reads the tree into
 //! the domain's dims, facts and asks; `Spec::new` then checks the views
 //! against each other. `definitions` cuts the text into each view's
-//! statement as written, for a reader to see.
+//! statement as written, for a reader to see. `describe_ask_error` says
+//! what is wrong with an ask in Straum SQL's words.
 //!
 //! A view's time is `buckets(column, widths...)`, a function PostgreSQL
 //! lacks: Straum never sends a view to PostgreSQL, so it needn't have it.
 
 #![forbid(unsafe_code)]
 
+mod ask_error;
 mod sql;
 
 use std::fmt;
 
 use straum_domain::{Definition, Spec, SpecError};
 
+pub use ask_error::{comparison_text, describe_ask_error};
 pub use sql::{SqlError, parse_ask};
 
 /// Why a spec was refused: what the walker found wrong, or failing that,

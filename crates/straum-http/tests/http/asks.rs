@@ -10,13 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use straum_app::Step;
-use straum_domain::{Ask, Identifier, Literal};
-use straum_http::QueryError;
+use straum_domain::{Ask, AskError, Identifier, Literal};
+use straum_http::{AskSyntax, QueryError};
 
 use crate::fake::{COMMIT, HOUR, JAN_1, loaded, writer};
 use crate::{
     Headers, Reply, ask, call, call_as_text, first_hour, header, read_reply, request, request_with,
-    rows_of, send, serve, serve_with, started,
+    rows_of, send, serve, serve_in, serve_with, started,
 };
 
 const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fare_max \
@@ -592,6 +592,51 @@ fn reads_asks_with_the_reader_it_is_given() {
     let reply = call(server.address, "POST", "/ask", ANY_QUERY);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert_eq!(rows_of(&reply.body), r#"[{"trips":4}]"#);
+    server.stop();
+}
+
+/// Reads every ask as one for a measure the view lacks.
+#[expect(clippy::unnecessary_wraps, reason = "a ReadAsk returns a Result")]
+fn read_unknown_measure(_: &str, _: &[Literal]) -> Result<Ask, Vec<QueryError>> {
+    let mut ask = trips_from(JAN_1);
+    ask.measures = vec![Identifier::new("nope").unwrap()];
+    Ok(ask)
+}
+
+/// Says each ask error by its variant, as no syntax would.
+fn describe_by_variant(error: &AskError) -> String {
+    let debug = format!("{error:?}");
+    let variant = debug.split([' ', '(', '{']).next().unwrap_or_default();
+    format!("variant {variant}")
+}
+
+/// An ask that reads but doesn't fit its view is worded by the syntax
+/// the server was given, so HTTP holds no Straum SQL of its own.
+#[test]
+fn ask_errors_are_worded_by_the_syntax_it_is_given() {
+    let writer = loaded();
+    let server = serve_in(
+        writer.app().clone(),
+        AskSyntax {
+            read: read_unknown_measure,
+            describe: describe_by_variant,
+        },
+    );
+    let reply = call(server.address, "POST", "/ask", ANY_QUERY);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (400, r#"{"errors":["variant UnknownMeasure"]}"#)
+    );
+    server.stop();
+    let server = serve_with(writer.app().clone(), read_unknown_measure);
+    let reply = call(server.address, "POST", "/ask", ANY_QUERY);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (
+            400,
+            r#"{"errors":["unknown measure nope; the view's measures are trips, fare, fare_avg, fare_max"]}"#
+        )
+    );
     server.stop();
 }
 

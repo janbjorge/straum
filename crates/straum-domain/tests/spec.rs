@@ -464,7 +464,7 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     unknown_filter.filter[0].key = id("n");
     assert_eq!(
         refused(unknown_filter),
-        ["view t: WHERE filters on n, which names no key of the view"]
+        ["view t: the view filters on n, which names no key of the view"]
     );
 }
 
@@ -833,59 +833,9 @@ fn an_open_end_needs_no_bound_and_the_other_is_still_checked() {
     );
 }
 
+/// An answer names a key's column by the name the ask gave it.
 #[test]
-fn ask_errors_display() {
-    let cases = [
-        (
-            AskError::UnknownView {
-                name: id("nope"),
-                instead: Instead::Every(vec![]),
-            },
-            "unknown view nope",
-        ),
-        (
-            AskError::UnknownView {
-                name: id("tirps"),
-                instead: Instead::Closest(id("trips")),
-            },
-            "unknown view tirps; did you mean trips?",
-        ),
-        (
-            AskError::UnknownMeasure {
-                name: id("tips"),
-                instead: Instead::Every(vec![id("n"), id("fare")]),
-            },
-            "unknown measure tips; the view's measures are n, fare",
-        ),
-        (
-            AskError::UnknownKey {
-                name: id("fare"),
-                instead: Instead::Every(vec![id("bucket"), id("a")]),
-            },
-            "fare is not a key of the view; the view's keys are bucket, a",
-        ),
-        (
-            AskError::KeyNotGrouped(id("name")),
-            "name is a key; add it to GROUP BY",
-        ),
-        (AskError::NoMeasures, "no measures asked"),
-        (AskError::TimeKeyTwice, "more than one time key"),
-        (AskError::AskedTwice("n".into()), "n asked twice"),
-        (
-            AskError::RangeEmpty { from: 2, to: 1 },
-            "empty range [2, 1)",
-        ),
-        (
-            AskError::RangeUnaligned {
-                at: 60,
-                width: Width { seconds: 900 },
-            },
-            "bound 60 is not on a 15 minutes bucket edge; the nearest are 0 and 900",
-        ),
-    ];
-    for (error, shown) in cases {
-        assert_eq!(error.to_string(), shown);
-    }
+fn ask_keys_print_their_names() {
     assert_eq!(AskKey::Key(id("bucket")).to_string(), "bucket");
     let days = AskKey::WiderBucket {
         name: id("bucket"),
@@ -894,44 +844,6 @@ fn ask_errors_display() {
     assert_eq!(days.to_string(), "bucket");
     assert_eq!(days.name(), &id("bucket"));
     assert_eq!(AskKey::Key(id("a")).name(), &id("a"));
-}
-
-#[test]
-fn width_and_range_errors_display() {
-    let cases = [
-        (
-            AskError::DateBinOwnWidth {
-                name: id("bucket"),
-                width: Width { seconds: 3_600 },
-            },
-            "date_bin('1 hour', bucket) is the view's own width; write bucket",
-        ),
-        (
-            AskError::WidthNotKept {
-                width: Width { seconds: 2 * DAY },
-                kept: vec![Width { seconds: 3_600 }, Width { seconds: DAY }],
-            },
-            "date_bin width '2 days' is not kept by the view; it keeps 1 hour, 1 day",
-        ),
-        (
-            AskError::RangeUnaligned {
-                at: -60,
-                width: Width { seconds: WEEK },
-            },
-            "bound -60 is not on a 7 days bucket edge; the nearest are -604800 and 0",
-        ),
-        (
-            AskError::RangeUnaligned {
-                at: i64::MAX,
-                width: Width { seconds: 900 },
-            },
-            "bound 9223372036854775807 is not on a 15 minutes bucket edge; \
-             the nearest before it is 9223372036854775800",
-        ),
-    ];
-    for (error, shown) in cases {
-        assert_eq!(error.to_string(), shown);
-    }
 }
 
 #[test]
