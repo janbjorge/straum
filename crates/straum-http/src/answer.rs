@@ -111,7 +111,8 @@ pub(crate) fn range_errors(ask: &Ask) -> Vec<RangeError> {
 /// body grows by doubling.
 const MAX_RESERVE: usize = 64 << 20;
 
-/// The answer as a JSON body; the LSN is the caller's to send.
+/// The answer as a JSON body, ending in a newline as `--json` prints
+/// it; the LSN is the caller's to send.
 pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let Answered { answer, as_of, .. } = answered;
     let mut names = Vec::with_capacity(answer.columns.len());
@@ -135,7 +136,7 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
             out.reserve(rows_to_come.min(MAX_RESERVE));
         }
     }
-    out.push_str("]}");
+    out.push_str("]}\n");
     out.into_bytes()
 }
 
@@ -522,7 +523,7 @@ mod tests {
         let body = write(&answered(rows));
         assert!(body.len() > long.len() && body.capacity() < 2 * MAX_RESERVE);
         let short = write(&answered(vec![row(Datum::Bool(true), Value::Int(1))]));
-        assert!(short.ends_with(b"]}"));
+        assert!(short.ends_with(b"]}\n"));
     }
 
     /// A row in the second day of 1970.
@@ -545,7 +546,8 @@ mod tests {
             concat!(
                 r#"{"as_of":"1970-01-01T00:00:00Z","rows":["#,
                 r#"{"bucket":"1970-01-02T00:00:00Z","shared":true,"fare":1234.56},"#,
-                r#"{"bucket":"1970-01-02T00:00:00Z","shared":null,"fare":null}]}"#
+                r#"{"bucket":"1970-01-02T00:00:00Z","shared":null,"fare":null}]}"#,
+                "\n"
             )
         );
     }
@@ -763,7 +765,7 @@ bucket | shared | fare
             ..answered(Vec::new())
         };
         let json = String::from_utf8(write(&answered)).unwrap();
-        assert_eq!(json, r#"{"as_of":"1970-01-01T00:00:00Z","rows":[]}"#);
+        assert_eq!(json, "{\"as_of\":\"1970-01-01T00:00:00Z\",\"rows\":[]}\n");
         let text = table(&answered);
         assert!(
             text.ends_with("0 rows, as of 1970-01-01T00:00:00Z\n"),

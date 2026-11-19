@@ -75,7 +75,8 @@ fn views_as_json_name_each_views_keys_and_measures() {
             r#""from":"2024-01-01T00:00:00Z","to":"2024-01-02T00:00:00Z","#,
             r#""keys":[{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},"#,
             r#"{"name":"zone_id","type":"integer"},{"name":"borough","type":"text"}],"#,
-            r#""measures":["trips","fare","fare_avg","fare_max"]}]}"#
+            r#""measures":["trips","fare","fare_avg","fare_max"]}]}"#,
+            "\n"
         )
     );
     server.stop();

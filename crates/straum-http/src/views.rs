@@ -37,13 +37,14 @@ pub(crate) fn write(held: &Held) -> String {
     blocks.join("\n")
 }
 
-/// Every view's names and range, as the JSON body `straum shell` reads.
+/// Every view's names and range, as the JSON body `straum shell` reads,
+/// ending in a newline as `--json` prints it.
 pub(crate) fn json(held: &Held) -> Vec<u8> {
     let mut views = Vec::with_capacity(held.views.len());
     for held_view in &held.views {
         views.push(view_json(held_view));
     }
-    format!("{{\"views\":[{}]}}", views.join(",")).into_bytes()
+    format!("{{\"views\":[{}]}}\n", views.join(",")).into_bytes()
 }
 
 fn view_json(view: &HeldView) -> String {
@@ -322,7 +323,7 @@ dim public.zones
             start,
             r#""from":"1970-01-01T00:00:00Z","to":null,"#,
             &format!(r#""keys":[{keys}],{measures}"#),
-            "]}",
+            "]}\n",
         ];
         assert_eq!(String::from_utf8(json(&held)).unwrap(), expected.concat());
     }

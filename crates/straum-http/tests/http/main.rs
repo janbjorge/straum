@@ -216,7 +216,7 @@ fn rows_of(body: &str) -> &str {
     let Some(fields) = body.strip_prefix(r#"{"as_of":""#) else {
         panic!("not an answer: {body}");
     };
-    let Some(fields) = fields.strip_suffix('}') else {
+    let Some(fields) = fields.strip_suffix("}\n") else {
         panic!("not an answer: {body}");
     };
     let Some((as_of, rows)) = fields.split_once(r#"","rows":"#) else {

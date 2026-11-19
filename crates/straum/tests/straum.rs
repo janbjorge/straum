@@ -129,7 +129,7 @@ impl PostgresContainer {
 
     fn expected_rows(&self) -> String {
         let rows = self.psql(EXPECTED).replace(", ", ",").replace(" : ", ":");
-        format!("\"rows\":[{rows}]}}")
+        format!("\"rows\":[{rows}]}}\n")
     }
 }
 
