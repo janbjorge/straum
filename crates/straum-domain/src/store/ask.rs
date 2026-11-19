@@ -376,7 +376,7 @@ fn ref_position(fact: &Fact, reference: &Ref) -> usize {
 /// The buckets an ask reads: the widest that fit, none wider than its row
 /// width when it groups by the bucket.
 // An iterator, not a `Vec`: an ask allocates per group, never per bucket
-// (`an_ask_allocates_per_group_not_per_cell` in tests/cost.rs).
+// (`an_ask_allocates_per_group_not_per_cell` in tests/cost/main.rs).
 pub(super) fn buckets<'r>(
     rollup: &'r Rollup,
     ask: &Ask,

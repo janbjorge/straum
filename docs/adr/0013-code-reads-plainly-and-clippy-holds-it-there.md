@@ -22,7 +22,7 @@ to `let`, enums over `bool` parameters, named structs over tuples,
 named constants, named index types (`FactIndex`) over `usize`. A
 lifetime, generic or `impl Trait` stays only where a plain type won't
 do, saying why. Dense code stays only where a benchmark
-(`tests/cost.rs`, `bench/`, the WAL benchmark) shows a gain, naming
+(`tests/cost/main.rs`, `bench/`, the WAL benchmark) shows a gain, naming
 it. Functions stay under 70 lines, files under 1000.
 
 Every file opens with a plain-English header saying what it holds and
@@ -38,7 +38,7 @@ functions at 70 lines. `missing_errors_doc`, `missing_panics_doc` and
 out) = run(..)`. A lint is silenced with `#[expect]` and a reason.
 
 Two counting global allocators are the only `unsafe` in the
-repository: `crates/straum-domain/tests/cost.rs`, and
+repository: `crates/straum-domain/tests/cost/main.rs`, and
 `crates/straum-pg/src/wal/test_support.rs`, whose WAL internals only
 the crate's own test build reaches. Library and binary crates keep
 `#![forbid(unsafe_code)]`; `straum-pg`'s test build has `deny` instead,

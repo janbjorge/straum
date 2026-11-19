@@ -77,7 +77,8 @@ it lands.
   `Unix second` and its number rather than fail.
 - A `buckets` row reads one stored bucket: 24 times fewer cells than
   hours for a day, 168 for a week, where every hour holds the same
-  keys (`rows_at_a_wider_width_read_its_buckets` in `tests/cost.rs`).
+  keys (`rows_at_a_wider_width_read_its_buckets` in
+  `tests/cost/main.rs`).
   The width is query text, not a `$n`, since it sets the answer's
   shape. Rejected: any multiple of the narrowest width, built from
   narrower buckets, which costs what asking by those does.
@@ -92,4 +93,4 @@ it lands.
   count the work; pick the rank without a sort; a running count per run
   (revises ADR-0003); counts per wider bucket across keys.
 - Views with a cell per row, as the warehouse runs, are outside the
-  target. `tests/cost.rs` guards counts and bytes on any machine.
+  target. `tests/cost/main.rs` guards counts and bytes on any machine.

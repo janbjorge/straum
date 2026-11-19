@@ -215,7 +215,7 @@ fn lane(cell: usize, group: u32) -> usize {
 
 // The closures below are visitors: the column walks its cells in the
 // width it keeps them in, and hands each count over.
-// Benchmark: tests/cost.rs an_ask_stays_within_its_time_per_cell, by
+// Benchmark: tests/cost/main.rs an_ask_stays_within_its_time_per_cell, by
 // borough, least of 6 runs: 10.1 ns a cell with visitors, 15.3 ns with a
 // `for` loop calling `Counts::get` and `Sums::get` per cell.
 

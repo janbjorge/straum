@@ -167,7 +167,7 @@ impl AttributeLookup<'_> {
 impl<'s> Lookup<'s> {
     /// The code of the key's value for `cell`, in a view that counts each
     /// cell once.
-    // Benchmark: tests/cost.rs an_ask_stays_within_its_time_per_cell, by
+    // Benchmark: tests/cost/main.rs an_ask_stays_within_its_time_per_cell, by
     // borough, least of 6 runs: 10.0 ns a cell without `#[inline]` on
     // this, `AttributeLookup::code`, `Joined::read` and
     // `Grouping::offsets`, 9.0 ns with it, as before the store was split

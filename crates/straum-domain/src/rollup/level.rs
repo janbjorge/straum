@@ -168,7 +168,7 @@ impl Level {
     }
 
     // An iterator, not a `Vec`: an ask allocates per group, never per
-    // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost.rs).
+    // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost/main.rs).
     fn buckets_in(&self, from: i64, to: i64) -> impl Iterator<Item = CoveredBucket<'_>> {
         let width = self.width;
         let buckets = self.buckets.range(Some(from)..Some(to));
@@ -198,7 +198,7 @@ impl Rollup {
     /// Buckets that cover `from..to` once, in time order, picked as
     /// `cover` says. `from` and `to` are on `date_bin` edges.
     // An iterator, not a `Vec`: an ask allocates per group, never per
-    // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost.rs).
+    // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost/main.rs).
     // So the runs' buckets are chained with `flat_map` rather than
     // gathered in a loop.
     pub(crate) fn cover(

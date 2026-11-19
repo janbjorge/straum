@@ -254,7 +254,7 @@ majors, and PostgreSQL leaves out some parentheses and casts
   `avg` rule; the `pg_get_viewdef` comparison of §5.
 - Planted bugs that must fail: a remove that skips the lift, a size
   rule a bit too loose, a wrong scale after `*`.
-- Cost (`straum-domain/tests/cost.rs`): adding a row with a lift
+- Cost (`straum-domain/tests/cost/main.rs`): adding a row with a lift
   allocates nothing; an ask with a formula allocates per group, not
   per cell, as `an_ask_allocates_per_group_not_per_cell` holds now.
 

@@ -119,8 +119,9 @@ change.
   words them (`describe_ask_error`), and the binary hands that to
   `straum-http`. `scripts/check-domain-syntax.py` enforces it.
 - No `unsafe`, no macros of our own, traits only at ports. Two
-  exceptions: the counting allocators in `straum-domain/tests/cost.rs`
-  and `straum-pg/src/wal/test_support.rs` (ADR-0013).
+  exceptions: the counting allocators in
+  `straum-domain/tests/cost/main.rs` and
+  `straum-pg/src/wal/test_support.rs` (ADR-0013).
 - Plain structs, enums, functions. Names and signatures follow the
   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
 - Write for a reader who doesn't know Rust (ADR-0013):
