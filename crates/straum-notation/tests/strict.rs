@@ -307,6 +307,30 @@ fn a_group_by_position_has_no_leading_zero() {
     assert!(parse(&canon("GROUP BY 1, 2, 3, 4, 5", "GROUP BY 1, 2, 3, 4, 5")).is_ok());
 }
 
+/// A fraction is written its shortest way: one leading zero, no
+/// trailing one. The error names the one to write, which parses.
+#[test]
+fn a_fraction_has_one_spelling() {
+    for (written, canonical) in [
+        ("1.0", "1"),
+        ("0.50", "0.5"),
+        ("00.5", "0.5"),
+        ("0.0", "0"),
+        ("01", "1"),
+        ("00", "0"),
+    ] {
+        let measure = format!("percentile_disc({written}) WITHIN GROUP (ORDER BY orders.amount)");
+        let spec = canon("sum(orders.amount)", &measure);
+        assert_eq!(
+            error_lines(&spec),
+            [format!("line 8: fraction {written}: write {canonical}")],
+            "{written}"
+        );
+        let measure = format!("percentile_disc({canonical}) WITHIN GROUP (ORDER BY orders.amount)");
+        assert!(parse(&canon("sum(orders.amount)", &measure)).is_ok());
+    }
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {

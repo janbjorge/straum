@@ -330,8 +330,7 @@ GROUP BY 1, 2, 3, 4";
     }
 }
 
-/// The fraction as written, digits and places: `1.0` is not `1`, and
-/// both are the whole.
+/// The fraction as written, digits and places, in its one spelling.
 #[test]
 fn percentile_disc_takes_a_fraction_and_one_column() {
     let cases = [
@@ -339,7 +338,6 @@ fn percentile_disc_takes_a_fraction_and_one_column() {
         ("0.99", 99, 2),
         ("0", 0, 0),
         ("1", 1, 0),
-        ("1.0", 10, 1),
         ("0.0000000000000000001", 1, 19),
     ];
     for (written, units, places) in cases {

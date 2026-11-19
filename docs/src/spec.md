@@ -52,7 +52,8 @@ condition  alias.column = literal
 width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days,
            in the largest unit that divides it, singular for one
 literal    42, -7, 'text', true, false
-fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point
+fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point,
+           written shortest: one digit before the point, no zero ending it
 ```
 
 Brackets hold what may be left out, `|` separates a choice, and `...`

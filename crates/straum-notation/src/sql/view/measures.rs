@@ -321,7 +321,8 @@ impl Walker {
     }
 
     /// A fraction from 0 to 1 as digits, with places after a point or
-    /// none: exactly as written, never through a float.
+    /// none: exactly as written, never through a float. One spelling
+    /// each, the shortest, so `0.50` and `1.0` say what to write.
     fn fraction(&mut self, expression: &sql::Expr) -> Result<Fraction, Reported> {
         let at = line(expression);
         let text = match expression {
@@ -336,13 +337,19 @@ impl Walker {
             self.refuse(at, "fraction, write a number from 0 to 1,", expression);
             return Err(Reported);
         }
-        let Some(fraction) = fraction_of(whole, places) else {
+        let shortest = shortest_decimal(whole, places);
+        let Some(fraction) = fraction_of(shortest.whole, shortest.places) else {
             self.error(
                 at,
                 format!("fraction {text}: write a number from 0 to 1 in at most 19 places"),
             );
             return Err(Reported);
         };
+        let canonical = written_decimal(&shortest);
+        if canonical != text {
+            self.error(at, format!("fraction {text}: write {canonical}"));
+            return Err(Reported);
+        }
         Ok(fraction)
     }
 
@@ -434,6 +441,24 @@ fn split_decimal(text: &str) -> Decimal<'_> {
             places: "",
         },
     }
+}
+
+/// The decimal without leading zeros before its point or trailing ones
+/// after it, keeping one zero where none would be left: `0.5`, `1`, `0`.
+fn shortest_decimal<'text>(whole: &'text str, places: &'text str) -> Decimal<'text> {
+    let whole = whole.trim_start_matches('0');
+    let whole = if whole.is_empty() { "0" } else { whole };
+    Decimal {
+        whole,
+        places: places.trim_end_matches('0'),
+    }
+}
+
+fn written_decimal(decimal: &Decimal<'_>) -> String {
+    if decimal.places.is_empty() {
+        return decimal.whole.to_owned();
+    }
+    format!("{}.{}", decimal.whole, decimal.places)
 }
 
 fn all_digits(text: &str) -> bool {
