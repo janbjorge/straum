@@ -1,8 +1,8 @@
 # Aggregates 101
 
-This page says what each aggregate keeps in a cell, and why. Straum never
-holds a row. It holds [cells](how-it-works.md#cells), and that asks two
-things of every aggregate.
+What does a measure cost? Straum never holds a row. It holds
+[cells](how-it-works.md#cells), and that asks two things of every
+aggregate.
 
 The first is whether cells can merge. An ask reads many cells and merges
 them into one answer per group. The second is whether a row can leave. A
@@ -81,7 +81,7 @@ false for the same reason.
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `var_samp(c)`, `var_pop(c)`, `stddev_samp(c)`, `stddev_pop(c)` | the same, and a sum of squares | adding all three | subtracting all three |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
-| `count(DISTINCT c)`, `sum(DISTINCT c)`, `avg(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | marking the values in a set of bits, counting each once and adding it | lowering the value's count |
+| `count(DISTINCT c)`, `sum(DISTINCT c)`, `avg(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | marking numbers in a set of bits, or uniting other values, then counting and adding each once | lowering the value's count |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)`, `mode() WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank, or to the value counted most | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
@@ -140,7 +140,7 @@ Integers add and subtract exactly, so the three never drift, in whatever
 order rows come and go. Straum divides only when it answers, rounds there,
 and takes a standard deviation as the square root of the merged variance.
 The sum of squares of values near the ends of `bigint` passes 128 bits, so
-it widens to 256 as a sum widens from 32 to 64 bits.
+it widens to 256 bits, as a sum widens from 32 bits to 64 and 128.
 
 A `sum` or `avg` on the same column shares the cell's sum and count, so
 a variance beside them adds only its sum of squares.
@@ -149,8 +149,8 @@ a variance beside them adds only its sum of squares.
 
 An exact median needs each cell's values or a count per value, and a `min`
 or `max` already keeps the counts. So Straum has `percentile_disc`, which is
-exact and follows deletes. The `usage` view of [Specs](spec.md) holds
-three such measures:
+exact and follows deletes. The `usage` view of
+[Spec](spec.md#synopsis) holds three such measures:
 
 ```sql
 max(e.amount) AS top_amount,
@@ -177,15 +177,17 @@ The cost is in the ask. A `sum` merges a number a cell. A percentile
 gathers every value of every cell in its range and finds the one at its
 rank, splitting the values left at their middle one each step without
 sorting them all. An ask over a long range of many values takes
-milliseconds where the others take microseconds: the median fare over the
-six months of [benchmark](performance.md) trips takes about 30 ms. A group
-of one cell is read in place, its values in order, with nothing gathered.
+milliseconds where the others take microseconds: the median fare over
+the six months of [benchmark](performance.md#results) trips takes about
+25 ms. A group of one cell is read in place, its values in order, with
+nothing gathered.
+
 A `mode()` gathers the same way and puts the values in order, so a value
-several cells hold is counted once, its counts added.
-A `count(DISTINCT c)` of numbers marks the values of several cells in a
-set of bits from the least to the greatest, then counts the marks; values
-too far apart for that are sorted instead. One of other types unites
-them by reference, without copying.
+several cells hold is counted once, its counts added. A
+`count(DISTINCT c)` of numbers marks the values of several cells in a
+set of bits from the least to the greatest, then counts the marks;
+values too far apart for that are sorted instead. One of other types
+unites them by reference, without copying.
 
 Other systems answer with a sketch: a small summary that merges and gives
 an approximate answer. Examples are t-digest, KLL and DDSketch for
