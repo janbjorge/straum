@@ -1,17 +1,16 @@
-# Try it on your data. From the directory that holds usage.sql, with
-# DATABASE_URL set to a role that can SELECT the spec's tables, and
-# with bash or zsh:
-# docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml) \
-#   run --rm shell
+# Try it on your data. In the directory that holds usage.sql, with
+# DATABASE_URL set to a role that can SELECT the spec's tables:
+# curl -fsSLO https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml
+# docker compose -f try.yaml run --rm shell
 # PostgreSQL 18 starts with logical decoding on. straum plan --copy
 # writes the copy scripts, psql runs export.sql on DATABASE_URL and
 # load.sql on that PostgreSQL, straum plan writes the setup SQL and psql
 # runs it, then Straum starts. The shell waits until Straum is healthy.
 # The project name is straum-try.
 #
-# ${PWD} is the directory you ran from. The file from <(...) is not, so
-# a relative path would miss usage.sql. host.docker.internal reaches
-# the host, including on Linux.
+# ${PWD} is the directory you ran from, so usage.sql is found there
+# wherever this file is. host.docker.internal reaches the host,
+# including on Linux.
 name: straum-try
 
 services:
