@@ -10,7 +10,9 @@ The layer check reads Cargo's metadata; these tests hand it metadata
 built here, over a workspace of files in a temporary folder, so they
 need no cargo and no network. The domain syntax check reads a folder of
 Rust files; these tests write one. The chart check reads its oldest
-Kubernetes from Chart.yaml; these tests hand it the line. Many cases here are ways past a
+Kubernetes from Chart.yaml; these tests hand it the line. The guard
+that the crate recipes run, changed-crates.py, maps paths to crates;
+these tests hand it paths. Many cases here are ways past a
 check that a red team found; each stays so the way stays shut.
 """
 
@@ -41,6 +43,7 @@ def load(name: str):
 layers = load("check-layers")
 syntax = load("check-domain-syntax")
 chart = load("check-chart")
+changed = load("changed-crates")
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 
 
@@ -619,6 +622,30 @@ class ChartKubernetesFloor(unittest.TestCase):
     def test_the_chart_has_a_floor(self):
         text = (chart.CHART / "Chart.yaml").read_text()
         self.assertIsNotNone(chart.oldest_kubernetes(text))
+
+
+class ChangedCrates(unittest.TestCase):
+    def test_a_file_in_a_crate_names_the_crate_once(self):
+        paths = [
+            "crates/straum-pg/src/lib.rs",
+            "crates/straum-domain/Cargo.toml",
+            "crates/straum-pg/tests/a.rs",
+        ]
+        self.assertEqual(changed.crate_names(paths), ["straum-domain", "straum-pg"])
+
+    def test_a_file_outside_a_crate_names_none(self):
+        paths = ["crates", "crates/README.md", "docs/crates/x/y.md", "justfile", ""]
+        self.assertEqual(changed.crate_names(paths), [])
+
+    def test_no_crate_named_fails_and_says_how(self):
+        for crates in ["", "  "]:
+            with self.subTest(crates=crates):
+                self.assertEqual(changed.main(["--named", crates]), 1)
+
+    def test_a_crate_named_passes(self):
+        for crates in ["straum-pg", "straum-pg straum-domain"]:
+            with self.subTest(crates=crates):
+                self.assertEqual(changed.main(["--named", crates]), 0)
 
 
 if __name__ == "__main__":

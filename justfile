@@ -28,7 +28,7 @@ export STRAUM_TEST_SEEDS := seeds
 export STRAUM_TEST_SEED_FROM := seed_from
 export STRAUM_BENCH_RUNS := runs
 
-changed := `{ git diff --name-only HEAD -- crates; git ls-files -o --exclude-standard -- crates; } | cut -d/ -f2 | sort -u | paste -sd' ' -`
+changed := `scripts/changed-crates.py`
 
 [private]
 default:
@@ -126,4 +126,4 @@ try *flags:
 
 [private]
 _named crates:
-    @[ -n "{{ crates }}" ] || { echo "no crate changed since HEAD; name one, as in just test straum-pg" >&2; exit 1; }
+    @scripts/changed-crates.py --named {{ quote(crates) }}
