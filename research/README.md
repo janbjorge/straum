@@ -43,6 +43,9 @@ v1 doesn't build.
 - [AGGREGATES.md](AGGREGATES.md): which aggregates merge and which
   take a delete, the sources, what other systems do, where Straum's
   cell states sit, and which aggregates to add next.
+- [UDAF.md](UDAF.md): aggregates a spec's author writes: why they must
+  be sums of a per-row lift, what other systems do, and a design as a
+  formula over `sum` and `count`, checked against the code.
 
 ## Tags
 
