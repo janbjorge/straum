@@ -1,7 +1,7 @@
 //! One connection to PostgreSQL over TCP or TLS, speaking its frontend and
 //! backend protocol: startup and SCRAM (password sign-in), simple queries,
-//! `COPY` out for loads, `COPY` in for a try's copy, and the copy-both
-//! stream of a replication connection. Every other module talks to
+//! `COPY` out for loads, and the copy-both stream of a replication
+//! connection. Every other module talks to
 //! PostgreSQL through `Connection`. Messages are read whole into a buffer,
 //! so a read that times out loses nothing; rustls keeps a TLS record it
 //! has read part of.
