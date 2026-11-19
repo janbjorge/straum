@@ -1,6 +1,7 @@
 //! The spec examples in the README and the guide parse, so an example can't
 //! drift from the grammar without a test saying which one. Each page's
-//! `sql` fences that hold a whole spec are cut out and parsed.
+//! `sql` fences that hold a whole spec are cut out and parsed. The spec
+//! files the benchmarks and the demo run parse whole.
 
 use std::fmt;
 
@@ -28,6 +29,19 @@ const DOCS: [Page; 6] = [
     Page {
         name: "docs/src/performance.md",
         markdown: include_str!("../../../docs/src/performance.md"),
+    },
+];
+
+/// The spec files outside the tests, which nothing else parses before a
+/// benchmark or the demo runs them.
+const SPEC_FILES: [Page; 2] = [
+    Page {
+        name: "bench/trips.sql",
+        markdown: include_str!("../../../bench/trips.sql"),
+    },
+    Page {
+        name: "bench/demo.sql",
+        markdown: include_str!("../../../bench/demo.sql"),
     },
 ];
 
@@ -120,6 +134,15 @@ fn every_doc_example_parses() {
             Err(error) => panic!("{error}"),
         };
         assert!(parsed > 0, "{} has no spec example", page.name);
+    }
+}
+
+#[test]
+fn every_spec_file_parses() {
+    for file in SPEC_FILES {
+        if let Err(error) = straum_notation::parse(file.markdown) {
+            panic!("{}: {error}", file.name);
+        }
     }
 }
 
