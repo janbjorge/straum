@@ -42,43 +42,39 @@ comparison  measure { = | <> | < | <= | > | >= } $n
 
 The notation is that of the [spec's synopsis](spec.md#synopsis), and
 `time` is the name the view gives its [time](spec.md#time): `bucket` in
-`usage`. This is the whole language: anything it does not show is an error that
-names the construct and says what to write. The shortest ask reads
-every bucket Straum holds:
+`usage`. This is the whole language: anything it does not show is an
+error that names the construct and says what to write. The shortest
+ask reads every bucket Straum holds:
 
 ```sql
 SELECT events, amount FROM usage
 ```
 
-A key or a measure goes by the name the view gives it with `AS`:
-`region`, `kind`, `account_id`, `amount`. `a.region` is not a name an
-ask can use; neither is `a`, the join, nor a table name. The time goes
-by its name too, `bucket` in `usage`, and is a key like any other in
-`SELECT` and `GROUP BY`.
-
-Each name is selected at most once, since the names become the fields
-of each answer row. `GROUP BY` names exactly the selected keys. Each
-lists at most 256 names.
-
-`bucket >= $n` and `bucket < $n` bound the range, each at most once,
-and only the time takes `>=` or `<`.
-Leave one out and that end is open: the ask reads from the first bucket
-held, or to the end of the last. With no `WHERE` it reads every bucket
-held; `WHERE true` is refused. The bounds and the conditions come in
-any order. No condition is put in parentheses, and none, in `WHERE`
-or `HAVING`, is written twice: `kind = $1 AND kind = $1` is refused,
-naming `kind = $1`.
-
-A parameter may be used more than once, but the text the uses come to
-is at most 1 MiB, what one ask's body holds. It is `$1`, never `$01`.
-
-Names are written in lowercase, `buckets` too; keywords such as
-`SELECT` and `GROUP BY` take any case. An ask holds no comment and no
-`;` after it.
-
-An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
-`+`, `::` and the like), as does each statement of a spec: each is a
-level of the tree Straum reads it into.
+- A key or a measure goes by the name the view gives it with `AS`:
+  `region`, `kind`, `account_id`, `amount`. `a.region` is not a name
+  an ask can use; neither is `a`, the join, nor a table name. The time
+  goes by its name too, `bucket` in `usage`, and is a key like any
+  other in `SELECT` and `GROUP BY`.
+- `SELECT` lists the keys first, then one measure or more. Each name
+  is selected at most once, since the names become the fields of each
+  answer row. `GROUP BY` names exactly the selected keys. Each lists
+  at most 256 names.
+- `WHERE` takes `=` and `IN` on keys. `IN` lists two parameters or
+  more; for one, write `=`.
+- `bucket >= $n` and `bucket < $n` bound the range, each at most once,
+  and only the time takes `>=` or `<`. The start is before the end.
+  Leave one out and that end is open: the ask reads from the first
+  bucket held, or to the end of the last. With no `WHERE` it reads
+  every bucket held; `WHERE true` is refused.
+- The bounds and the conditions come in any order. No condition is put
+  in parentheses, and none, in `WHERE` or `HAVING`, is written twice:
+  `kind = $1 AND kind = $1` is refused, naming `kind = $1`.
+- Names are written in lowercase, `buckets` too; keywords such as
+  `SELECT` and `GROUP BY` take any case. An ask holds no comment and
+  no `;` after it.
+- An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`,
+  `IN`, `+`, `::` and the like), as does each statement of a spec:
+  each is a level of the tree Straum reads it into.
 
 ## Rows a day or a week apart
 
@@ -134,7 +130,7 @@ Every other measure answers a number and compares with a number
 parameter: a count, sum, min, max, average, percentile, mode, variance
 or standard deviation, and a `count`, `sum` or `avg` of `DISTINCT`
 values. It compares exactly: `avg_amount > 44.27` is true of 44.273058,
-and `amount = 1875.7` of 1875.70. Up to 38 digits may follow the point.
+and `amount = 1875.7` of 1875.70.
 
 An ask without keys answers its one row only if it meets every
 comparison; otherwise none.
@@ -143,11 +139,17 @@ comparison; otherwise none.
 
 Every value is a parameter: a value written into the query, such as
 `region = 'eu'`, is an error, so a value can never change what the
-query says. Parameters are numbers, strings or booleans, `$1` first.
-Each must be used, and one can be used more than once. A number with a
-fraction or exponent is read exactly as written, never as a float:
-`44.27` is 4427 hundredths, and a whole one, `1.0` or `1e3`, is an
-integer.
+query says. Parameters are numbers, strings or booleans, `$1` first;
+`null` is refused, since `= NULL` matches nothing. A parameter is
+`$1`, never `$01`. Each must be used, and one can be used more than
+once, as long as the text parameters, counted at each use, come to at
+most 1 MiB, what one ask's body holds.
+
+A number with a fraction or exponent is read exactly as written, never
+as a float: `44.27` is 4427 hundredths, and a whole one, `1.0` or
+`1e3`, is an integer. At most 38 digits may follow the point, and its
+digits, read as one integer, must fit a signed 128-bit integer; a
+longer number is an error.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
@@ -204,15 +206,17 @@ the year 9999, which RFC 3339 can't write; an open end reads them, and
 such a bucket prints as `Unix second` and its number. A `date` or
 `uuid` key is a string as PostgreSQL prints it: `"2024-01-15"`,
 `"0044-03-15 BC"`, `"infinity"`,
-`"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"`. Measures print as the
-[measures table](spec.md#measures) says: `1875.70` for a
-`numeric(12, 2)` sum, and `44.273058` for an `avg_amount` of 18240.50
-over 412 events, at four places past the scale. Each is a bare JSON
-number, as exact as Straum keeps it. A client that reads numbers as
-doubles, as JavaScript's `JSON.parse` does, rounds those past 2^53
+`"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"`. Under `LEFT OUTER JOIN`, a
+row whose dim row does not exist has null dim columns until the dim
+row arrives.
+
+Measures print as the [measures table](spec.md#measures) says:
+`1875.70` for a `numeric(12, 2)` sum, and `44.273058` for an
+`avg_amount` of 18240.50 over 412 events, at four places past the
+scale with trailing zeros dropped. Each is a bare JSON number, as
+exact as Straum keeps it. A client that reads numbers as doubles, as
+JavaScript's `JSON.parse` does, rounds those past 2^53
 (9,007,199,254,740,992); read such sums with a decimal-aware parser.
-A row whose dim row does not exist has null dim columns, as a `LEFT OUTER
-JOIN` gives, until the dim row arrives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in
@@ -281,6 +285,7 @@ sees the connection close.
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'eu'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
 {"errors": ["bound 1794558600 is not on a 1 hour bucket edge; the nearest are 1794556800 and 1794560400"]}
+{"errors": ["empty range [1794560400, 1794556800)"]}
 {"errors": ["bucket width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}
 ```
@@ -291,8 +296,13 @@ sees the connection close.
 | --- | --- |
 | `POST /ask` | An ask sent with `Content-Type: application/json`, as JSON; as a table with `Accept: text/plain`. |
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
-| `GET /livez` | 200 while the process serves. Lag never fails it. |
+| `GET /livez` | 200 `live` while the process serves. Lag never fails it. |
 | `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes` and `max_retained_wal_bytes`. What is unknown until every table is loaded is null. |
 | `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names, the name of its time and range of buckets as JSON, which `straum shell` completes from. |
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has, 503 while Straum is [loading](deploy.md#states). |
+
+Every reply carries `Cache-Control: no-store`: an answer is true as of
+its `as_of` and no later, so nothing between Straum and a client may
+keep one. A path not listed here is 404, and a listed path asked with
+another method is 405, its `Allow` header naming the method to use.
