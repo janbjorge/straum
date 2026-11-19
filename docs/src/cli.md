@@ -111,21 +111,6 @@ another directory.
 | `--tables` | Print the tables the specs name, one per line, quoted, in the order the setup lists them, instead of the SQL. For `pg_dump -t`. No DSN is read. |
 | `--out FILE` | Write the SQL (or the tables) to this file instead of stdout. |
 
-## straum copy
-
-```text
-straum copy FILE
-```
-
-Copies every table the spec in `FILE` names. The source is one
-read-only snapshot: `STRAUM_FROM`, or `PGHOST` and the other libpq
-variables when that is unset. The destination is `STRAUM_TO`. It keeps
-the columns, the enums and the rows. Indexes, keys and defaults are
-left behind. A composite column, or a type an extension provides,
-stops the copy and names the column. Neither URL is an argument
-([Connect](postgresql.md#2-connect)).
-[Try it on your data](your-data.md) runs this for you.
-
 ## straum status
 
 Prints what the Straum at `--url` has done, from its `GET /status`.

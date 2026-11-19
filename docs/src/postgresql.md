@@ -139,8 +139,6 @@ it. With neither set, it reads libpq's variables: `PGHOST` or
 `PGHOSTADDR`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
 `PGSSLMODE` and `PGSSLROOTCERT`. `PGPORT` defaults to 5432, `PGUSER`
 to the OS user, and the database to the user. `PGHOST` names one host.
-`straum copy` reads those variables as its source when `STRAUM_FROM`
-is unset. The destination stays `STRAUM_TO`.
 
 ```text
 postgres://straum:PASSWORD@db.example.com:5432/app

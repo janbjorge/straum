@@ -1,6 +1,6 @@
 //! Reading a command line into a `Command`. `command` takes the words
-//! after `straum`: the first names the command. `run`, `plan` and `copy`
-//! take the spec as the word that is not a flag, `plan --copy` and `plan
+//! after `straum`: the first names the command. `run` and `plan` take
+//! the spec as the word that is not a flag, `plan --copy` and `plan
 //! --tables` several; `ask` takes its query
 //! and parameters after the flags. `Flags::read` checks the flags
 //! against the ones that command takes, and each `*_command` function
@@ -15,9 +15,7 @@ use straum_domain::closest;
 use straum_pg::Replication;
 
 use crate::client::{Output, Server, TIMEOUT};
-use crate::help::{
-    ASK_HELP, COPY_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP,
-};
+use crate::help::{ASK_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP};
 
 /// Where `straum run` listens unless told: this host only, as Straum
 /// has no authentication or TLS.
@@ -55,7 +53,6 @@ const MAX_PAGE_MEMORY: usize = 1 << 30;
 pub(crate) enum Name {
     Run,
     Plan,
-    Copy,
     Status,
     Views,
     Ask,
@@ -63,10 +60,9 @@ pub(crate) enum Name {
 }
 
 impl Name {
-    const ALL: [Name; 7] = [
+    const ALL: [Name; 6] = [
         Name::Run,
         Name::Plan,
-        Name::Copy,
         Name::Status,
         Name::Views,
         Name::Ask,
@@ -86,7 +82,6 @@ impl Name {
         match self {
             Name::Run => "run",
             Name::Plan => "plan",
-            Name::Copy => "copy",
             Name::Status => "status",
             Name::Views => "views",
             Name::Ask => "ask",
@@ -99,7 +94,6 @@ impl Name {
         match self {
             Name::Run => RUN_HELP,
             Name::Plan => PLAN_HELP,
-            Name::Copy => COPY_HELP,
             Name::Status => STATUS_HELP,
             Name::Views => VIEWS_HELP,
             Name::Ask => ASK_HELP,
@@ -120,7 +114,6 @@ impl Name {
                 "--max-page-memory",
             ],
             Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", OUT, COPY],
-            Name::Copy => &[],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
         }
     }
@@ -130,7 +123,7 @@ impl Name {
         match self {
             Name::Status | Name::Views | Name::Ask => &[JSON],
             Name::Plan => &[TABLES],
-            Name::Run | Name::Copy | Name::Shell => &[],
+            Name::Run | Name::Shell => &[],
         }
     }
 }
@@ -140,7 +133,6 @@ impl Name {
 pub(crate) enum Command {
     Run(Run),
     Plan(Plan),
-    Copy(Copy),
     Status {
         server: Server,
         output: Output,
@@ -196,12 +188,6 @@ pub(crate) enum Printed {
     Setup,
     Tables,
     Copy { directory: String },
-}
-
-/// What `straum copy` was told.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Copy {
-    pub(crate) spec: String,
 }
 
 /// A command line Straum can't run, printed with a hint at the help.
@@ -451,7 +437,6 @@ fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> 
             ask_command(&Flags::read(name, rest)?, query, url)
         }
         Name::Plan => plan_command(&Flags::read(name, rest)?),
-        Name::Copy => copy_command(&Flags::read(name, rest)?),
         Name::Run => run_command(&Flags::read(name, rest)?),
     }
 }
@@ -511,13 +496,6 @@ fn printed(flags: &Flags) -> Result<Printed, UsageError> {
         });
     }
     Ok(Printed::Copy { directory })
-}
-
-fn copy_command(flags: &Flags) -> Result<Command, UsageError> {
-    let Some(spec) = flags.specs.first().cloned() else {
-        return Err(UsageError::NeedsSpec(Name::Copy));
-    };
-    Ok(Command::Copy(Copy { spec }))
 }
 
 fn run_command(flags: &Flags) -> Result<Command, UsageError> {
@@ -601,11 +579,11 @@ struct Flags {
 }
 
 impl Flags {
-    /// A flag takes the next word, so for `run`, `plan` and `copy` the
-    /// spec is whichever word is left. Only `plan` takes several, and
+    /// A flag takes the next word, so for `run` and `plan` the spec is
+    /// whichever word is left. Only `plan` takes several, and
     /// `plan_command` says when.
     fn read(name: Name, rest: &[String]) -> Result<Flags, UsageError> {
-        let takes_spec = matches!(name, Name::Run | Name::Plan | Name::Copy);
+        let takes_spec = matches!(name, Name::Run | Name::Plan);
         let mut flags = Flags {
             given: Vec::new(),
             switches: Vec::new(),

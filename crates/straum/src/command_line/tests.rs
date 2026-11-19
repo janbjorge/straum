@@ -153,7 +153,7 @@ fn reads_plan() {
             printed: Printed::Tables,
         }))
     );
-    let refused = command_of(&args("copy --tables s"));
+    let refused = command_of(&args("run --tables s"));
     assert!(
         matches!(
             refused,
@@ -194,14 +194,6 @@ fn reads_plan_with_several_specs() {
             out: None,
             printed: Printed::Tables,
         }))
-    );
-}
-
-#[test]
-fn reads_copy() {
-    assert_eq!(
-        command_of(&args("copy s")),
-        Ok(Command::Copy(Copy { spec: "s".into() }))
     );
 }
 
@@ -537,10 +529,6 @@ fn command_errors() {
         ("run --spec=s", "straum run takes no \"--spec\""),
         ("run", "straum run needs a spec"),
         ("plan --role r", "straum plan needs a spec"),
-        ("copy", "straum copy needs a spec"),
-        ("copy a b", "straum copy takes one spec"),
-        ("copy s --listen x", "straum copy takes no \"--listen\""),
-        ("copy --from-file", "straum copy takes no \"--from-file\""),
         ("status --spec s", "straum status takes no \"--spec\""),
         ("status --url", "--url needs a value"),
         ("views --spec s", "straum views takes no \"--spec\""),
@@ -676,7 +664,7 @@ fn reads_sizes() {
 const PIECES: [&str; 32] = [
     "run",
     "plan",
-    "copy",
+    "--copy",
     "status",
     "views",
     "ask",

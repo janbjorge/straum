@@ -65,10 +65,10 @@ step that fails logs its error and ends the process with exit 1, and
 PostgreSQL drops the slot as the connection closes. Straum never
 retries in the process; whatever runs it starts it again.
 
-`straum copy` stores one read-only snapshot of the spec's tables in
-another database: the columns, the enums and the rows. Indexes, keys
-and defaults stay behind. It sits next to `plan` in `straum-pg`.
-`Source` stays the port that loads the store and then streams.
+`straum plan --copy` writes the psql scripts that copy the spec's
+tables into another database (ADR-0015); Straum itself reads no
+database for it. They sit next to `plan` in `straum-pg`. `Source` stays
+the port that loads the store and then streams.
 
 ## Start
 
