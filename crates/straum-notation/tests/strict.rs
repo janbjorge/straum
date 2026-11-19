@@ -331,6 +331,26 @@ fn a_fraction_has_one_spelling() {
     }
 }
 
+/// An integer literal has no leading zero, and zero no sign. The error
+/// names the one to write, which parses.
+#[test]
+fn an_integer_literal_has_one_spelling() {
+    for (written, canonical) in [("007", "7"), ("-007", "-7"), ("-0", "0"), ("00", "0")] {
+        let filter = format!("FILTER (WHERE orders.customer_id = {written})");
+        let spec = canon("FILTER (WHERE orders.status = 'paid')", &filter);
+        assert_eq!(
+            error_lines(&spec),
+            [format!("line 9: literal {written}: write {canonical}")],
+            "{written}"
+        );
+        let filter = format!("FILTER (WHERE orders.customer_id = {canonical})");
+        assert!(parse(&canon("FILTER (WHERE orders.status = 'paid')", &filter)).is_ok());
+    }
+    let filter = "FILTER (WHERE orders.customer_id IN (1, 02))";
+    let spec = canon("FILTER (WHERE orders.status = 'paid')", filter);
+    assert_eq!(error_lines(&spec), ["line 9: literal 02: write 2"]);
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {

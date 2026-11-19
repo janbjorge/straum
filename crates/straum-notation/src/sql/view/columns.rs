@@ -192,6 +192,17 @@ impl Walker {
             );
             return Err(Reported);
         };
+        // `007` and `-0` are `7` and `0` written a second way.
+        if let Literal::Int(value) = literal
+            && let Some(written) = written_integer(expression)
+            && written != value.to_string()
+        {
+            self.error(
+                line(expression),
+                format!("literal {written}: write {value}"),
+            );
+            return Err(Reported);
+        }
         Ok(literal)
     }
 
@@ -518,6 +529,29 @@ fn negative_literal(expression: &sql::Expr) -> Option<Literal> {
         return None;
     };
     Some(Literal::Int(format!("-{digits}").parse().ok()?))
+}
+
+/// An integer literal's text, its sign included.
+fn written_integer(expression: &sql::Expr) -> Option<String> {
+    match expression {
+        sql::Expr::UnaryOp {
+            op: sql::UnaryOperator::Minus,
+            expr: inner,
+        } => Some(format!("-{}", written_digits(inner)?)),
+        other => Some(written_digits(other)?.to_owned()),
+    }
+}
+
+/// A number's digits as written, with no sign.
+fn written_digits(expression: &sql::Expr) -> Option<&str> {
+    let sql::Expr::Value(sql::ValueWithSpan {
+        value: sql::Value::Number(digits, false),
+        span: _,
+    }) = expression
+    else {
+        return None;
+    };
+    Some(digits)
 }
 
 /// A column reference as Straum SQL spells it: `sqlparser` prints the cast
