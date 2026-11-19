@@ -175,7 +175,11 @@ impl Dsn {
             Some(database) => database.to_owned(),
             None => user.clone(),
         };
-        let plain = plain_tcp(text(env.sslmode.as_deref()))?;
+        let plain = match plain_tcp(text(env.sslmode.as_deref())) {
+            Ok(plain) => plain,
+            Err(DsnError::Parameter(_)) => return Err(DsnError::PgSslMode),
+            Err(other) => return Err(other),
+        };
         let root_cert = match text(env.ssl_root_cert.as_deref()) {
             Some("system") | None => None,
             Some(file) => Some(file.to_owned()),
@@ -316,6 +320,8 @@ pub enum DsnError {
     PgPort,
     /// `PGUSER` is unset, and so is the OS user.
     PgUser,
+    /// `PGSSLMODE` is no mode Straum takes.
+    PgSslMode,
     /// A parameter not taken, or not with that value: by name when it is
     /// one libpq knows, never by its text, which may be a password's tail.
     Parameter(Option<&'static str>),
@@ -419,6 +425,9 @@ impl fmt::Display for DsnError {
             DsnError::PgHosts => formatter.write_str("PGHOST names more than one host"),
             DsnError::PgPort => formatter.write_str("PGPORT is not a port number"),
             DsnError::PgUser => formatter.write_str("set PGUSER"),
+            DsnError::PgSslMode => formatter.write_str(
+                "PGSSLMODE is not one Straum takes: disable, require, verify-ca or verify-full",
+            ),
         }
     }
 }
@@ -740,9 +749,11 @@ mod tests {
         assert_eq!(Dsn::from_pg(&env), Err(DsnError::RootCert));
         env.ssl_root_cert = None;
         env.sslmode = Some("nope".into());
+        let error = Dsn::from_pg(&env).unwrap_err();
+        assert_eq!(error, DsnError::PgSslMode);
         assert_eq!(
-            Dsn::from_pg(&env),
-            Err(DsnError::Parameter(Some("sslmode")))
+            error.to_string(),
+            "PGSSLMODE is not one Straum takes: disable, require, verify-ca or verify-full"
         );
     }
 }
