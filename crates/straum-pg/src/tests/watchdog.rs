@@ -371,6 +371,10 @@ fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
     source.guard.watching.unwatched = SHORT_UNWATCHED;
     let spec = db.spec(SPEC);
     source.open(&spec).unwrap();
+    // The watchdog connects on its own thread after `open` returns: a
+    // limit set before it has its session would keep it from ever
+    // reading the slot.
+    await_watchdog_session(&mut db);
     if reconnect == Reconnect::Refused {
         db.run("ALTER ROLE reader CONNECTION LIMIT 0");
     }
@@ -386,6 +390,26 @@ fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
         thread::sleep(SHORT_UNWATCHED + ROUNDS);
         assert_eq!(straum_slots(&mut db), 1, "{name}: the stream ended");
         load_everything(&mut source, &spec).unwrap();
+    }
+}
+
+/// Waits until the watchdog has read the slot on a session of its own.
+fn await_watchdog_session(db: &mut Db) {
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the watchdog never read the slot"
+        );
+        let sessions = db.rows(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE usename = 'reader' AND query LIKE '%pg_replication_slots%'
+               AND query NOT LIKE '%pg_stat_activity%'",
+        );
+        if sessions[0][0].as_deref() != Some("0") {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
