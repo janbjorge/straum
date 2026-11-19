@@ -3,10 +3,11 @@
 # with bash or zsh:
 # docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml) \
 #   run --rm shell
-# PostgreSQL 18 starts with logical decoding on. straum copy copies the
-# tables usage.sql names, straum plan writes the setup SQL and psql runs
-# it, then Straum starts. The shell waits until Straum is healthy. The
-# project name is straum-try.
+# PostgreSQL 18 starts with logical decoding on. straum plan --copy
+# writes the copy scripts, psql runs export.sql on DATABASE_URL and
+# load.sql on that PostgreSQL, straum plan writes the setup SQL and psql
+# runs it, then Straum starts. The shell waits until Straum is healthy.
+# The project name is straum-try.
 #
 # ${PWD} is the directory you ran from. The file from <(...) is not, so
 # a relative path would miss usage.sql. host.docker.internal reaches
@@ -28,19 +29,13 @@ services:
       retries: 30
       start_period: 20s
 
-  # Copies the spec's tables from DATABASE_URL. The source is only
-  # read. host.docker.internal is the machine Docker runs on.
-  copy:
+  # Writes export.sql and load.sql into the copy volume. The image runs
+  # as a user who cannot create a file on a new volume, so this runs as
+  # root.
+  scripts:
     image: ghcr.io/janbjorge/straum
-    depends_on:
-      postgres:
-        condition: service_healthy
+    user: "0"
     restart: "no"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      STRAUM_FROM: ${DATABASE_URL:?set DATABASE_URL}
-      STRAUM_TO: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
     volumes:
       - type: bind
         source: ${PWD}/usage.sql
@@ -48,15 +43,48 @@ services:
         read_only: true
         bind:
           create_host_path: false
-    command: ["copy", "/usage.sql"]
+      - copy:/copy
+    command: ["plan", "/usage.sql", "--copy", "/copy"]
 
-  # The image runs as a user who cannot create a file on a new volume,
-  # so plan runs as root and writes the setup SQL there.
+  # Reads one snapshot of the columns the spec reads from DATABASE_URL,
+  # and writes nothing there. host.docker.internal is the machine Docker
+  # runs on.
+  export:
+    image: postgres:18
+    depends_on:
+      scripts:
+        condition: service_completed_successfully
+    restart: "no"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - copy:/copy
+    command: ["psql", "${DATABASE_URL:?set DATABASE_URL}", "-f", "/copy/export.sql"]
+
+  load:
+    image: postgres:18
+    depends_on:
+      postgres:
+        condition: service_healthy
+      export:
+        condition: service_completed_successfully
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      PGSSLMODE: disable
+    volumes:
+      - copy:/copy:ro
+    command: ["psql", "-f", "/copy/load.sql"]
+
+  # As root, as scripts does, to write the setup SQL on a new volume.
   plan:
     image: ghcr.io/janbjorge/straum
     user: "0"
     depends_on:
-      copy:
+      load:
         condition: service_completed_successfully
     restart: "no"
     environment:
@@ -126,4 +154,5 @@ services:
     command: ["shell", "--url", "http://straum:8080"]
 
 volumes:
+  copy:
   setup:

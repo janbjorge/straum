@@ -44,10 +44,12 @@ The URL is the DSN `straum run` takes
 is the container. On Docker Desktop, write `host.docker.internal` as
 the host.
 
-The file starts PostgreSQL 18 with logical decoding on. `straum copy`
-reads the spec and copies each table it names: the columns, the enums
-they use, and the rows, in one snapshot. `straum plan` writes the
-setup SQL, and `psql` runs it. Straum starts once that has exited, and
+The file starts PostgreSQL 18 with logical decoding on. [`straum plan
+--copy`](cli.md#straum-plan) writes two psql scripts. `psql` runs
+`export.sql` on `DATABASE_URL`: in one read-only snapshot it reads the
+columns the spec reads, and the enums they use. Then it runs `load.sql`
+on the new PostgreSQL. `straum plan` writes the setup SQL, and `psql`
+runs it. Straum starts once that has exited, and
 is healthy once it can answer. The shell waits for that, for up to an
 hour, then takes the terminal. `<(...)` is bash or zsh, so the
 terminal stays the shell's input. The file in the repository is
@@ -75,10 +77,13 @@ running. The log is `docker compose -p straum-try logs`.
 that and the command again to load a change to the spec. The file
 is not saved. The copy is the database `postgres`.
 
-The copy has the rows, and not the indexes, keys or defaults. A
-composite column, or a type an extension provides, stops the copy and
-names the column. A table the spec names that the role cannot see
-stops it and names the table. So does a row security policy.
+The copy has the rows, with only the columns the spec reads, and not
+the indexes, keys or defaults. The role needs `SELECT` on those
+columns and nothing on the sequences. Before it writes anything, the
+export names every column it can't copy: a composite column, a type an
+extension provides, or a table or column the role can't see. A row
+security policy that would hide rows stops it too. The log names them:
+`docker compose -p straum-try logs export`.
 
 From a clone, `just try` loads a copy made with [`straum plan
 --copy`](cli.md#straum-plan) instead, and can try the [physical
