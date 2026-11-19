@@ -4,17 +4,13 @@
 //! into a [`Value`] at the end. Every match on `Aggregate` is here, so a
 //! new aggregate is one variant and the arms the compiler asks for.
 
-use crate::hash::{FastMap, FastSet};
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-
 use crate::column::Counts;
 use crate::gathered::{Gathered, Pick, gathered_none};
 use crate::identifier::Identifier;
-use crate::rollup::{DistinctCells, State, StateKind};
+use crate::rollup::{State, StateKind};
 use crate::spread::{Moments, SPREAD_PLACES, Spread};
-use crate::value::{Datum, Value};
-use crate::value_counts::ValueCounts;
+use crate::tally::{Distinct, Tallied, distinct_none};
+use crate::value::Value;
 use crate::wide::U256;
 
 /// What a measure reads of its input column, which decides the types the
@@ -63,6 +59,8 @@ pub enum Aggregate {
     StddevSamp(Identifier),
     StddevPop(Identifier),
     Mode(Identifier),
+    SumDistinct(Identifier),
+    AvgDistinct(Identifier),
 }
 
 /// A fraction from 0 to 1 as written: its digits and how many follow the
@@ -119,7 +117,9 @@ impl Aggregate {
             | Aggregate::VarPop(column)
             | Aggregate::StddevSamp(column)
             | Aggregate::StddevPop(column)
-            | Aggregate::Mode(column) => Some(column),
+            | Aggregate::Mode(column)
+            | Aggregate::SumDistinct(column)
+            | Aggregate::AvgDistinct(column) => Some(column),
         }
     }
 
@@ -162,14 +162,21 @@ impl Aggregate {
             | Aggregate::VarPop(_)
             | Aggregate::StddevSamp(_)
             | Aggregate::StddevPop(_)
-            | Aggregate::Mode(_) => Answers::Numbers,
+            | Aggregate::Mode(_)
+            | Aggregate::SumDistinct(_)
+            | Aggregate::AvgDistinct(_) => Answers::Numbers,
         }
     }
 
     /// What the aggregate reads of its column; none for `count(*)`.
     pub fn reads(&self) -> Option<Reads> {
         let kind = self.state_kind()?;
-        Some(kind.reads())
+        match self {
+            // Adds its values, so they must be numbers, though the state
+            // it shares with `count(DISTINCT c)` tells any values apart.
+            Aggregate::SumDistinct(_) | Aggregate::AvgDistinct(_) => Some(Reads::Numbers),
+            _ => Some(kind.reads()),
+        }
     }
 
     /// The form of cell state the aggregate keeps of its column; none for
@@ -183,7 +190,9 @@ impl Aggregate {
             | Aggregate::Max(_)
             | Aggregate::PercentileDisc { .. }
             | Aggregate::Mode(_) => Some(StateKind::Extent),
-            Aggregate::CountDistinct(_) => Some(StateKind::Distinct),
+            Aggregate::CountDistinct(_) | Aggregate::SumDistinct(_) | Aggregate::AvgDistinct(_) => {
+                Some(StateKind::Distinct)
+            }
             Aggregate::BoolAnd(_) | Aggregate::BoolOr(_) => Some(StateKind::Bools),
             Aggregate::VarSamp(_)
             | Aggregate::VarPop(_)
@@ -278,7 +287,12 @@ pub(crate) enum Partials<'s> {
         values: Vec<i64>,
         seen: Vec<bool>,
     },
-    Distinct(Vec<Distinct<'s>>),
+    /// `count`, `sum` and `avg` of distinct values merge alike and part
+    /// only when finished.
+    Distinct {
+        seen: Vec<Distinct<'s>>,
+        finish: DistinctFinish,
+    },
     /// Each group's values with their counts, for a percentile or a mode.
     Percentile {
         pick: Pick,
@@ -292,166 +306,20 @@ pub(crate) enum Partials<'s> {
     },
 }
 
+/// What a [`Partials::Distinct`] gives when finished.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DistinctFinish {
+    Count,
+    Sum,
+    Avg,
+}
+
 /// What a [`Partials::Sum`] gives when finished.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Finish {
     Sum,
     Avg,
     Spread(Spread),
-}
-
-/// The distinct values one group has met: the cells of numbers, read in
-/// place, and the values of cells of other kinds.
-pub(crate) struct Distinct<'s> {
-    numbers: Numbers<'s>,
-    values: Values<'s>,
-}
-
-/// The cells of numbers one group has met.
-enum Numbers<'s> {
-    None,
-    /// Most groups of a fine ask meet one cell, which counts its values.
-    OneCell(&'s ValueCounts),
-    Cells(Vec<&'s ValueCounts>),
-}
-
-/// The values of the cells of other kinds one group has met.
-enum Values<'s> {
-    None,
-    /// The value counts of the one cell met, read in place: copying its
-    /// values cost as much memory as the cell holds.
-    OneCell(&'s FastMap<Datum, u64>),
-    /// The values of several cells, borrowed from them.
-    Cells(FastSet<&'s Datum>),
-}
-
-impl<'s> Distinct<'s> {
-    /// Meets the value counts of cell `cell` of `cells`.
-    fn meet(&mut self, cells: &'s DistinctCells, cell: usize) {
-        match cells {
-            DistinctCells::Numbers(counts) => self.numbers.meet(&counts[cell]),
-            DistinctCells::Values(counts) => self.values.meet(&counts[cell]),
-        }
-    }
-
-    /// The values met, a number met both as a number and as a value
-    /// counted once.
-    fn count(&self) -> usize {
-        let mut count = self.numbers.count();
-        match &self.values {
-            Values::None => {}
-            Values::OneCell(values) => {
-                for value in values.keys() {
-                    count += usize::from(!self.numbers.has(value));
-                }
-            }
-            Values::Cells(seen) => {
-                for value in seen {
-                    count += usize::from(!self.numbers.has(value));
-                }
-            }
-        }
-        count
-    }
-}
-
-impl<'s> Numbers<'s> {
-    fn meet(&mut self, counts: &'s ValueCounts) {
-        match self {
-            Numbers::None => *self = Numbers::OneCell(counts),
-            Numbers::OneCell(first) => *self = Numbers::Cells(vec![*first, counts]),
-            Numbers::Cells(cells) => cells.push(counts),
-        }
-    }
-
-    fn count(&self) -> usize {
-        match self {
-            Numbers::None => 0,
-            Numbers::OneCell(counts) => counts.len(),
-            Numbers::Cells(cells) => distinct_in_order(cells),
-        }
-    }
-
-    /// Whether a cell met holds `value`, a number.
-    fn has(&self, value: &Datum) -> bool {
-        let &Datum::Int(number) = value else {
-            return false;
-        };
-        match self {
-            Numbers::None => false,
-            Numbers::OneCell(counts) => counts.has(number, 1),
-            Numbers::Cells(cells) => {
-                for counts in cells {
-                    if counts.has(number, 1) {
-                        return true;
-                    }
-                }
-                false
-            }
-        }
-    }
-}
-
-impl<'s> Values<'s> {
-    fn meet(&mut self, values: &'s FastMap<Datum, u64>) {
-        match self {
-            Values::None => *self = Values::OneCell(values),
-            Values::OneCell(first) => {
-                let mut seen = FastSet::default();
-                seen.extend(first.keys());
-                seen.extend(values.keys());
-                *self = Values::Cells(seen);
-            }
-            Values::Cells(seen) => seen.extend(values.keys()),
-        }
-    }
-}
-
-/// A cell's place among the cells a group met.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct MetIndex(usize);
-
-/// The least value a cell has not yet given up, and the cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Head {
-    value: i64,
-    cell: MetIndex,
-}
-
-/// The distinct values of several cells, each read in value order: a
-/// merge takes the least value any cell has left, and counts it when it
-/// differs from the last one taken. The heap holds one value per cell,
-/// never a set of all of them.
-// A heap rather than a scan of every cell for the least: a group may
-// meet thousands of cells, and the scan costs that many per value.
-fn distinct_in_order(cells: &[&ValueCounts]) -> usize {
-    let mut entries = Vec::with_capacity(cells.len());
-    let mut heads = BinaryHeap::with_capacity(cells.len());
-    for (position, counts) in cells.iter().enumerate() {
-        let mut cell_entries = counts.iter();
-        if let Some(entry) = cell_entries.next() {
-            heads.push(Reverse(Head {
-                value: entry.value,
-                cell: MetIndex(position),
-            }));
-        }
-        entries.push(cell_entries);
-    }
-    let mut count = 0;
-    let mut last = None;
-    while let Some(Reverse(head)) = heads.pop() {
-        if last != Some(head.value) {
-            count += 1;
-            last = Some(head.value);
-        }
-        if let Some(entry) = entries[head.cell.0].next() {
-            heads.push(Reverse(Head {
-                value: entry.value,
-                cell: head.cell,
-            }));
-        }
-    }
-    count
 }
 
 impl<'s> Partials<'s> {
@@ -469,7 +337,9 @@ impl<'s> Partials<'s> {
                 values: Vec::new(),
                 seen: Vec::new(),
             },
-            Aggregate::CountDistinct(_) => Partials::Distinct(Vec::new()),
+            Aggregate::CountDistinct(_) => Partials::distinct(DistinctFinish::Count),
+            Aggregate::SumDistinct(_) => Partials::distinct(DistinctFinish::Sum),
+            Aggregate::AvgDistinct(_) => Partials::distinct(DistinctFinish::Avg),
             &Aggregate::PercentileDisc { fraction, .. } => Partials::Percentile {
                 pick: Pick::Rank(fraction),
                 values: Vec::new(),
@@ -490,6 +360,13 @@ impl<'s> Partials<'s> {
                 let spread = aggregate.spread().expect("a variance or deviation");
                 Partials::sums(Finish::Spread(spread))
             }
+        }
+    }
+
+    fn distinct(finish: DistinctFinish) -> Partials<'s> {
+        Partials::Distinct {
+            seen: Vec::new(),
+            finish,
         }
     }
 
@@ -528,7 +405,7 @@ impl<'s> Partials<'s> {
                 seen.resize(lanes, false);
             }
             // A set per lane would cost a merge of sets; one per group.
-            Partials::Distinct(seen) => seen.resize_with(groups, distinct_none),
+            Partials::Distinct { seen, .. } => seen.resize_with(groups, distinct_none),
             Partials::Percentile { values, .. } => values.resize_with(groups, gathered_none),
             Partials::Bools { trues, falses, .. } => {
                 trues.resize(lanes, 0);
@@ -603,7 +480,7 @@ impl<'s> Partials<'s> {
     /// rather than add them, and the booleans.
     fn merge_collected(&mut self, groups: &[u32], state: Option<&'s State>) {
         match (self, state) {
-            (Partials::Distinct(seen), Some(State::Distinct(cells))) => {
+            (Partials::Distinct { seen, .. }, Some(State::Distinct(cells))) => {
                 // Unlike a sum, a value set costs its group 0 merge.
                 for (cell, &group) in groups.iter().enumerate() {
                     if group != 0 {
@@ -676,7 +553,7 @@ impl<'s> Partials<'s> {
                 values[at] = values[at].max(maxs[cell]);
                 seen[at] |= mins[cell] <= maxs[cell];
             }
-            (Partials::Distinct(seen), Some(State::Distinct(cells))) if group != 0 => {
+            (Partials::Distinct { seen, .. }, Some(State::Distinct(cells))) if group != 0 => {
                 seen[group as usize].meet(cells, cell);
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
@@ -685,7 +562,7 @@ impl<'s> Partials<'s> {
                 values[group as usize].meet(&counts[cell]);
             }
             // Group 0 is never finished, and a value set or list costs its merge.
-            (Partials::Distinct(_), Some(State::Distinct(_)))
+            (Partials::Distinct { .. }, Some(State::Distinct(_)))
             | (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
@@ -746,7 +623,7 @@ impl<'s> Partials<'s> {
                 }
                 seen[at] |= any_value(mins, maxs);
             }
-            (Partials::Distinct(seen), Some(State::Distinct(cells))) if group != 0 => {
+            (Partials::Distinct { seen, .. }, Some(State::Distinct(cells))) if group != 0 => {
                 for cell in 0..cells.len() {
                     seen[group].meet(cells, cell);
                 }
@@ -759,7 +636,7 @@ impl<'s> Partials<'s> {
                 }
             }
             // Group 0 is never finished, and a value set or list costs its merge.
-            (Partials::Distinct(_), Some(State::Distinct(_)))
+            (Partials::Distinct { .. }, Some(State::Distinct(_)))
             | (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
@@ -824,7 +701,7 @@ impl<'s> Partials<'s> {
                 }
                 Value::Int(most.into())
             }
-            Partials::Distinct(seen) => Value::Int(seen[group].count() as i128),
+            Partials::Distinct { seen, finish } => distinct_answer(&seen[group], *finish),
             Partials::Percentile { pick, values } => values[group].answer(*pick),
             Partials::Bools { trues, falses, all } => {
                 let any_true = any_counted(&trues[lanes.clone()]);
@@ -839,10 +716,21 @@ impl<'s> Partials<'s> {
     }
 }
 
-/// A group that has met no value yet.
-fn distinct_none<'s>() -> Distinct<'s> {
-    Distinct {
-        numbers: Numbers::None,
-        values: Values::None,
+/// The answer of a group's distinct values: their count, or their sum or
+/// average, null when there are none.
+fn distinct_answer(seen: &Distinct<'_>, finish: DistinctFinish) -> Value {
+    let tallied = match finish {
+        DistinctFinish::Count => Tallied::Count,
+        DistinctFinish::Sum | DistinctFinish::Avg => Tallied::CountAndSum,
+    };
+    let tally = seen.tally(tallied);
+    match finish {
+        DistinctFinish::Count => Value::Int(tally.count as i128),
+        _ if tally.count == 0 => Value::Null,
+        DistinctFinish::Sum => Value::Int(tally.sum),
+        DistinctFinish::Avg => Value::Avg {
+            sum: tally.sum,
+            count: tally.count as u64,
+        },
     }
 }

@@ -30,8 +30,8 @@ key        date_bin('width', alias.column, timestamptz 'epoch')
 
 measure    count(*)
            count([DISTINCT] alias.column)
-           sum(alias.column)       min(alias.column)
-           max(alias.column)       avg(alias.column)
+           sum([DISTINCT] alias.column)    min(alias.column)
+           max(alias.column)       avg([DISTINCT] alias.column)
            bool_and(alias.column)  bool_or(alias.column)
            var_samp(alias.column)  var_pop(alias.column)
            stddev_samp(alias.column)  stddev_pop(alias.column)
@@ -229,7 +229,8 @@ next answer, as PostgreSQL's view would, and nothing stops
 - Any number of dim rows may match a key. A key the dim holds twice
   counts the fact row twice, as PostgreSQL's join does: `count(*)`,
   `count(c)` and `sum` double, `min`, `max`, `count(DISTINCT ...)`,
-  `bool_and` and `bool_or` don't, `avg` stays, and `percentile_disc`,
+  `sum(DISTINCT ...)`, `avg(DISTINCT ...)`, `bool_and` and `bool_or`
+  don't, `avg` stays, and `percentile_disc`,
   `mode`, the variances and the standard deviations count the row's
   value twice. A dim needs no index on its key.
 - The fact column and the dim key column must be of the same kind,
@@ -325,6 +326,7 @@ Which types take the cast is listed here; today it is enums alone.
 | `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean`, `text`, `date` or `uuid` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
 | `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
+| `sum(DISTINCT c)`, `avg(DISTINCT c)` | the same | as `sum(c)` and `avg(c)`, of each value once |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
 | `mode() WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
 | `var_samp(c)`, `var_pop(c)` | the same | a decimal rounded half to even at four places past twice `c`'s scale |

@@ -500,9 +500,9 @@ fn aggregates_outside_the_subset_are_rejected() {
         ),
         (
             "count(*) AS n",
-            "sum(DISTINCT f.x) AS n",
+            "min(DISTINCT f.x) AS n",
             3,
-            "DISTINCT outside count",
+            "DISTINCT outside count, sum and avg",
         ),
         (
             "count(*) AS n",
@@ -604,7 +604,7 @@ fn percentile_disc_orders_by_one_column() {
             "count(*) AS n",
             "percentile_disc(DISTINCT 0.5) WITHIN GROUP (ORDER BY f.x) AS n",
             3,
-            "DISTINCT outside count is not",
+            "DISTINCT outside count, sum and avg is not",
         ),
         (
             "count(*) AS n",

@@ -31,7 +31,9 @@ SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        var_pop(f.tip) AS tip_var_pop,
        stddev_samp(f.tip) AS tip_sd,
        mode() WITHIN GROUP (ORDER BY f.fare) AS fare_mode,
-       mode() WITHIN GROUP (ORDER BY f.tip) AS tip_mode
+       mode() WITHIN GROUP (ORDER BY f.tip) AS tip_mode,
+       sum(DISTINCT f.tip) AS distinct_tips,
+       avg(DISTINCT f.fare) AS distinct_fare_avg
 FROM $S.trips AS f
 LEFT OUTER JOIN $S.zones AS pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
@@ -149,7 +151,8 @@ pub(super) fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
                     fare_max, round(fare_avg, 6), riders, named, tips, manhattan, near,
-                    fare_median, tip_p90, {}, fare_mode, tip_mode
+                    fare_median, tip_p90, {}, fare_mode, tip_mode, distinct_tips,
+                    round(distinct_fare_avg, 6)
                FROM ({}) v",
             spreads.sql(["fare_var", "fare_sd_pop", "tip_var_pop", "tip_sd"]),
             body(SPEC, "trips")
@@ -164,7 +167,7 @@ pub(super) fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
                 0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
             ][..],
             &spreads.scales(),
-            &[fare_scale, 0],
+            &[fare_scale, 0, 0, fare_scale],
         ]
         .concat(),
     };
@@ -185,7 +188,7 @@ pub(super) fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
 }
 
 /// Every measure of the taxi spec's trips view.
-const TAXI_MEASURES: [&str; 17] = [
+const TAXI_MEASURES: [&str; 19] = [
     "trips",
     "fare",
     "fare_max",
@@ -203,6 +206,8 @@ const TAXI_MEASURES: [&str; 17] = [
     "tip_sd",
     "fare_mode",
     "tip_mode",
+    "distinct_tips",
+    "distinct_fare_avg",
 ];
 
 /// Trips without the bucket over the window, against the raw rows.
@@ -215,7 +220,8 @@ fn window(spreads: &SpreadScales, fare_scale: u32) -> Reference {
                     count(*) FILTER (WHERE f.zone_id IN (1, 2)),
                     percentile_disc(0.5) WITHIN GROUP (ORDER BY f.fare),
                     percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip), {},
-                    mode() WITHIN GROUP (ORDER BY f.fare), mode() WITHIN GROUP (ORDER BY f.tip)
+                    mode() WITHIN GROUP (ORDER BY f.fare), mode() WITHIN GROUP (ORDER BY f.tip),
+                    sum(DISTINCT f.tip), round(avg(DISTINCT f.fare), 6)
                FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
               WHERE f.at >= to_timestamp({WINDOW_FROM}) AND f.at < to_timestamp({WINDOW_TO})
               GROUP BY 1, 2, 3",
@@ -236,7 +242,7 @@ fn window(spreads: &SpreadScales, fare_scale: u32) -> Reference {
                 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
             ][..],
             &spreads.scales(),
-            &[fare_scale, 0],
+            &[fare_scale, 0, 0, fare_scale],
         ]
         .concat(),
     }

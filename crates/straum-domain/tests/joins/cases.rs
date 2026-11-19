@@ -150,8 +150,8 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
 }
 
 /// Every measure of one order of quantity 5, counted `rows` times. The
-/// copies are alike, so they spread by nothing and 5 is their mode; a
-/// sample of one has no variance.
+/// copies are alike, so they spread by nothing, 5 is their mode and their
+/// one distinct value; a sample of one has no variance.
 fn every_measure_of_five(rows: i128) -> Vec<Value> {
     let variance = if rows > 1 { Value::Int(0) } else { Value::Null };
     vec![
@@ -167,6 +167,8 @@ fn every_measure_of_five(rows: i128) -> Vec<Value> {
         variance,
         Value::Int(0),
         Value::Int(5),
+        Value::Int(5),
+        Value::Avg { sum: 5, count: 1 },
     ]
 }
 

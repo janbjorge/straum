@@ -406,12 +406,12 @@ fn one_measure_spelling() {
         (
             "count(*) AS orders",
             "var_samp(DISTINCT orders.id) AS orders",
-            "DISTINCT outside count `var_samp(DISTINCT orders.id)`",
+            "DISTINCT outside count, sum and avg `var_samp(DISTINCT orders.id)`",
         ),
         (
             "count(*) AS orders",
             "bool_or(DISTINCT orders.id) AS orders",
-            "DISTINCT outside count `bool_or(DISTINCT orders.id)`",
+            "DISTINCT outside count, sum and avg `bool_or(DISTINCT orders.id)`",
         ),
         (
             "count(*) AS orders",

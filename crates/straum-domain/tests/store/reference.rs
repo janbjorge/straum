@@ -6,7 +6,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
 use crate::common::{
-    SPREAD_PLACES, bool_or_null, holds, in_range, int_or_null, mode, percentile_disc, spread,
+    Distinct, SPREAD_PLACES, bool_or_null, distinct, holds, in_range, int_or_null, mode,
+    percentile_disc, spread,
 };
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
@@ -268,7 +269,9 @@ pub(crate) fn measure_scale(aggregate: &Aggregate) -> u32 {
         | Aggregate::Max(input)
         | Aggregate::Avg(input)
         | Aggregate::PercentileDisc { column: input, .. }
-        | Aggregate::Mode(input) => trip_types()[column(input.as_str())].scale(),
+        | Aggregate::Mode(input)
+        | Aggregate::SumDistinct(input)
+        | Aggregate::AvgDistinct(input) => trip_types()[column(input.as_str())].scale(),
         // A variance is in the column's units squared.
         Aggregate::VarSamp(input) | Aggregate::VarPop(input) => {
             2 * trip_types()[column(input.as_str())].scale() + SPREAD_PLACES
@@ -320,6 +323,8 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
             percentile_disc(ints_in(&rows, column), *fraction)
         }
         Aggregate::Mode(input) => mode(ints_in(&rows, input)),
+        Aggregate::SumDistinct(input) => distinct(&ints_in(&rows, input), Distinct::Sum),
+        Aggregate::AvgDistinct(input) => distinct(&ints_in(&rows, input), Distinct::Avg),
         Aggregate::VarSamp(input)
         | Aggregate::VarPop(input)
         | Aggregate::StddevSamp(input)

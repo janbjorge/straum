@@ -368,6 +368,17 @@ fn column_type_problems(pg: &PostgresContainer) {
              Straum needs an integer type, numeric(p, s), boolean, text, date or uuid there",
             ),
         ),
+        // count(DISTINCT t.x) reads text, but a sum of distinct values
+        // takes numbers.
+        case(
+            "textdistinct",
+            published("x text"),
+            &fact("", "sum(DISTINCT t.x) AS xs").spec,
+            Some(
+                "f: column x of textdistinct.f is text; \
+             Straum needs an integer type or numeric(p, s) with p at most 18 there",
+            ),
+        ),
         case(
             "naivekey",
             published("x int, k timestamp"),

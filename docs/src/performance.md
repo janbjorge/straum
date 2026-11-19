@@ -13,7 +13,7 @@ counts hold only for those bytes.
 
 ## Results
 
-Fifteen fixed asks over the benchmark's two views, each sent to PostgreSQL
+Sixteen fixed asks over the benchmark's two views, each sent to PostgreSQL
 as SQL over the raw tables and to Straum as an ask over HTTP. One run on
 an Apple M2 Pro with 16 GB, on 2026-11-19: PostgreSQL 18.7 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
@@ -23,35 +23,39 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 217.4 ms | 143 µs | 1,517x |
-| Card trips | 1 | 382.9 ms | 219 µs | 1,750x |
-| Trips by pickup borough | 8 | 1,055.1 ms | 265 µs | 3,983x |
-| Fares by payment type | 6 | 807.3 ms | 339 µs | 2,385x |
-| Fare spread by payment type | 6 | 840.2 ms | 432 µs | 1,943x |
-| Median fare | 1 | 4,776.7 ms | 24.5 ms | 195x |
-| p99 fare by payment type | 6 | 8,069.2 ms | 21.9 ms | 368x |
-| Most common fare by payment type | 6 | 8,475.0 ms | 35.9 ms | 236x |
-| Median fare per hour, one day | 24 | 42.3 ms | 626 µs | 68x |
-| Manhattan pickups, one week | 1 | 64.1 ms | 197 µs | 325x |
-| Trips per hour, one day | 24 | 16.7 ms | 159 µs | 105x |
-| Trips per hour by borough, one month | 4,454 | 970.8 ms | 2.6 ms | 370x |
-| Trips per day by borough, one month | 243 | 964.3 ms | 384 µs | 2,513x |
-| Fares per week | 31 | 2,394.5 ms | 227 µs | 10,533x |
-| Tips by dropoff borough | 8 | 1,807.3 ms | 211 µs | 8,550x |
+| Trips | 1 | 216.5 ms | 140 µs | 1,541x |
+| Card trips | 1 | 390.8 ms | 218 µs | 1,793x |
+| Trips by pickup borough | 8 | 1,066.6 ms | 278 µs | 3,839x |
+| Fares by payment type | 6 | 801.8 ms | 337 µs | 2,381x |
+| Fare spread by payment type | 6 | 866.9 ms | 432 µs | 2,006x |
+| Median fare | 1 | 4,897.3 ms | 25.6 ms | 191x |
+| p99 fare by payment type | 6 | 8,417.1 ms | 22.2 ms | 379x |
+| Most common fare by payment type | 6 | 8,795.3 ms | 36.0 ms | 244x |
+| Distinct fares by payment type | 6 | 10,478.9 ms | 423.3 ms | 25x |
+| Median fare per hour, one day | 24 | 44.0 ms | 625 µs | 70x |
+| Manhattan pickups, one week | 1 | 66.6 ms | 200 µs | 333x |
+| Trips per hour, one day | 24 | 28.3 ms | 163 µs | 173x |
+| Trips per hour by borough, one month | 4,454 | 921.2 ms | 2.6 ms | 353x |
+| Trips per day by borough, one month | 243 | 910.6 ms | 373 µs | 2,443x |
+| Fares per week | 31 | 1,943.1 ms | 221 µs | 8,791x |
+| Tips by dropoff borough | 8 | 1,741.4 ms | 210 µs | 8,283x |
 
 The target is under 1 ms for every ask
 ([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md));
-the percentile and mode asks over every trip miss it, and so does the month
+the percentile, mode and distinct asks over every trip miss it, and so
+does the month
 of hourly rows by borough, which writes 4,454 rows.
 
-Straum was ready 13.7 s after it started and held 204 MiB resident, the
-265 zone rows' projection included. A run the same day without the
-fare's variance and standard deviation held 190 MiB, and one with them
-205 MiB: their sums of squares take about 15 MiB. The mode reads the
-counts the percentiles keep, and adds nothing. The bench now reads what Straum
-holds from macOS's footprint, which counts the pages the system
-compressed; one resident set read 21 MiB on a busy machine. In PostgreSQL
-the table and its indexes take 2,475 MiB.
+Straum was ready 14.0 s after it started and held 305 MiB resident, the
+265 zone rows' projection included. Runs the same day held 190 MiB
+without the fare's variance, standard deviation, mode and distinct
+values, 205 MiB with the first two, and 204 MiB with the mode too: the
+sums of squares take about 15 MiB, and the mode reads the counts the
+percentiles keep. The distinct fares take the other 101 MiB, as
+`count(DISTINCT c)` keeps a count per value of its own. The bench now
+reads what Straum holds from macOS's footprint, which counts the pages
+the system compressed; one resident set read 21 MiB on a busy machine.
+In PostgreSQL the table and its indexes take 2,475 MiB.
 
 Reads run with PostgreSQL's defaults, two parallel workers per query,
 except `shared_buffers`, which is 2 GB. The rest of the table comes from
@@ -67,7 +71,9 @@ the query and writing JSON.
 The percentile and mode asks are the exception. Straum gathers every
 fare of the cells in range, so their time follows the fares the range
 holds, as [Median and percentiles](aggregates.md#median-and-percentiles)
-says.
+says. The distinct ask is slower still: it merges the values of every
+cell in range in order, one cell at a time on a heap, and a group by
+payment type over six months meets every hourly cell of every zone.
 
 Straum answers only what the views keep: these keys, on hour edges.
 PostgreSQL answers any query over the raw rows. Straum keeps its cells
@@ -170,6 +176,12 @@ SELECT payment_type,
 
 -- Most common fare by payment type
 SELECT payment_type, mode() WITHIN GROUP (ORDER BY fare_amount)
+  FROM yellow_trips
+ GROUP BY payment_type;
+
+-- Distinct fares by payment type
+SELECT payment_type, count(DISTINCT fare_amount), sum(DISTINCT fare_amount),
+       avg(DISTINCT fare_amount)
   FROM yellow_trips
  GROUP BY payment_type;
 
@@ -332,8 +344,9 @@ and projections included, before bound cells. A cell has taken fewer
 bytes since ([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)):
 the benchmark's two views held 65 MiB for their 2,078,586 cells, 33
 bytes a cell, before `trips` kept its fares for the percentiles; with
-them they held 113 MiB on 2026-11-15, and 204 MiB on 2026-11-19 with
-the fare's variance, standard deviation and mode besides.
+them they held 113 MiB on 2026-11-15, and 305 MiB on 2026-11-19 with
+the fare's variance, standard deviation, mode and distinct values
+besides.
 
 ### The taxi month under a wide key
 

@@ -149,6 +149,18 @@ ASKS = [
         ALL_TIME,
     ),
     (
+        "Distinct fares by payment type",
+        """SELECT payment_type, count(DISTINCT fare_amount), sum(DISTINCT fare_amount),
+                  avg(DISTINCT fare_amount)
+             FROM yellow_trips
+            GROUP BY payment_type""",
+        """SELECT payment_type, distinct_fares, distinct_fare_sum, distinct_fare_avg
+             FROM trips
+            WHERE bucket >= $1 AND bucket < $2
+            GROUP BY payment_type""",
+        ALL_TIME,
+    ),
+    (
         "Median fare per hour, one day",
         """SELECT date_trunc('hour', pickup_at),
                   percentile_disc(0.5) WITHIN GROUP (ORDER BY fare_amount)

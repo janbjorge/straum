@@ -315,7 +315,7 @@ a new answer over a state, or one more column in one.
 | --- | --- | --- | --- |
 | built | `var_pop`, `var_samp`, `stddev_pop`, `stddev_samp` | `Sum` and a column of squares | §4.5, §4.6; `variance` and `stddev` refused, one spelling (ADR-0004) |
 | built | `mode() WITHIN GROUP (ORDER BY c)` | `Extent` | ties take the least value, as PostgreSQL's tests agree (R) |
-| 3 | `sum(DISTINCT c)`, `avg(DISTINCT c)` | `Distinct` | |
+| built | `sum(DISTINCT c)`, `avg(DISTINCT c)` | `Distinct` | number columns only, though the state takes any |
 | open | `percentile_cont` | `Extent` | PostgreSQL answers in `double precision` |
 | no | `min_by`, `max_by` | | not PostgreSQL (ADR-0004) |
 | no | `any_value` | | BI tools write it into their own SQL; asks are not pgwire |
@@ -403,7 +403,10 @@ takes.
   group takes a bucket; a `var_samp` over n^2; a sample of one that
   answers 0; a lost carry in `U256::product`. For `mode()`: a tie
   taken by the larger value, and several cells' values left unsorted;
-  the workloads fail on both, PostgreSQL on the first.
+  the workloads fail on both, PostgreSQL on the first. For
+  `sum(DISTINCT c)`: a value several cells hold added once per cell,
+  and one cell's values weighted by their rows; the workloads fail on
+  both.
 
 ## Open points
 
@@ -413,7 +416,12 @@ takes.
   a millisecond (benchmark.md, 2026-11-15). A running count per run
   would make it a binary search on value; unbuilt.
 - Count distinct's memory (ADR-0003) is the same question as a
-  percentile's.
+  percentile's. Measured 2026-11-19 on the taxi trips: the distinct
+  fares took 101 MiB beside the counts `max` and the percentiles keep
+  on the same column, and count, sum and average of distinct fares by
+  payment type took 423.3 ms, a heap merge over every hourly cell.
+  Reading the `Extent` counts when the column has them, and gathering
+  as a percentile does (about 25 ms there), is unbuilt.
 - `percentile_cont`: exact to PostgreSQL's bit, but a `double
   precision` answer. Add it, or keep `percentile_disc` as the median
   (§4.4).

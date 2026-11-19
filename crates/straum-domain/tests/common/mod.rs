@@ -75,6 +75,36 @@ pub fn mode(mut values: Vec<i128>) -> Value {
     }
 }
 
+/// `sum(DISTINCT c)` or, with [`Distinct::Avg`], `avg(DISTINCT c)` of
+/// `values`: each value once; null for none.
+pub fn distinct(values: &[i128], of: Distinct) -> Value {
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        seen.insert(*value);
+    }
+    if seen.is_empty() {
+        return Value::Null;
+    }
+    let mut sum = 0;
+    for value in &seen {
+        sum += value;
+    }
+    match of {
+        Distinct::Sum => Value::Int(sum),
+        Distinct::Avg => Value::Avg {
+            sum,
+            count: seen.len() as u64,
+        },
+    }
+}
+
+/// Which aggregate of distinct values [`distinct`] gives.
+#[derive(Debug, Clone, Copy)]
+pub enum Distinct {
+    Sum,
+    Avg,
+}
+
 /// Places past its scale a variance or deviation answers to.
 pub const SPREAD_PLACES: u32 = 4;
 

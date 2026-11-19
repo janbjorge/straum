@@ -1,6 +1,6 @@
 # ADR-0006: Refs are bound at ask time
 
-Status: Accepted 2026-11-11; revised 2026-11-17
+Status: Accepted 2026-11-11; revised 2026-11-19
 
 ## Context
 
@@ -25,7 +25,8 @@ projected to its key and the columns views read, fed from the stream
 like a fact. Nothing is looked up after the load. Any number of dim
 rows may match a key, and a cell counts once per match as PostgreSQL's
 join repeats the row: counts, sums and percentile counts scale; min,
-max, `bool_and`, `bool_or` and count distinct don't. An inner or semi
+max, `bool_and`, `bool_or` and the count, sum and average of distinct
+values don't. An inner or semi
 ref with no match drops the cell, an anti ref with one drops it, a
 left ref reads nulls. The view's `WHERE` stands on every ask.
 

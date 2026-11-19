@@ -9,6 +9,9 @@ use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Origin,
 use super::{Scope, WIDTH_FORM, parse_width};
 use crate::sql::{Clause, Reported, Walker, line};
 
+/// What DISTINCT on any other aggregate is refused as.
+const DISTINCT_OUTSIDE: &str = "DISTINCT outside count, sum and avg";
+
 /// A call's arguments and how it treats them.
 // Borrows from the tree, which outlives the walk.
 pub(in crate::sql) struct Call<'tree> {
@@ -225,11 +228,17 @@ impl Walker {
                 return Err(Reported);
             }
         };
-        if call.distinct {
-            self.refuse(at, "DISTINCT outside count", function);
-            return Err(Reported);
+        if !call.distinct {
+            return Ok(Over::Column(aggregate));
         }
-        Ok(Over::Column(aggregate))
+        match name {
+            "sum" => Ok(Over::Column(Aggregate::SumDistinct)),
+            "avg" => Ok(Over::Column(Aggregate::AvgDistinct)),
+            _ => {
+                self.refuse(at, DISTINCT_OUTSIDE, function);
+                Err(Reported)
+            }
+        }
     }
 
     /// `percentile_disc(fraction) WITHIN GROUP (ORDER BY alias.column)`,
@@ -241,7 +250,7 @@ impl Walker {
         call: &Call,
     ) -> Result<Aggregate, Reported> {
         let at = line(function);
-        self.reject_if_present(at, call.distinct, "DISTINCT outside count");
+        self.reject_if_present(at, call.distinct, DISTINCT_OUTSIDE);
         let fraction = if let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] =
             call.arguments
         {
@@ -266,7 +275,7 @@ impl Walker {
         call: &Call,
     ) -> Result<Aggregate, Reported> {
         let at = line(function);
-        self.reject_if_present(at, call.distinct, "DISTINCT outside count");
+        self.reject_if_present(at, call.distinct, DISTINCT_OUTSIDE);
         if !call.arguments.is_empty() {
             self.refuse(
                 at,

@@ -64,6 +64,13 @@ fn what_each_measure_reads() {
         (Aggregate::Max(id("x")), Some(Reads::Numbers)),
         (percentile(5, 1, "x"), Some(Reads::Numbers)),
         (Aggregate::Avg(id("x")), Some(Reads::Numbers)),
+        (Aggregate::VarSamp(id("x")), Some(Reads::Numbers)),
+        (Aggregate::StddevPop(id("x")), Some(Reads::Numbers)),
+        (Aggregate::Mode(id("x")), Some(Reads::Numbers)),
+        // The state is count(DISTINCT x)'s, which tells any values apart;
+        // a sum of them takes numbers.
+        (Aggregate::SumDistinct(id("x")), Some(Reads::Numbers)),
+        (Aggregate::AvgDistinct(id("x")), Some(Reads::Numbers)),
         (Aggregate::CountDistinct(id("x")), Some(Reads::Values)),
         (Aggregate::CountNotNull(id("x")), Some(Reads::Nullness)),
         (Aggregate::BoolAnd(id("x")), Some(Reads::Booleans)),

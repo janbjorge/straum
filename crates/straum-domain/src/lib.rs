@@ -27,6 +27,7 @@ mod spec;
 mod spec_error;
 mod spread;
 mod store;
+mod tally;
 #[cfg(test)]
 mod test_rng;
 mod uuid;

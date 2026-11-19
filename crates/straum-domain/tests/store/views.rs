@@ -175,6 +175,14 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
         // counts; the distance's on its own.
         new_measure("tip_mode", Aggregate::Mode(id("tip")), vec![]),
         new_measure("distance_mode", Aggregate::Mode(id("dist")), vec![]),
+        // Distinct values of numbers: the fare's beside nothing else of
+        // its kind, the tip's beside its min and max.
+        new_measure("distinct_fares", Aggregate::SumDistinct(id("fare")), vec![]),
+        new_measure(
+            "card_distinct_tip",
+            Aggregate::AvgDistinct(id("tip")),
+            vec![condition("pay", vec![Literal::Int(1)])],
+        ),
         new_measure("fare_var", Aggregate::VarSamp(id("fare")), vec![]),
         new_measure("tip_var_pop", Aggregate::VarPop(id("tip")), vec![]),
         new_measure("distance_sd", Aggregate::StddevSamp(id("dist")), vec![]),

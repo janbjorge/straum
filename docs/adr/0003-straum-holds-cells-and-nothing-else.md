@@ -19,14 +19,15 @@ a join needs of a dim (ADR-0006) and, in physical mode, page state
 
 Cell state is per input column, shared by measures, one enum with no
 accumulator trait. Sum and avg share a sum and a null count; the
-variances and standard deviations keep a sum of squares beside them,
-in the same state, so `sum` on their column adds nothing;
-`count(column)` keeps a null count; min, max, `percentile_disc` and
-`mode()` share value counts; `count(DISTINCT c)` keeps value counts of its own
-while its column holds only numbers, and a hash map per cell from its
-first value of another type; `bool_and` and `bool_or` share counts of
-true and false. Filtered measures keep no state: a `FILTER` names rollup-key
-parts only, so asks apply it to cells.
+variances and standard deviations keep a sum of squares beside them, in
+the same state, so `sum` on their column adds nothing; `count(column)`
+keeps a null count; min, max, `percentile_disc` and `mode()` share value
+counts; `count(DISTINCT c)` keeps value counts of its own while its
+column holds only numbers, and a hash map per cell from its first value
+of another type, which `sum(DISTINCT c)` and `avg(DISTINCT c)` read too;
+`bool_and` and `bool_or` share counts of true and false. Filtered
+measures keep no state: a `FILTER` names rollup-key parts only, so asks
+apply it to cells.
 
 Numbers are integers: integer columns, and `numeric(p <= 18, s)` as a
 scaled `i64` with the scale per column. Sums are `i128`. A sum of

@@ -81,7 +81,7 @@ false for the same reason.
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `var_samp(c)`, `var_pop(c)`, `stddev_samp(c)`, `stddev_pop(c)` | the same, and a sum of squares | adding all three | subtracting all three |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
-| `count(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | merging the values in order | lowering the value's count |
+| `count(DISTINCT c)`, `sum(DISTINCT c)`, `avg(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | merging the values in order, counting each once and adding it | lowering the value's count |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)`, `mode() WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank, or to the value counted most | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
