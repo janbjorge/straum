@@ -1,12 +1,14 @@
 # How Straum works
 
-Straum answers from cells, not rows. It loads each table once, then keeps
-the cells current from PostgreSQL's replication stream. [Design](design.md)
+What does Straum hold, and how does it stay current? It loads each table
+once into cells, keeps the cells current from PostgreSQL's replication
+stream, and answers every ask from the cells alone. [Design](design.md)
 names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run` opens a temporary logical replication slot. The slot names a
+`straum run` opens a temporary logical replication slot
+([the physical stream](#the-physical-stream) differs). The slot names a
 point in the WAL, an LSN called L, and gives a snapshot at L. Straum loads
 each spec table from that snapshot, then streams every commit after L. No
 commit is missed or applied twice.
@@ -16,15 +18,18 @@ commit is missed or applied twice.
 *Commits up to L come in with the load, later ones through the slot.*
 
 The load is one binary `COPY` per table, grouped into cells as rows arrive,
-so Straum never holds a table's rows. Nothing runs in PostgreSQL and nothing
-is written to disk. The slot is temporary, so every start loads again.
+so Straum never holds a table's rows. Straum installs nothing in
+PostgreSQL and writes nothing to disk. The slot is temporary, so every
+start loads again.
 
 ## Cells
 
-A cell is one distinct combination of a view's keys and its bucket. In the
-`usage` view of the [introduction](introduction.md), that is one cell per
-hour, kind and account. Each width the view's `buckets(...)` lists keeps
-its own cells.
+A cell is one distinct combination of a view's cell key: its fact
+table's keys, its join columns and its bucket. In the `usage` view of the
+[introduction](introduction.md), that is one cell per hour, `kind`,
+`account_id` and `has_device`. A dim column such as `region` is a key of
+the view but not of the cell ([Dims](#dims)). Each width the view's
+`buckets(...)` lists keeps its own cells.
 
 ![Where a row's time puts it](diagrams/buckets.svg)
 
@@ -53,9 +58,9 @@ cells <= min(rows, distinct key combinations x buckets)
 Keys close to unique per row keep nearly a cell per row. The
 [benchmark](performance.md#memory) has measured numbers.
 
-A value keeps its code after its last cell or dim row goes. Once a column's
-dead codes outnumber its live ones and pass 4,096, Straum drops them in one
-pass under the write lock.
+A value keeps its code after its last cell or dim row goes. Once a column
+holds more than 4,096 codes and its dead codes outnumber its live ones,
+Straum drops the dead ones in one pass under the write lock.
 
 ## Dims
 
@@ -66,12 +71,13 @@ the views read, kept current from the stream. An ask reads `region` through
 each cell's `account_id`.
 
 So a dim change moves no cell. Moving an account from `eu` to `us` changes
-its events' region in the next answer, as PostgreSQL's view would. A join to
-a dim with many rows means many cells, one per distinct join id.
+its events' region in the next answer, as PostgreSQL's view would. A join
+column with many distinct values means many cells, one per value.
 
 For a view whose joins all read fact columns, and at least one of which is
 not a key of the view, Straum also keeps bound cells: the same cells keyed by
-the dim columns' values. A dim change walks the fact's keyed cells once under
+the dim columns' values, so an ask reads them without a projection. A dim
+change walks the fact's keyed cells once under
 the write lock, and skips keys no fact row names. A view whose join columns
 are keys, as `usage` is, has none.
 
@@ -82,7 +88,8 @@ PostgreSQL in between. An insert adds its row to a cell, or to a projection
 for a dim. An update removes the old row and adds the new one. The logical
 stream sends the old row because every spec table has `REPLICA IDENTITY
 FULL`; the physical stream rebuilds it from the page. A delete removes the
-old row. A truncate empties the cells or the projection.
+old row. On the logical stream, a truncate empties the cells or the
+projection; on the physical stream it stops Straum.
 
 ![Following and answering at once](diagrams/follow.svg)
 
@@ -98,7 +105,8 @@ PostgreSQL can recycle WAL.
 Straum stops with exit 1 when a change does not fit what it holds, and the
 next start loads from a new slot. That covers an update or delete whose old
 row is missing, a row never added, a dim row never held, a value it cannot
-read, a table whose columns now read differently, and a transaction above
+read, a table whose columns now read differently, a renamed label of an
+enum it reads ([Enum columns](spec.md#enum-columns)), and a transaction above
 `--max-transaction-rows`. The row limit is deliberate: a large transaction
 would wait in memory, while the new slot's snapshot brings its rows in
 through the bulk `COPY`. The [benchmark](performance.md#transactions) sets
@@ -110,9 +118,9 @@ that is renamed away, or that is replaced by another table under its name,
 and on a column that `ALTER COLUMN .. TYPE` rewrote, since logical decoding
 sends no row for it. It checks for these once a second.
 
-`VACUUM FULL`, `CLUSTER`, a `GRANT` on a column, `SET STATISTICS`,
-`SET STORAGE` and `SET DEFAULT` stop nothing. They leave the type and values
-as they were.
+On the logical stream, `VACUUM FULL`, `CLUSTER`, a `GRANT` on a column,
+`SET STATISTICS`, `SET STORAGE` and `SET DEFAULT` each stop nothing on
+their own. They leave the type and values as they were.
 
 ## The physical stream
 
@@ -121,7 +129,8 @@ streams the WAL from the last checkpoint's redo point, and Straum turns it
 into the same messages, so one decoder serves both.
 
 Most records name only other tables' pages, so Straum reads their block
-headers and passes them by. Every record it does read, it checks. The first
+headers and passes them by. Every record it does read, it checks against
+the record's CRC-32C checksum. The first
 change to a page after a checkpoint carries a full image of that page. From
 there Straum keeps the rows of each spec-table page and applies the inserts,
 updates, deletes, pruning and vacuuming that follow, as PostgreSQL's own redo
@@ -142,11 +151,13 @@ server.
 
 Pages are held for about one checkpoint cycle: each is dropped at the next
 checkpoint record whose redo point is past its last change, since PostgreSQL
-logs it whole the next time. Straum stops past `--max-page-memory`.
+logs it whole the next time. Straum stops once the pages and the changes
+waiting for their commit pass `--max-page-memory`.
 
 A commit that changes a table's catalog entry makes Straum read the table's
 columns again, in a snapshot that sees the commit. It waits up to 10 s, then
-stops. A table rewritten or truncated stops Straum.
+stops. A table rewritten, by `VACUUM FULL` or `CLUSTER` too, or
+truncated stops Straum, since its pages went with the old file.
 
 ## Answering an ask
 
@@ -161,15 +172,16 @@ GROUP BY region
 
 ```text
 some cells of usage at 2026-11-13T09:00:00Z, one per hour,
-kind and account
+kind, account_id and has_device
 
-  kind      account_id | events   amount
-  purchase  7          |      2   220.00   account 7 is eu -> eu
-  signup    7          |      1     0.00   kind is not purchase
-  purchase  18         |      2    70.00   account 18 is apac, not asked for
-  purchase  132        |    101  7111.19   account 132 is us -> us
-  refund    132        |     45  2229.10   kind is not purchase
-  purchase  138        |    172  7658.10   account 138 is us -> us
+  kind      account_id  has_device | events   amount
+  purchase  7           true       |      2   220.00   account 7 is eu -> eu
+  signup    7           false      |      1     0.00   kind is not purchase
+  purchase  18          true       |      2    70.00   account 18 is apac, not asked
+  purchase  132         true       |     70  5000.00   account 132 is us -> us
+  purchase  132         false      |     31  2111.19   account 132 is us -> us
+  refund    132         true       |     45  2229.10   kind is not purchase
+  purchase  138         false      |    172  7658.10   account 138 is us -> us
 
 accounts, projected: 7 -> eu, 18 -> apac, 132 -> us, 138 -> us, ...
 
