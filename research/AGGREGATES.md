@@ -4,7 +4,8 @@ Straum answers an ask by merging cells and follows PostgreSQL by adding
 and removing rows from cells. Both put a demand on an aggregate, and
 the two demands are separate. This note holds the sources on each, how
 other systems meet them, and where Straum's cell states sit. The guide's
-version is `docs/src/aggregates.md`. Nothing here is a decision.
+version is `docs/src/aggregates.md`. Nothing here is a decision; the
+order in §4.4 is a plan.
 
 Tags as in README.md (R, U, I). R here: the four papers of §1.1 to §1.4
 and `pg_aggregate.dat`, read as text; documentation pages read through
@@ -206,6 +207,188 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
   exact. The ones that take deletes need a bounded integer universe or
   a cap on deletes.
 
+## 4. What to add next (2026-11-19)
+
+What people use and ask for, read against what Straum can answer
+exactly and take a delete for. Straum answers exactly or refuses: no
+sketch, no estimate (jb, 2026-11-19). The order in §4.4 is jb's plan,
+not yet an ADR.
+
+### 4.1 What people use
+
+- **Query logs.** One study counts aggregates by function: over 667M
+  Snowflake queries from BI tools, the top five by share of aggregating
+  queries are `anyvalue` 58%, `sum` 15%, `count` 12%, `max` 11% and
+  `min` 5%. BI tools use `anyvalue` to carry a descriptive column
+  without growing the `GROUP BY` (Bress et al., PVLDB 18, 2025,
+  Table 6, [PDF](https://www.vldb.org/pvldb/vol18/p5126-bress.pdf), R).
+  Redset and Snowset hold no SQL text, so they count no functions (R).
+- **Benchmarks.** Share of BIRD and Spider queries: counting 31.29% and
+  39.85%, distinct 15.45% and 8.41%, average 3.59% and 6.48%, min or
+  max 2.48% and 5.71%, sum 2.67% and 2.61% (FuncEvalGMN, appendix K,
+  [arXiv 2407.14530](https://arxiv.org/pdf/2407.14530), R).
+- **Built into BI layers.** Of nine (Looker, Cube, MetricFlow,
+  Metabase, Superset, Tableau, Power BI quick measures, Grafana reduce,
+  PromQL), count distinct is in 8; median or percentile in 5 (Looker,
+  MetricFlow, Metabase, Grafana, PromQL); variance or stddev in 5
+  (Metabase, Tableau, Power BI as variance only, Grafana, PromQL).
+  Superset's pages disagree on both. Looker, Cube and MetricFlow have
+  no variance. First and last: Grafana only. `sum(DISTINCT)`: Looker
+  only. `corr` and weighted average: Power BI only. `mode`, covariance,
+  regression and `min_by`: none (R, from the
+  [Looker](https://docs.cloud.google.com/looker/docs/reference/param-measure-types),
+  [Cube](https://docs.cube.dev/reference/data-modeling/measures),
+  [MetricFlow](https://docs.getdbt.com/docs/build/measures),
+  [Metabase](https://www.metabase.com/docs/latest/questions/query-builder/expressions-list),
+  [Tableau](https://help.tableau.com/current/pro/desktop/en-us/calculations_aggregation.htm),
+  [Power BI](https://learn.microsoft.com/en-us/power-bi/transform-model/desktop-quick-measures),
+  [Grafana](https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/calculation-types/)
+  and [PromQL](https://prometheus.io/docs/prometheus/latest/querying/operators/)
+  pages).
+
+### 4.2 What people ask for
+
+Thumbs-up on GitHub issues, read 2026-11-19 (R; totals I):
+
+- Time-weighted average, 43 over four issues:
+  [toolkit#208](https://github.com/timescale/timescaledb-toolkit/issues/208)
+  18,
+  [timescaledb#2536](https://github.com/timescale/timescaledb/issues/2536)
+  15, [toolkit#46](https://github.com/timescale/timescaledb-toolkit/issues/46)
+  5, [timescaledb#7155](https://github.com/timescale/timescaledb/issues/7155)
+  5.
+- Count distinct that rolls up, about 30, spread over TimescaleDB,
+  ClickHouse, Pinot, RisingWave and Cube
+  ([timescaledb#3247](https://github.com/timescale/timescaledb/issues/3247)
+  10, [ClickHouse#33358](https://github.com/ClickHouse/ClickHouse/issues/33358)
+  10). Straum has it exactly.
+- Last value per key, about 30
+  ([ClickHouse#57240](https://github.com/ClickHouse/ClickHouse/issues/57240)
+  11, [ClickHouse#78869](https://github.com/ClickHouse/ClickHouse/issues/78869)
+  10 and 6 hearts).
+- Exact percentile and median: an issue in almost every product, about
+  7 thumbs-up in all. Users take a sketch instead (I).
+- No request found for variance, stddev or weighted average alone.
+  That shows no demand was found, not that there is none.
+
+No request has more than 18. The searches missed known issues, so the
+counts are a floor (I).
+
+### 4.3 What other incremental systems do
+
+- Feldera: `COUNT`, `SUM`, `AVG` and the `STDDEV` and `VAR` family are
+  linear for integer and `DECIMAL`, not for `DOUBLE`
+  ([aggregates](https://docs.feldera.com/sql/aggregates), R).
+- Oracle fast refresh: `STDDEV` and `VARIANCE` need `COUNT(x)` and
+  `SUM(x)`, with `SUM(x*x)` recommended
+  ([basic materialized views](https://docs.oracle.com/en/database/oracle/oracle-database/19/dwhsg/basic-materialized-views.html),
+  R).
+- Databricks refreshes `SUM`, `AVG` and covariance over `FLOAT` in
+  full, and over `DECIMAL` incrementally
+  ([incremental refresh](https://docs.databricks.com/aws/en/optimizations/incremental-refresh),
+  R).
+- Flink moved variance to Welford's M2 to stop float cancellation
+  giving NaN and negative variances
+  ([FLINK-38740](https://issues.apache.org/jira/browse/FLINK-38740), R).
+  Exact integers cancel nothing, so plain sums do (I).
+- `min_by` and `max_by`: Feldera keeps O(N), BigQuery and Snowflake
+  refresh them incrementally ([Feldera](https://docs.feldera.com/sql/aggregates),
+  [Snowflake](https://docs.snowflake.com/en/release-notes/2026/other/2026-03-19-min-max-incremental-dynamic-table),
+  R). PostgreSQL has neither (U).
+- TimescaleDB recomputes a whole bucket after any change, which is why
+  any aggregate works in its continuous aggregates
+  ([about](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/about-continuous-aggregates),
+  R). Its time-weighted average and counter state keep first and last
+  points and never retract
+  ([time_weight](https://github.com/timescale/timescaledb-toolkit/blob/main/docs/time_weighted_average.md),
+  R).
+
+### 4.4 What fits Straum
+
+Cell state stays one enum per input column, with `add`, `remove`,
+`add_from` and `sub_from` (`crates/straum-domain/src/rollup/state.rs`,
+ADR-0003); an accumulator trait per aggregate would keep shared state
+twice and lose the column layout (jb, 2026-11-19). A new aggregate is
+a new answer over a state, or one more column in one.
+
+| Order | Aggregate | State | Note |
+| --- | --- | --- | --- |
+| 1 | `var_pop`, `var_samp`, `variance`, `stddev_pop`, `stddev_samp`, `stddev` | `Sum` and a column of squares | §4.5, §4.6 |
+| 2 | `mode() WITHIN GROUP (ORDER BY c)` | `Extent` | ties take the first value (U) |
+| 3 | `sum(DISTINCT c)`, `avg(DISTINCT c)` | `Distinct` | |
+| open | `percentile_cont` | `Extent` | PostgreSQL answers in `double precision` |
+| no | `min_by`, `max_by` | | not PostgreSQL (ADR-0004) |
+| no | `any_value` | | BI tools write it into their own SQL; asks are not pgwire |
+| no | time-weighted average, counter rate | | follows row order |
+| no | `corr`, `covar_*`, `regr_*` | | needs state over two columns |
+| no | `string_agg`, `array_agg` | | holds every value |
+| no | top-k, any sketch | | not exact |
+
+`mode` and `percentile_cont` are refused by name in ADR-0003, which
+changes with them.
+
+### 4.5 Variance merges exactly
+
+With n the values that are not null, S1 their sum and S2 the sum of
+their squares, and the mean m = S1/n (I):
+
+1. Sum of (x - m)^2 = S2 - 2m·S1 + n·m^2 = S2 - S1^2/n. So
+   `var_pop` = (n·S2 - S1^2) / n^2 and `var_samp` = (n·S2 - S1^2) /
+   (n·(n - 1)), from n, S1 and S2 alone.
+2. n, S1 and S2 are sums over rows. Over two disjoint sets of rows each
+   is the sum of the two, so a merge adds them, in any split and order.
+3. A delete subtracts (1, x, x^2). Integers subtract exactly.
+4. S1^2 <= n·S2 (Cauchy-Schwarz), so the square root never meets a
+   negative.
+5. A `numeric(p, s)` value is held as x·10^s. The numerator scales by
+   10^2s and the denominator not at all, so the answer is divided by
+   10^2s exactly.
+
+A script checked this once against the definition in exact fractions:
+20000 random trials, values up to 2^62 in magnitude, scales 0, 2 and 4,
+1 to 6 cells merged, random rows deleted. All 40000 comparisons, sample
+and population, were equal. Averaging the cells' own variances, planted
+as a bug, gave a wrong answer in 17423 trials. Merging variances or
+standard deviations directly is the trap `aggregates.md` shows for
+averages.
+
+Not shown: that the division and the square root round as PostgreSQL's
+`numeric` does, and that one value gives null for `var_samp` and 0 for
+`var_pop` (U). The tests in §4.7 settle both.
+
+### 4.6 Overflow of the squares
+
+In `i128` the sum of squares overflows soon for wide values (computed):
+after 170 rows a cell of `numeric(18, s)` at its largest, and after 1
+row of `bigint` near its largest. Values up to 10^9 take
+170141183460469231731 rows.
+
+`Sums` widens a column from `I32` to `I64` to `I128` when a sum needs
+it (`crates/straum-domain/src/column.rs`). One more width, 256 bits,
+ends the overflow: below 2^64 rows, the bound ADR-0003 gives for sums,
+S2 needs at most 191 bits. The ask needs 256 bits in any case, as S1^2
+takes up to 255. Only a column whose values need it pays. `std` has no
+256-bit integer; a hand-written one (add, subtract, multiply, divide,
+square root, print) or a crate is open.
+
+Rejected: refusing variance on `bigint` and wide `numeric` when the
+spec is checked, which shuts out the common amount column; and a
+checked add that stops Straum (ADR-0009), which stops on values a `sum`
+takes.
+
+### 4.7 How the tests hold it
+
+- `crates/straum-domain/tests/store/workload.rs` adds, updates and
+  removes random trips, truncates them, and checks random asks across
+  buckets and levels against `tests/store/reference.rs`. The reference
+  for variance computes the definition in two passes over the rows,
+  not n·S2 - S1^2, so it does not repeat the code's own formula.
+- `crates/straum-pg/src/tests/references.rs` compares the same asks
+  with PostgreSQL's SQL over the same rows, which settles rounding and
+  the one-value cases.
+- Planted bugs: `remove` that subtracts x but not x^2, and a merge that
+  averages variances. The workload must fail on each.
+
 ## Open points
 
 - Exact median over the min and max state, built as `percentile_disc`
@@ -215,6 +398,8 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
   would make it a binary search on value; unbuilt.
 - Count distinct's memory (ADR-0003) is the same question as a
   percentile's.
-- Variance and standard deviation are algebraic and invertible over
-  integers: a sum of squares beside the sum. `i128` overflow of the
-  squares is unchecked.
+- Variance and standard deviation: how PostgreSQL's `numeric` rounds
+  them, and a hand-written 256-bit integer or a crate (§4.5, §4.6).
+- `percentile_cont`: exact to PostgreSQL's bit, but a `double
+  precision` answer. Add it, or keep `percentile_disc` as the median
+  (§4.4).

@@ -41,8 +41,8 @@ v1 doesn't build.
 - [JOINS.md](JOINS.md): what was built before ask-time joins, the
   sources behind the choice, and the numbers.
 - [AGGREGATES.md](AGGREGATES.md): which aggregates merge and which
-  take a delete, the sources, what other systems do, and where
-  Straum's cell states sit.
+  take a delete, the sources, what other systems do, where Straum's
+  cell states sit, and which aggregates to add next.
 
 ## Tags
 
