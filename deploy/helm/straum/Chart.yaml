@@ -2,7 +2,7 @@ apiVersion: v2
 name: straum
 description: >-
   Straum keeps declared aggregates over PostgreSQL tables in memory, fed by
-  logical replication, and answers asks over HTTP.
+  logical replication or the physical WAL, and answers asks over HTTP.
 type: application
 # The preStop sleep action is on by default from 1.30, stable from 1.34.
 kubeVersion: ">=1.30.0-0"
