@@ -282,6 +282,39 @@ fn an_enum_column_added_while_streaming_reads_as_its_labels() {
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
+/// The layouts are read again after a commit that changes an enum, as a
+/// label added does, and not after one that changes another catalog in
+/// the same database, as a table Straum doesn't read made or analyzed,
+/// or a temporary table, do.
+#[test]
+fn reads_the_layouts_again_after_an_enum_changes_alone() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "enum_changes", TASKS);
+    let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
+    db.run("SELECT pg_log_standby_snapshot()");
+    let spec = db.spec(TASKS_SPEC);
+    let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
+    // From the checkpoint before the tables were made, which reads them.
+    pipeline.through_now(&mut db, &mut stream);
+    let made = pipeline.layouts_read;
+    // `ANALYZE` of a table Straum reads invalidates its relcache, as DDL
+    // on it does, so it reads that table's layout again.
+    for statement in [
+        "INSERT INTO $S.tasks VALUES (1, 1, 1, '2024-01-15 10:00', NULL, 3, 'grid')",
+        "CREATE TABLE $S.unread (id int)",
+        "INSERT INTO $S.unread SELECT generate_series(1, 100)",
+        "ANALYZE $S.unread",
+        "CREATE TEMP TABLE scratch (id int)",
+    ] {
+        db.run(statement);
+        pipeline.through_now(&mut db, &mut stream);
+        assert_eq!(pipeline.layouts_read, made, "{statement}");
+    }
+    db.run("ALTER TYPE $S.kind ADD VALUE 'bin'");
+    pipeline.through_now(&mut db, &mut stream);
+    assert_eq!(pipeline.layouts_read, made + 1);
+}
+
 /// A transaction prepared before the start holds it back until it ends,
 /// as it does a logical slot's creation: the WAL before the redo point
 /// may hold its changes. The error names it; once it ends Straum starts.

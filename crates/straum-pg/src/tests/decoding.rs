@@ -579,6 +579,8 @@ pub(super) struct Pipeline {
     pub(super) connection: Connection,
     pub(super) checked: Vec<Checked>,
     pub(super) inner: crate::wal::pipeline::Pipeline,
+    /// How many times the layouts were read again.
+    pub(super) layouts_read: usize,
 }
 
 impl Pipeline {
@@ -607,14 +609,20 @@ impl Pipeline {
             connection,
             checked,
             inner,
+            layouts_read: 0,
         }
     }
 
     /// The commits `record` completes.
     pub(super) fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
-        let (connection, checked) = (&mut self.connection, &self.checked);
+        let connection = &mut self.connection;
+        let checked = &self.checked;
+        let layouts_read = &mut self.layouts_read;
         (self.inner)
-            .record(record, |_| physical::read_layouts(connection, checked))
+            .record(record, |_| {
+                *layouts_read += 1;
+                physical::read_layouts(connection, checked)
+            })
             .unwrap()
     }
 

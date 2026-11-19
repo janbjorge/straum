@@ -3,7 +3,8 @@
 //! standby's `RUNNING_XACTS`, which lists the transactions running when it
 //! was written. A record goes in, an `Event` comes out for
 //! `transactions.rs`. A commit also names the tables whose relcache, the
-//! catalog cache of a table's layout, it invalidates: what DDL leaves.
+//! catalog cache of a table's layout, it invalidates: what DDL leaves;
+//! and the databases where it changed an enum, by `pg_enum`'s messages.
 //! Layouts: `src/include/access/xact.h` and `standbydefs.h`, read as
 //! `ParseCommitRecord` and `ParseAbortRecord` in `xactdesc.c` do.
 
@@ -55,6 +56,18 @@ const RELCACHE_RELATION: usize = 8;
 /// `SharedInvalCatcacheMsg` and `SharedInvalCatalogMsg`: `dbId` after the
 /// kind, 0 for a catalog shared by every database.
 const CATALOG_DATABASE: usize = 4;
+/// `SharedInvalCatalogMsg`: `catId`, the catalog, after `dbId`.
+const CATALOG_ID: usize = 8;
+/// `EnumRelationId`, the OID of `pg_enum`, fixed in its header.
+const ENUM_CATALOG: Oid = 3501;
+/// The ids of `pg_enum`'s two catcaches, `ENUMOID` and `ENUMTYPOIDNAME`.
+// A catcache's id is its place in `SysCacheIdentifier`, which 17 on
+// generates from the catalog headers' `MAKE_SYSCACHE` in name order. Both
+// are 23 and 24 in 17, 18 and 19, as `pg_waldump` prints for an
+// `ALTER TYPE ... ADD VALUE`; a cache added before them in a new major
+// moves them, so `TooNewForPhysical` holds that major back until checked.
+const ENUM_BY_OID_CACHE: i8 = 23;
+const ENUM_BY_TYPE_AND_LABEL_CACHE: i8 = 24;
 /// `xl_xact_stats_item`: kind, database and object; the object is 64
 /// bits from 18.
 const DROPPED_STAT_17: usize = 12;
@@ -90,14 +103,13 @@ pub(crate) struct Ending {
     /// Tables whose relcache entry the commit invalidates: what DDL, and
     /// some maintenance, on a table leaves.
     pub(crate) invalidated: Vec<Invalidated>,
-    /// The databases whose catalog rows the commit changed, such as an
-    /// enum's labels, which invalidate no table; 0 for a shared catalog.
-    // By database, not by the `pg_enum` caches' ids: those are the order
-    // of `MAKE_SYSCACHE` across the catalog headers, generated per major,
-    // and move as catalogs gain caches. `dbId` lies at the same place in
-    // every major. The WAL is the whole server's, so this keeps DDL in
-    // other databases from reading the layouts again.
-    pub(crate) catalogs_changed: Vec<Oid>,
+    /// The databases where the commit changed an enum, a label added or
+    /// renamed, which invalidates no table.
+    // `pg_enum`'s messages alone: one of any other catalog, as `ANALYZE`
+    // (`pg_statistic`) or a temporary table leaves, would read the
+    // layouts again for nothing, on the stream's thread. By database
+    // too: the WAL is the whole server's.
+    pub(crate) enums_changed: Vec<Oid>,
 }
 
 /// A relcache invalidation: one table, or with `relation` 0 every table
@@ -181,16 +193,16 @@ fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
         at += dropped_stat_size(major) * read_count(data, &mut at)?;
     }
     let mut invalidated = Vec::new();
-    let mut catalogs_changed = Vec::new();
+    let mut enums_changed = Vec::new();
     if outcome == Outcome::Commit && parts & HAS_INVALIDATIONS != 0 {
         let count = read_count(data, &mut at)?;
         for index in 0..count {
             let message = at + INVALIDATION * index;
             let kind = *data.get(message)?;
-            if i8::from_le_bytes([kind]) >= INVALIDATE_CATALOG {
+            if changes_an_enum(data, message)? {
                 let database = u32_at(data, message + CATALOG_DATABASE)?;
-                if !catalogs_changed.contains(&database) {
-                    catalogs_changed.push(database);
+                if !enums_changed.contains(&database) {
+                    enums_changed.push(database);
                 }
             }
             if kind == INVALIDATE_RELCACHE {
@@ -212,8 +224,18 @@ fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
         subxacts,
         time,
         invalidated,
-        catalogs_changed,
+        enums_changed,
     })
+}
+
+/// Whether the invalidation message at `at` in `data` is of `pg_enum`:
+/// a row of one of its caches, or all of it.
+fn changes_an_enum(data: &[u8], at: usize) -> Option<bool> {
+    let kind = i8::from_le_bytes([*data.get(at)?]);
+    if kind == INVALIDATE_CATALOG {
+        return Some(u32_at(data, at + CATALOG_ID)? == ENUM_CATALOG);
+    }
+    Some(kind == ENUM_BY_OID_CACHE || kind == ENUM_BY_TYPE_AND_LABEL_CACHE)
 }
 
 /// The count at `at`, moving `at` past it.
@@ -319,16 +341,25 @@ pub(crate) mod tests {
     }
 
     /// The main data of a commit at `time` whose only part is one catcache
-    /// invalidation, of a row of a catalog of `database`.
-    pub(crate) fn catalog_commit(time: i64, database: u32) -> Vec<u8> {
+    /// invalidation of `pg_enum`, an enum of `database` changed.
+    pub(crate) fn enum_commit(time: i64, database: u32) -> Vec<u8> {
+        catcache_commit(time, ENUM_BY_OID_CACHE, database)
+    }
+
+    /// The main data of a commit at `time` whose only part is one catcache
+    /// invalidation of `pg_statistic`, as `ANALYZE` in `database` leaves.
+    pub(crate) fn statistic_commit(time: i64, database: u32) -> Vec<u8> {
+        catcache_commit(time, STATISTIC_CACHE, database)
+    }
+
+    /// `STATRELATTINH`, `pg_statistic`'s catcache, in 18 and 19.
+    const STATISTIC_CACHE: i8 = 65;
+
+    fn catcache_commit(time: i64, cache: i8, database: u32) -> Vec<u8> {
         let mut main = time.to_le_bytes().to_vec();
         main.extend(HAS_INVALIDATIONS.to_le_bytes());
         main.extend(1u32.to_le_bytes());
-        let mut message = [0; INVALIDATION];
-        message[0] = 9;
-        message[CATALOG_DATABASE..CATALOG_DATABASE + XID_SIZE]
-            .copy_from_slice(&database.to_le_bytes());
-        main.extend(message);
+        main.extend(catcache_invalidation(cache, database));
         main
     }
 
@@ -361,9 +392,11 @@ pub(crate) mod tests {
         main.extend(vec![8; 2 * stat]);
         if outcome == Outcome::Commit {
             main.extend(words(&[3]));
-            // A catcache message, then the relcache of one table and of
-            // all of database 5.
-            main.extend([9; INVALIDATION]);
+            // A catcache message of `pg_enum`, then the relcache of one
+            // table and of all of database 5.
+            let mut enum_message = [9; INVALIDATION];
+            enum_message[0] = ENUM_BY_TYPE_AND_LABEL_CACHE.to_le_bytes()[0];
+            main.extend(enum_message);
             for relation in [16_384, 0] {
                 main.extend(relcache_invalidation(5, relation));
             }
@@ -386,10 +419,11 @@ pub(crate) mod tests {
     /// What `ending_main` says, as an event.
     fn expected_ending(outcome: Outcome) -> Event {
         let mut invalidated = Vec::new();
-        let mut catalogs_changed = Vec::new();
+        let mut enums_changed = Vec::new();
         if outcome == Outcome::Commit {
-            // The catcache message's bytes, all 9, read as its database.
-            catalogs_changed.push(0x0909_0909);
+            // The `pg_enum` message's bytes after its kind, all 9, read as
+            // its database.
+            enums_changed.push(0x0909_0909);
             for relation in [16_384, 0] {
                 invalidated.push(Invalidated {
                     database: 5,
@@ -402,7 +436,7 @@ pub(crate) mod tests {
             subxacts: vec![801, 802],
             time: 12_345,
             invalidated,
-            catalogs_changed,
+            enums_changed,
         };
         match outcome {
             Outcome::Commit => Event::Commit(ending),
@@ -437,39 +471,86 @@ pub(crate) mod tests {
             subxacts: Vec::new(),
             time: -5,
             invalidated: Vec::new(),
-            catalogs_changed: Vec::new(),
+            enums_changed: Vec::new(),
         };
         assert_eq!(got, Ok(Some(Event::Commit(ending))));
     }
 
-    /// A catcache or catalog message says a catalog row of its database
-    /// changed, each database once; a relcache one alone, which DDL on a
-    /// table also leaves, does not.
+    /// A message of a `pg_enum` cache, or one for all of `pg_enum`, says
+    /// an enum of its database changed, each database once. One of
+    /// another catalog, as `ANALYZE` or `CREATE TEMP TABLE` leaves, and a
+    /// relcache one alone, which DDL on a table also leaves, do not.
     #[test]
-    fn tells_a_catalog_change_from_a_table_invalidated() {
+    fn tells_an_enum_changed_from_other_catalog_changes() {
         let relcache_only = invalidating_commit(-5, 5, 77);
-        assert_eq!(catalogs_changed(relcache_only.clone()), []);
-        for kind in [0, 9, INVALIDATE_CATALOG.to_le_bytes()[0]] {
-            let mut catalog = relcache_only.clone();
-            // After the time and the xinfo, the count of messages.
-            let count_at = size_of::<i64>() + XINFO_SIZE;
-            catalog[count_at..count_at + COUNT_SIZE].copy_from_slice(&4u32.to_le_bytes());
-            for database in [6u32, 7, 6] {
-                let mut message = [0; INVALIDATION];
-                message[0] = kind;
-                message[CATALOG_DATABASE..CATALOG_DATABASE + XID_SIZE]
-                    .copy_from_slice(&database.to_le_bytes());
-                catalog.extend(message);
-            }
-            assert_eq!(catalogs_changed(catalog), [6, 7], "kind {kind}");
+        assert_eq!(enums_changed(relcache_only.clone()), []);
+        let enum_messages = [
+            catcache_invalidation(ENUM_BY_OID_CACHE, 6),
+            catcache_invalidation(ENUM_BY_TYPE_AND_LABEL_CACHE, 7),
+            catalog_invalidation(ENUM_CATALOG, 6),
+        ];
+        let other_messages = [
+            // `pg_attribute`'s caches, 6 and 7 from 17 to 19, the caches
+            // either side of `pg_enum`'s, and `pg_class`'s and
+            // `pg_statistic`'s in 18 and 19, 57 and 65.
+            catcache_invalidation(6, 6),
+            catcache_invalidation(7, 6),
+            catcache_invalidation(ENUM_BY_OID_CACHE - 1, 6),
+            catcache_invalidation(ENUM_BY_TYPE_AND_LABEL_CACHE + 1, 6),
+            catcache_invalidation(57, 6),
+            catcache_invalidation(65, 6),
+            // `pg_class`, as `VACUUM FULL pg_class` leaves.
+            catalog_invalidation(1259, 6),
+        ];
+        let mut others = relcache_only.clone();
+        for message in other_messages {
+            others = with_message(others, message);
+        }
+        assert_eq!(enums_changed(others.clone()), []);
+        let mut enums = others;
+        for message in enum_messages {
+            enums = with_message(enums, message);
+        }
+        assert_eq!(enums_changed(enums), [6, 7]);
+        for message in enum_messages {
+            assert_eq!(
+                enums_changed(with_message(relcache_only.clone(), message)).len(),
+                1
+            );
         }
     }
 
-    /// The databases the commit with `main` says a catalog row of changed.
-    fn catalogs_changed(main: Vec<u8>) -> Vec<Oid> {
+    /// A catcache `SharedInvalidationMessage` of `cache` in `database`.
+    fn catcache_invalidation(cache: i8, database: u32) -> [u8; INVALIDATION] {
+        let mut message = [0; INVALIDATION];
+        message[0] = cache.to_le_bytes()[0];
+        message[CATALOG_DATABASE..CATALOG_DATABASE + XID_SIZE]
+            .copy_from_slice(&database.to_le_bytes());
+        message
+    }
+
+    /// A `SharedInvalCatalogMsg` of all of `catalog` in `database`.
+    fn catalog_invalidation(catalog: Oid, database: u32) -> [u8; INVALIDATION] {
+        let mut message = catcache_invalidation(INVALIDATE_CATALOG, database);
+        message[CATALOG_ID..CATALOG_ID + XID_SIZE].copy_from_slice(&catalog.to_le_bytes());
+        message
+    }
+
+    /// `main`, a commit with invalidations only, with `message` added.
+    fn with_message(mut main: Vec<u8>, message: [u8; INVALIDATION]) -> Vec<u8> {
+        // After the time and the xinfo, the count of messages.
+        let count_at = size_of::<i64>() + XINFO_SIZE;
+        let count = u32_at(&main, count_at).unwrap() + 1;
+        main[count_at..count_at + COUNT_SIZE].copy_from_slice(&count.to_le_bytes());
+        main.extend(message);
+        main
+    }
+
+    /// The databases the commit with `main` says an enum of changed.
+    fn enums_changed(main: Vec<u8>) -> Vec<Oid> {
         let info = XACT_COMMIT | XACT_HAS_INFO;
         match event(&record(RESOURCE_MANAGER_TRANSACTION, info, 77, main), 18) {
-            Ok(Some(Event::Commit(ending))) => ending.catalogs_changed,
+            Ok(Some(Event::Commit(ending))) => ending.enums_changed,
             other => panic!("{other:?}"),
         }
     }

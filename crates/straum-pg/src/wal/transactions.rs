@@ -463,7 +463,7 @@ mod tests {
             subxacts,
             time: i64::from(xid),
             invalidated: Vec::new(),
-            catalogs_changed: Vec::new(),
+            enums_changed: Vec::new(),
         }
     }
 

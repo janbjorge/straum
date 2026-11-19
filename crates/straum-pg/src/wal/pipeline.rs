@@ -147,7 +147,7 @@ impl Pipeline {
             // An enum's new label invalidates no table; rows to come may
             // hold it. A label renamed is caught by the reading of the
             // WAL, which stops Straum.
-            let relabel = self.publisher.reads_enums_in(&ending.catalogs_changed);
+            let relabel = self.publisher.reads_enums_in(&ending.enums_changed);
             if !stale.is_empty() || relabel {
                 let fresh = layouts(ending.xid)?;
                 self.publisher.relayout(&stale, fresh);
@@ -299,7 +299,9 @@ mod tests {
     use crate::wal::test_support::{BlockSpec, DATABASE, FILE, Spec, assemble};
     use crate::wal::test_support::{allocations, decode};
     use crate::wal::tuple::{Attribute, Kind};
-    use crate::wal::xact::tests::{catalog_commit, invalidating_commit, running_main};
+    use crate::wal::xact::tests::{
+        enum_commit, invalidating_commit, running_main, statistic_commit,
+    };
     use crate::wal::xact::{STANDBY_RUNNING_XACTS, XACT_COMMIT, XACT_HAS_INFO};
     use crate::wal::{
         RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION,
@@ -698,11 +700,11 @@ mod tests {
         ));
     }
 
-    /// A catalog row changed in the database of a table read of an enum,
-    /// as by a label added, reads the layouts again; one changed in
-    /// another database does not.
+    /// An enum changed in the database of a table read of an enum, as by
+    /// a label added, reads the layouts again; one changed in another
+    /// database does not, nor another catalog changed in the same one.
     #[test]
-    fn reads_layouts_again_only_after_a_catalog_change_in_its_database() {
+    fn reads_layouts_again_only_after_an_enum_change_in_its_database() {
         let mut layout = table();
         layout.attributes[0].kind = Kind::Enum;
         let checked = Checked {
@@ -721,14 +723,18 @@ mod tests {
         see_all(&mut pipeline, "1:1:").unwrap();
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         let asked = RefCell::new(Vec::new());
-        for (xid, database) in [(100, DATABASE + 1), (101, DATABASE)] {
-            let main = catalog_commit(COMMIT_TIME, database);
+        let commits = [
+            (100, enum_commit(COMMIT_TIME, DATABASE + 1)),
+            (101, statistic_commit(COMMIT_TIME, DATABASE)),
+            (102, enum_commit(COMMIT_TIME, DATABASE)),
+        ];
+        for (xid, main) in commits {
             let info = XACT_COMMIT | XACT_HAS_INFO;
             let commit = wal.record(RESOURCE_MANAGER_TRANSACTION, info, xid, main, Vec::new());
             let read = pipeline.record(&commit, |xid| Ok(the_table_for(&asked, xid)));
             read.unwrap();
         }
-        assert_eq!(*asked.borrow(), [101]);
+        assert_eq!(*asked.borrow(), [102]);
     }
 
     /// DDL lays out the rows after it, whether or not its commit goes on:
