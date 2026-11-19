@@ -209,10 +209,21 @@ fn execute(command: Command) -> Result<(), Failure> {
     }
 }
 
-/// Writes an answer to stdout. A reader that has left, as `head` does
-/// after its lines, is no failure.
+/// Writes an answer to stdout.
 fn print(text: &str) -> Result<(), Failure> {
-    match io::stdout().write_all(text.as_bytes()) {
+    write_answer(io::stdout().lock(), text)
+}
+
+/// Writes an answer to `output` and flushes it: stdout holds a line
+/// without its newline, and a write that fails at the exit is lost. A
+/// reader that has left, as `head` does after its lines, is no failure.
+// `impl`: the binary passes stdout, tests a writer that fails.
+fn write_answer(mut output: impl Write, text: &str) -> Result<(), Failure> {
+    let written = match output.write_all(text.as_bytes()) {
+        Ok(()) => output.flush(),
+        Err(error) => Err(error),
+    };
+    match written {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
             Err(Failure::WritingAnswer(error))
         }
@@ -593,6 +604,39 @@ mod tests {
         for line in failure.to_string().lines() {
             assert!(line.starts_with("s: "), "{line}");
         }
+    }
+
+    /// Takes every byte into a buffer and fails as it flushes them, as
+    /// stdout's buffer does onto a full disk.
+    struct Full {
+        kind: io::ErrorKind,
+    }
+
+    impl Write for Full {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(self.kind.into())
+        }
+    }
+
+    #[test]
+    fn an_answer_that_cannot_be_flushed_fails() {
+        let full = Full {
+            kind: io::ErrorKind::StorageFull,
+        };
+        let failure = write_answer(full, "{\"rows\":[]}\n").unwrap_err();
+        assert!(matches!(failure, Failure::WritingAnswer(_)), "{failure}");
+        // A reader that left as the answer was flushed is no failure.
+        let left = Full {
+            kind: io::ErrorKind::BrokenPipe,
+        };
+        assert!(write_answer(left, "{\"rows\":[]}\n").is_ok());
+        let mut written = Vec::new();
+        assert!(write_answer(&mut written, "a\n").is_ok());
+        assert_eq!(written, b"a\n");
     }
 
     fn refused(status_line: &str) -> Failure {
