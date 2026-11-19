@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-const DOCS: [Page; 6] = [
+const DOCS: [Page; 5] = [
     Page {
         name: "README.md",
         markdown: include_str!("../../../README.md"),
@@ -21,10 +21,6 @@ const DOCS: [Page; 6] = [
     Page {
         name: "docs/src/introduction.md",
         markdown: include_str!("../../../docs/src/introduction.md"),
-    },
-    Page {
-        name: "docs/src/aggregates.md",
-        markdown: include_str!("../../../docs/src/aggregates.md"),
     },
     Page {
         name: "docs/src/performance.md",

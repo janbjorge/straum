@@ -149,17 +149,13 @@ a variance beside them adds only its sum of squares.
 
 An exact median needs each cell's values or a count per value, and a `min`
 or `max` already keeps the counts. So Straum has `percentile_disc`, which is
-exact and follows deletes:
+exact and follows deletes. The `usage` view of [Specs](spec.md) holds
+three such measures:
 
 ```sql
-CREATE VIEW usage AS
-SELECT buckets(e.at, '1 hour', '1 day') AS bucket,
-       e.kind AS kind,
-       max(e.amount) AS top_amount,
-       percentile_disc(0.5) WITHIN GROUP (ORDER BY e.amount) AS median_amount,
-       percentile_disc(0.99) WITHIN GROUP (ORDER BY e.amount) AS p99_amount
-FROM public.events AS e
-GROUP BY 1, 2;
+max(e.amount) AS top_amount,
+percentile_disc(0.5) WITHIN GROUP (ORDER BY e.amount) AS median_amount,
+percentile_disc(0.99) WITHIN GROUP (ORDER BY e.amount) AS p99_amount
 ```
 
 `max` and both percentiles read one count per value of `e.amount`. Take the
