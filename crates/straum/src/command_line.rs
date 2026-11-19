@@ -40,9 +40,10 @@ const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: FOUR_GIBIBYTES,
 };
-/// Rows one transaction may change before Straum loads again instead of
-/// applying it; `bench/taxi.py transactions` measures what a transaction this
-/// size holds the write lock for.
+/// Rows one transaction may change before Straum stops instead of applying
+/// it, so the next start brings its rows in through the load;
+/// `bench/taxi.py transactions` measures what a transaction this size holds
+/// the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
 /// Bytes of rows a physical stream holds before Straum stops: a guard,
 /// far above what a checkpoint cycle's pages and open transactions take.
