@@ -197,11 +197,7 @@ fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
                 continue;
             }
             AskKey::WiderBucket { name, width } => {
-                if *name != fact.time.name {
-                    errors.push(AskError::NotTime {
-                        name: name.clone(),
-                        time: fact.time.name.clone(),
-                    });
+                if !check_is_time(fact, name, errors) {
                     continue;
                 }
                 check_row_width(fact, *width, errors);
@@ -215,14 +211,16 @@ fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
 }
 
 /// A wider width and the range bounds read the view's time and nothing
-/// else.
-fn check_is_time(fact: &Fact, name: &Identifier, errors: &mut Vec<AskError>) {
-    if *name != fact.time.name {
-        errors.push(AskError::NotTime {
-            name: name.clone(),
-            time: fact.time.name.clone(),
-        });
+/// else; whether `name` is it.
+fn check_is_time(fact: &Fact, name: &Identifier, errors: &mut Vec<AskError>) -> bool {
+    if *name == fact.time.name {
+        return true;
     }
+    errors.push(AskError::NotTime {
+        name: name.clone(),
+        time: fact.time.name.clone(),
+    });
+    false
 }
 
 /// A row width must be one the view keeps, so each row is one stored
