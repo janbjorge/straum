@@ -1,8 +1,7 @@
 # Glossary
 
 One name per thing, in the guide, the ADRs, the code and its errors.
-Each term has a line and a link to the page that explains it. The
-code's name follows in parentheses where it differs; "also" lists
+The code's name follows in parentheses where it differs; "also" lists
 spellings still found elsewhere, such as in the notes under
 `research/`. ADRs win over the guide and this glossary. The clashes at
 the end are open.

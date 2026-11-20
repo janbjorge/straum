@@ -96,11 +96,11 @@ rebuilt or maintained.
 bench/taxi.py
 ```
 
-It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
-which fetches the script's Python packages. The first run downloads the
-six months into `bench/data/`, which git ignores. Then it builds Straum,
-starts a throwaway `postgres:18`, or the major `STRAUM_TEST_POSTGRES`
-names, and loads the months with `bench/load_taxi_trips.py`. It runs the
+It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/).
+The first run downloads the six months into `bench/data/`, which git
+ignores. Then it builds Straum, starts a throwaway `postgres:18`, or
+the major `STRAUM_TEST_POSTGRES` names, and loads the months with
+`bench/load_taxi_trips.py`. It runs the
 SQL `straum plan` prints and starts `straum run`. Last, it sends each ask
 to both sides, and stops at the first answer that differs.
 
@@ -343,13 +343,12 @@ thread, PostgreSQL 18, six reads each way:
 | delete | 137.7 MiB | 1,010,911 | 10,712 | 480.2 ms | 2,977 MiB/s | 457 MiB/s | 3,321,773 | 1.6x | 5,945 MiB/s |
 | all | 795.9 MiB | | | 5.4 s | 2,452 MiB/s | 520 MiB/s | 2,613,459 | 3.5x | 6,200 MiB/s |
 
-Images are the full-page images: the first change to a page after the
-checkpoint brings one. "Against PostgreSQL" divides the time PostgreSQL
-took to write a phase's WAL by the time the pipeline took to read it.
-Below 1x, a writer that keeps that pace for long leaves Straum behind,
-and once the lag passes `--max-lag`, `/readyz` turns off. The pipeline
-held at most 429.5 MiB of rows, most of them the open `COPY`
-transactions' rows, which wait for their commit.
+Images are the full-page images. "Against PostgreSQL" divides the
+time PostgreSQL took to write a phase's WAL by the time the pipeline
+took to read it. Below 1x, a writer that keeps that pace for long
+leaves Straum behind, and once the lag passes `--max-lag`, `/readyz`
+turns off. The pipeline held at most 429.5 MiB of rows, most of them
+the open `COPY` transactions' rows, which wait for their commit.
 
 Timings drift with the machine, so two tests in
 `crates/straum-pg/src/wal/pipeline.rs` hold what this bench gained by

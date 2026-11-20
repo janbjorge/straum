@@ -2,11 +2,9 @@
 
 This page names the code behind [How Straum works](how-it-works.md):
 who takes part, what each use case does, how the crates depend on each
-other and what the code holds true. A name in code font, such as
-`Writer::start`, is the type or function under `crates/` that holds a
-rule; the [glossary](glossary.md) gives each term its name in the
-code. [Reading the code](reading-the-code.md) gives the order to read
-the crates in and the Rust they use.
+other and what the code holds true. The [glossary](glossary.md) gives
+each term its name in the code. [Reading the code](reading-the-code.md)
+gives the order to read the crates in and the Rust they use.
 
 Four participants:
 
