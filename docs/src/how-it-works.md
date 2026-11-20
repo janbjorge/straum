@@ -7,15 +7,11 @@ names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run --wal logical` opens a temporary logical replication slot
-([the physical stream](#the-physical-stream) differs). The slot names a log sequence
-number (LSN), L, and gives a snapshot at L. Straum loads each spec table
-from that snapshot, then streams every commit after L. No commit is
-missed or applied twice.
-
-![The load and the stream split the commits at L](diagrams/start.svg)
-
-*Commits up to L come in with the load, later ones through the slot.*
+`straum run` loads each spec table once, from a snapshot, then streams
+every commit that snapshot did not see. No commit is missed or applied
+twice. How the load and the stream meet depends on the stream: [the
+logical stream](#the-logical-stream) or [the physical
+stream](#the-physical-stream).
 
 The load is one binary `COPY` per table, grouped into cells as rows arrive,
 so Straum never holds a table's rows. Straum installs nothing in
@@ -108,11 +104,8 @@ cells once under the write lock, and skips keys no fact row names.
 
 Each transaction applies whole, under one write lock, with nothing read from
 PostgreSQL in between. An insert adds its row to a cell, or to a projection
-for a dim. An update removes the old row and adds the new one. The logical
-stream sends the old row because every spec table has `REPLICA IDENTITY
-FULL`; the physical stream rebuilds it from the page. A delete removes the
-old row. On the logical stream, a truncate empties the cells or the
-projection; on the physical stream it stops Straum.
+for a dim. An update removes the old row and adds the new one. A delete
+removes the old row. Both streams give the whole old row.
 
 ![Following and answering at once](diagrams/follow.svg)
 
@@ -136,12 +129,29 @@ through the bulk `COPY`. The [benchmark](performance.md#transactions) sets
 the default.
 
 Straum also stops on a lost connection or WAL past `--max-retained-wal`
-([States](deploy.md#states)), on a spec table that the publication drops,
-that is renamed away, or that is replaced by another table under its name,
-and on a column that `ALTER COLUMN .. TYPE` rewrote, since logical decoding
-sends no row for it. It checks for these once a second.
+([States](deploy.md#states)), and on a spec table that is renamed away
+or replaced by another table under its name. It checks for these once
+a second.
 
-On the logical stream, `VACUUM FULL`, `CLUSTER`, a `GRANT` on a column,
+## The logical stream
+
+`--wal logical` opens a temporary logical replication slot. The slot
+names a log sequence number (LSN), L, and gives a snapshot at L.
+Straum loads each spec table from that snapshot, then streams every
+commit after L through the publication.
+
+![The load and the stream split the commits at L](diagrams/start.svg)
+
+*Commits up to L come in with the load, later ones through the slot.*
+
+PostgreSQL decodes the WAL and sends each transaction at its commit.
+The old row of an update or delete comes whole because every spec
+table has `REPLICA IDENTITY FULL`. A truncate empties the cells or the
+projection.
+
+Straum stops on a spec table that the publication drops, and on a
+column that `ALTER COLUMN .. TYPE` rewrote, since logical decoding
+sends no row for it. `VACUUM FULL`, `CLUSTER`, a `GRANT` on a column,
 `SET STATISTICS`, `SET STORAGE` and `SET DEFAULT` each stop nothing on
 their own. They leave the type and values as they were.
 
@@ -149,8 +159,8 @@ their own. They leave the type and values as they were.
 
 `--wal physical` skips logical decoding (architecture decision record
 ADR-0008). A temporary physical slot streams the WAL from the last
-checkpoint's redo point, and Straum turns it into the same messages, so
-one decoder serves both.
+checkpoint's redo point, and Straum turns it into the messages the
+logical stream sends, so one decoder serves both.
 
 Most records name only other tables' pages, so Straum reads their block
 headers and passes them by. Each record it does read, it checks against
@@ -222,7 +232,8 @@ cells it reads.
 *Each width takes the whole buckets inside the range. The ends fall to the
 next narrower width.*
 
-The widths a view keeps change its cell count, never its answers. An ask grouped by the bucket reads no bucket wider than its rows: hours
+The widths a view keeps change its cell count, never its answers. An
+ask grouped by the bucket reads no bucket wider than its rows: hours
 for `bucket`, days for `buckets(bucket, '1 day')`, one stored day a
 row ([Rows a day or a week apart](asks.md#rows-a-day-or-a-week-apart)).
 
