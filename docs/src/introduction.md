@@ -1,13 +1,12 @@
 # Straum
 
 Straum keeps aggregates of PostgreSQL tables in memory and answers
-asks about them over HTTP. Counts and sums come back in microseconds.
+asks about them over HTTP, counts and sums in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once,
-keeps each group as a cell in memory, and follows every commit. You
-declare what to keep as a view, in a small subset of PostgreSQL's
-`CREATE VIEW`. A file of views is a spec:
+keeps each group as a cell, and follows every commit. A spec is a file
+of views, each in a small subset of PostgreSQL's `CREATE VIEW`:
 
 ```sql
 CREATE VIEW usage AS
@@ -29,7 +28,7 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-An ask is a `SELECT` over that view, with every value as a parameter:
+An ask is a `SELECT` over a view, every value a parameter:
 
 ```sh
 curl --json '{
@@ -59,22 +58,21 @@ loads the tables and follows them. Apps ask over HTTP.*
 
 ## What it is good for
 
-Straum suits a question asked often, about tables that keep changing,
-whose answer is counts, sums, averages, minima, maxima or percentiles
-by a few keys over time ([Measures](spec.md#measures)). Dashboard
-tiles and charts fit well: events per hour, amounts by region, the
-same `GROUP BY` on every page load.
+Straum suits a question asked often about changing tables, answered
+by counts, sums, averages, minima, maxima or percentiles by a few keys
+over time ([Measures](spec.md#measures)): dashboard tiles and charts
+such as events per hour or amounts by region, the same `GROUP BY` on
+every page load.
 
-Numbers an app shows its own users fit too, such as usage this month or
-orders today. Make the account a key, and your app's backend puts the
+It suits numbers an app shows its own users, such as usage this month or
+orders today. Make the account a key, and your backend puts the
 signed-in user's account in each ask. Straum checks no one: anyone who
-reaches it can ask for any account
-([Who can ask](deploy.md#who-can-ask)).
+reaches it can ask for any account ([Who can
+ask](deploy.md#who-can-ask)).
 
-Straum also suits a summary you maintain by hand today, such as a
-materialized view refreshed on a schedule or a rollup table kept by
-triggers. It follows inserts, updates and deletes itself, and every
-answer is exact.
+It replaces a summary you maintain by hand today, such as a materialized
+view refreshed on a schedule or a rollup table kept by triggers. Straum
+follows inserts, updates and deletes itself, and every answer is exact.
 
 ## What it is not
 
@@ -85,19 +83,17 @@ sketch](aggregates.md#median-and-percentiles). It keeps nothing on disk:
 every start loads every table again, and a crash leaves no slot behind
 holding write-ahead log (WAL). PostgreSQL stays the source of truth.
 
-Straum supports PostgreSQL 17 and newer as shipped. It needs no
-extension, and connects as a role that is not a superuser, so managed
-services work. It reads a publication, or with `--wal physical` the
-WAL the server already writes ([setup](postgresql.md)). The name is
-Nynorsk for a stream or current: Straum's input is PostgreSQL's
-replication stream.
+Straum supports PostgreSQL 17 and newer as shipped, with no extension
+and a role that is not a superuser, so managed services work. It reads a
+publication, or with `--wal physical` the WAL the server already writes
+([setup](postgresql.md)). The name is Nynorsk for a stream or current:
+Straum's input is PostgreSQL's replication stream.
 
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
 
 [llms.txt](llms.txt) lists these pages for an agent.
 
-The [quick start](quick-start.md) runs Straum in Docker with one
-command, on a month of New York taxi trips, and leaves you in the
-shell. After it, a [spec](spec.md) and an [ask](asks.md) are the two
-things you write.
+Next: the [quick start](quick-start.md) runs Straum in Docker with one
+command on a month of New York taxi trips and leaves you in its shell.
+After it, you write a [spec](spec.md) and an [ask](asks.md).
