@@ -1,10 +1,10 @@
 # Glossary
 
-One name per thing, in the guide, the architecture decision records
-(ADRs), the code and its errors. The code's name follows in parentheses
-where it differs; "also" lists spellings still found elsewhere, such as
-in the notes under `research/`. ADRs win over the guide and this
-glossary. The clashes at the end are open.
+One name per thing across the guide, the architecture decision records
+(ADRs), the code and its errors. The code's name follows in
+parentheses where it differs; "also" lists spellings still found
+elsewhere, as in the notes under `research/`. ADRs win over the guide
+and this glossary. The clashes at the end are open.
 
 ## Straum
 
@@ -37,8 +37,8 @@ glossary. The clashes at the end are open.
   table", "dimension".
 - **Dim key** (`Dim::key`): the dim's columns a join equals; not a view
   key ([Joining a dim](spec.md#joining-a-dim)).
-- **Spec table** (`Member`): a fact or a dim when the role doesn't
-  matter: what a load copies and the publication holds. Also "every
+- **Spec table** (`Member`): a fact or a dim, when the role doesn't
+  matter; what a load copies and the publication holds. Also "every
   table the spec names".
 - **Table** (`straum_domain::Table`): a `schema.table`, written whole
   with an alias; PostgreSQL's word is relation (`Relation`).
@@ -82,20 +82,19 @@ glossary. The clashes at the end are open.
   the `buckets` item reads.
 - **Bucket**: one span of the time column at one width
   ([Cells](how-it-works.md#cells)).
-- **Bucket width** (`Width`): a span, the first one dividing a day,
-  each wider one a multiple of the one before; each a grid from the
-  epoch, written in its largest unit (`1 hour`, `7 days`). Also
-  "grain".
+- **Bucket width** (`Width`): a span on a grid from the epoch, written
+  in its largest unit (`1 hour`, `7 days`); the first divides a day,
+  each wider one is a multiple of the one before. Also "grain".
 - **Narrowest width** (`Time::width`): the first width `buckets`
   lists, the one each row goes in; the rest are the **wider widths**
-  (`Time::wider`). Also "finest", "the `date_bin` width": PostgreSQL
+  (`Time::wider`). Also "finest", "the `date_bin` width", as PostgreSQL
   writes the item as `date_bin` at it.
 - **Level** (`Level`): the cells of one width
   ([The store](design.md#the-store)).
-- **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the width
-  of the buckets an ask answers by: the narrowest for the time's name,
-  or the wider one `buckets(bucket, '1 day')` names ([Rows a day or a
-  week apart](asks.md#rows-a-day-or-a-week-apart)).
+- **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the bucket
+  width an ask answers by: the narrowest for the time's name, or the
+  wider one `buckets(bucket, '1 day')` names ([Rows a day or a week
+  apart](asks.md#rows-a-day-or-a-week-apart)).
 - **Bucket edge**: a multiple of a bucket width; each bound an ask
   writes sits on one of its row width ([Parameters](asks.md#parameters)).
 - **Wall clock**: how a `timestamp` reads: no zone, printed with a `Z`
@@ -120,7 +119,7 @@ glossary. The clashes at the end are open.
 - **Merge**: adding the states of the cells an ask reads into one answer
   per group ([Merging](aggregates.md#merging)).
 - **Cell loop** (`CellLoop`): an ask's pass over its cells, filtering
-  and merging them into groups.
+  and merging them.
 - **Distributive**, **algebraic**, **holistic**: what a part keeps to
   merge ([Merging](aggregates.md#merging)).
 - **Fraction** (`Fraction`) and **rank**: the `f` of
@@ -164,8 +163,8 @@ glossary. The clashes at the end are open.
 - **Cover** (`Rollup::cover`): the buckets an ask reads, widest in the
   middle ([Answering an ask](how-it-works.md#answering-an-ask)).
 - **Limit**: what a `--max-*` flag caps
-  ([straum run](cli.md#straum-run)). `Limits` holds two of them,
-  `--max-lag` and `--max-retained-wal`.
+  ([straum run](cli.md#straum-run)); `Limits` holds `--max-lag` and
+  `--max-retained-wal`.
 - **Answer** (`Answer`, `Answered`): `as_of` and rows, as JSON or a
   table ([The answer](asks.md#the-answer)). Also "reply" for the HTTP
   message.
@@ -185,10 +184,9 @@ glossary. The clashes at the end are open.
 - **Start** (`Writer::start`): a new slot, a **load** of each table in
   its snapshot, then the stream
   ([Load once](how-it-works.md#load-once-follow-every-commit)).
-- **Fail hard**: a failure ends the process with exit 1, and whatever
-  runs Straum starts it again from a new slot
-  ([States](deploy.md#states)). That new start is a **restart**. Straum
-  never retries in the process.
+- **Fail hard**: a failure ends the process with exit 1; whatever runs
+  Straum starts it again, a **restart**, from a new slot
+  ([States](deploy.md#states)). Straum never retries in the process.
 - **States**: Loading, Ready, Lagging, Exited, Stopping
   ([States](deploy.md#states)); no enum.
 - **Ready** (`Status::ready`): every table loaded and lag within
@@ -204,11 +202,10 @@ glossary. The clashes at the end are open.
 - **Applied** and **committed** (`State::applied`, `Following::applied`,
   `Commit::committed`): the last commit in the store, and when
   PostgreSQL committed it.
-- **Progress** (`Progress`): what the writer did beside the store: the
-  following, behind a lock of its own so the status never waits on an
-  ask.
-- **Step** (`Writer::step`): one turn of the writer; one that fails is a
-  **failure**, after which the writer takes no more steps and Straum
+- **Progress** (`Progress`): the following, what the writer did beside
+  the store, behind its own lock so the status never waits on an ask.
+- **Step** (`Writer::step`): one turn of the writer; one that fails is
+  a **failure**, after which the writer takes no more and Straum
   exits.
 - **Commit** (`Commit`): one transaction's changes, applied whole.
   "Transaction" only where PostgreSQL's word is needed.
@@ -221,11 +218,9 @@ glossary. The clashes at the end are open.
 - **Source** (`Source`, `Postgres`): the port to PostgreSQL. "Source of
   truth" means PostgreSQL itself.
 - **Plain connection** (`Postgres::plain`): a connection beside the
-  replication connection. `Postgres::plain` reads the WAL position each
-  second; the watchdog has one of its own, and the physical stream has
-  two more
-  ([What Straum costs the
-  server](postgresql.md#what-straum-costs-the-server)).
+  replication connection. One reads the WAL position each second, the
+  watchdog has its own, the physical stream two more ([What Straum
+  costs the server](postgresql.md#what-straum-costs-the-server)).
 - **WAL retained** (`Wal::retained`): bytes PostgreSQL keeps for the
   slot ([straum status](cli.md#straum-status)).
 - **Watchdog** (`SlotGuard`, `watchdog.rs`): two threads that end the
@@ -276,8 +271,9 @@ glossary. The clashes at the end are open.
 - **Pipeline** (`wal::pipeline::Pipeline`): records to commits: page
   state, transactions, publisher, decoder ([Start](design.md#start)).
 - **WAL record** (`wal::Record`): one WAL entry, written by one
-  **resource manager** (`xl_rmid`). One **passed by** (`Interest::PassBy`)
-  names only other relation files' pages: the reader skips it unchecked.
+  **resource manager** (`xl_rmid`). One **passed by**
+  (`Interest::PassBy`) names only other relation files' pages, and the
+  reader skips it unchecked.
 - **Block reference** (`Block`): a page a record changes, by **relation
   file** (`RelationFile`) and **block number** (`BlockNumber`).
 - **Slot on a page** (`SlotNumber`): a row's place on a heap page; not a
