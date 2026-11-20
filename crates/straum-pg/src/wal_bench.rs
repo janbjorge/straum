@@ -69,6 +69,8 @@ struct Counted {
 struct Wal {
     start: u64,
     segment_size: u64,
+    /// The major that wrote it.
+    major: u32,
     chunks: Vec<Chunk>,
 }
 
@@ -145,7 +147,7 @@ fn physical_wal_bench() {
     let setup = set_up(&root, &mut sql, &mut stream);
     let phases = write_phases(&mut sql, &container, &setup.copies, setup.start);
     let flushed = lsn(&mut sql, "SELECT pg_current_wal_flush_lsn()");
-    let records = Records::new(setup.start, setup.segment_size);
+    let records = Records::new(setup.start, setup.segment_size, setup.major);
     stream
         .copy_both(&format!(
             "START_REPLICATION SLOT {} PHYSICAL {}",
@@ -157,6 +159,7 @@ fn physical_wal_bench() {
     let wal = Wal {
         start: setup.start,
         segment_size: setup.segment_size,
+        major: setup.major,
         chunks: capture(&mut stream, setup.start, flushed),
     };
     let fastest = read_fastest(&wal, &phases, &setup, runs);
@@ -492,7 +495,7 @@ fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<Chunk> {
 /// full-page images and the rows it ends with.
 fn replay(wal: &Wal, ends: &[u64], reader: &mut Reader) -> Vec<Read> {
     let mut reads = vec![Read::default(); ends.len()];
-    let mut records = Records::new(wal.start, wal.segment_size);
+    let mut records = Records::new(wal.start, wal.segment_size, wal.major);
     // As the stream reads: past records of tables the pipeline doesn't.
     if let Reader::Pipeline(read) = reader {
         records.pass_by_other_files(read.pipeline.files());

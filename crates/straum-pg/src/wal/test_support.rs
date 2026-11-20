@@ -70,8 +70,16 @@ pub(crate) fn allocations() -> usize {
 /// The segment size the tests lay WAL out in: small, so tests cross
 /// segments often.
 pub(crate) const SEGMENT: u64 = 64 * 1024;
-/// An `xlp_magic`: PostgreSQL 18's.
-pub(crate) const MAGIC: u16 = 0xD118;
+/// The majors whose WAL the physical stream reads.
+pub(crate) const MAJORS: [u32; 3] = [17, 18, 19];
+/// The major a test lays WAL out as when the major doesn't matter to it.
+pub(crate) const MAJOR: u32 = 18;
+/// `XLOG_PAGE_MAGIC` of 17.
+const MAGIC_17: u16 = 0xD116;
+/// `XLOG_PAGE_MAGIC` of 18.
+const MAGIC_18: u16 = 0xD118;
+/// `XLOG_PAGE_MAGIC` of 19 as it branched.
+const MAGIC_19: u16 = 0xD120;
 /// `xlp_tli`: the timeline the page was written on.
 const PAGE_TIMELINE: Range<usize> = 4..8;
 /// `xlp_sysid` in the long header: the database system's identifier.
@@ -332,21 +340,22 @@ pub(crate) struct LaidOut {
 }
 
 /// WAL from `start`, a segment start, laid out as `CopyXLogRecordToWAL`
-/// does: a header on every page, records 8-aligned and split across
-/// pages, a switch record padding out its segment.
-pub(crate) fn lay_out(start: u64, records: &[Vec<u8>]) -> LaidOut {
+/// in PostgreSQL `major` does: a header on every page, records 8-aligned
+/// and split across pages, a switch record padding out its segment.
+pub(crate) fn lay_out(major: u32, start: u64, records: &[Vec<u8>]) -> LaidOut {
     let mut wal = Vec::new();
     let mut lsns = Vec::new();
     let mut position = start;
     for record in records {
         if position.is_multiple_of(PAGE_SIZE) {
-            position = write_page_header(&mut wal, position, 0);
+            position = write_page_header(&mut wal, major, position, 0);
         }
         lsns.push(position);
         let mut written = 0;
         while written < record.len() {
             if position.is_multiple_of(PAGE_SIZE) {
-                position = write_page_header(&mut wal, position, record.len() - written);
+                let remaining = record.len() - written;
+                position = write_page_header(&mut wal, major, position, remaining);
             }
             let room = usize::try_from(PAGE_SIZE - position % PAGE_SIZE).unwrap();
             let take = room.min(record.len() - written);
@@ -363,7 +372,7 @@ pub(crate) fn lay_out(start: u64, records: &[Vec<u8>]) -> LaidOut {
         };
         while position < next {
             if position.is_multiple_of(PAGE_SIZE) {
-                position = write_page_header(&mut wal, position, 0);
+                position = write_page_header(&mut wal, major, position, 0);
                 continue;
             }
             wal.push(0);
@@ -373,11 +382,41 @@ pub(crate) fn lay_out(start: u64, records: &[Vec<u8>]) -> LaidOut {
     LaidOut { wal, lsns }
 }
 
-/// The page header at `position`, with `remaining` bytes of a record
-/// carrying on into the page: where the page's first record starts.
-fn write_page_header(wal: &mut Vec<u8>, position: u64, remaining: usize) -> u64 {
+/// What every page header of one major carries.
+struct PageStamp {
+    /// `xlp_magic`.
+    magic: u16,
+    /// The flags set on every page.
+    flags: u16,
+}
+
+/// The page stamp of PostgreSQL `major`: 17 and 18 set
+/// `XLP_BKP_REMOVABLE` unless a base backup runs, and 19 has no such
+/// flag.
+fn page_stamp(major: u32) -> PageStamp {
+    match major {
+        17 => PageStamp {
+            magic: MAGIC_17,
+            flags: BACKUP_REMOVABLE,
+        },
+        18 => PageStamp {
+            magic: MAGIC_18,
+            flags: BACKUP_REMOVABLE,
+        },
+        19 => PageStamp {
+            magic: MAGIC_19,
+            flags: 0,
+        },
+        other => panic!("no page layout for PostgreSQL {other}"),
+    }
+}
+
+/// The page header at `position` of PostgreSQL `major`, with `remaining`
+/// bytes of a record carrying on into the page: where the page's first
+/// record starts.
+fn write_page_header(wal: &mut Vec<u8>, major: u32, position: u64, remaining: usize) -> u64 {
     let long = position.is_multiple_of(SEGMENT);
-    let mut flags = BACKUP_REMOVABLE;
+    let PageStamp { magic, mut flags } = page_stamp(major);
     let mut length = SHORT_HEADER;
     if long {
         flags |= LONG_PAGE_HEADER;
@@ -389,7 +428,7 @@ fn write_page_header(wal: &mut Vec<u8>, position: u64, remaining: usize) -> u64 
     let timeline = 1u32;
     let system_id = 42u64;
     let mut header = vec![0; usize::try_from(length).unwrap()];
-    header[PAGE_MAGIC].copy_from_slice(&MAGIC.to_le_bytes());
+    header[PAGE_MAGIC].copy_from_slice(&magic.to_le_bytes());
     header[PAGE_FLAGS_FIELD].copy_from_slice(&flags.to_le_bytes());
     header[PAGE_TIMELINE].copy_from_slice(&timeline.to_le_bytes());
     header[PAGE_ADDRESS_FIELD].copy_from_slice(&position.to_le_bytes());
@@ -552,27 +591,30 @@ fn check_block(record: &Record, block: &Block, want: &BlockSpec) {
     }
 }
 
-/// Reads `wal`, which starts at `wal_start`, from the record at `start`,
-/// fed in pieces of random size: every record that comes out.
+/// Reads `wal`, which PostgreSQL `major` wrote and which starts at
+/// `wal_start`, from the record at `start`, fed in pieces of random
+/// size: every record that comes out.
 pub(crate) fn read(
     rng: &mut Rng,
+    major: u32,
     wal: &[u8],
     wal_start: u64,
     start: u64,
 ) -> Result<Vec<Record>, WalError> {
-    read_passing_by(rng, wal, wal_start, start, None)
+    read_passing_by(rng, major, wal, wal_start, start, None)
 }
 
 /// As [`read`], passing by the records that name only pages of files
 /// other than `files`, when it has some.
 pub(crate) fn read_passing_by(
     rng: &mut Rng,
+    major: u32,
     wal: &[u8],
     wal_start: u64,
     start: u64,
     files: Option<FastSet<RelationFile>>,
 ) -> Result<Vec<Record>, WalError> {
-    let mut records = Records::new(start, SEGMENT);
+    let mut records = Records::new(start, SEGMENT, major);
     if let Some(files) = files {
         records.pass_by_other_files(files);
     }
@@ -589,17 +631,18 @@ pub(crate) fn read_passing_by(
     Ok(read)
 }
 
-/// The error reading `wal`, a segment from `SEGMENT`, from `start` stops at.
-pub(crate) fn first_error(wal: &[u8], start: u64) -> WalError {
-    let mut records = Records::new(start, SEGMENT);
+/// The error reading `wal`, a segment from `SEGMENT` that PostgreSQL
+/// `major` wrote, from `start` stops at.
+pub(crate) fn first_error(major: u32, wal: &[u8], start: u64) -> WalError {
+    let mut records = Records::new(start, SEGMENT, major);
     records.feed(SEGMENT, wal).unwrap();
     records.next_record().unwrap_err()
 }
 
 /// The problem reading `wal` from `start` stops at, if it is a problem
 /// at an LSN.
-pub(crate) fn first_problem(wal: &[u8], start: u64) -> Option<Problem> {
-    match first_error(wal, start) {
+pub(crate) fn first_problem(major: u32, wal: &[u8], start: u64) -> Option<Problem> {
+    match first_error(major, wal, start) {
         WalError::At { problem, .. } => Some(problem),
         WalError::Gap { .. } | WalError::Sizes { .. } => None,
     }
@@ -614,8 +657,8 @@ pub(crate) fn reseal(mut record: Vec<u8>) -> Vec<u8> {
 
 /// The error reading `record`, resealed, alone in a segment.
 pub(crate) fn decode_error(record: Vec<u8>) -> WalError {
-    let laid_out = lay_out(SEGMENT, &[reseal(record)]);
-    first_error(&laid_out.wal, laid_out.lsns[0])
+    let laid_out = lay_out(MAJOR, SEGMENT, &[reseal(record)]);
+    first_error(MAJOR, &laid_out.wal, laid_out.lsns[0])
 }
 
 /// A heap record with one block reference, to `FILE`'s page 1.

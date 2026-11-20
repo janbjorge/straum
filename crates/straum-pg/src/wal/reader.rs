@@ -3,7 +3,8 @@
 //! 8 KiB pages, each opening with a page header (`XLogPageHeaderData` in
 //! `src/include/access/xlog_internal.h`); a record may run on across
 //! several pages, past their headers. `Records` takes the bytes as they
-//! come, checks each page header and each record's checksum, as
+//! come, checks each page header, its flags as the major that wrote the
+//! WAL numbers them, and each record's checksum, as
 //! `XLogReaderValidatePageHeader` and `ValidXLogRecord` in
 //! `src/backend/access/transam/xlogreader.c` do, and gives back whole records.
 //! Told which relation files the stream reads, it passes by a record that
@@ -48,20 +49,58 @@ pub(super) const MAX_RECORD: usize = 1020 * 1024 * 1024;
 pub(super) const FIRST_IS_CONTINUATION: u16 = 0x0001;
 /// `XLP_LONG_HEADER`: the page has the long header.
 pub(super) const LONG_PAGE_HEADER: u16 = 0x0002;
-/// `XLP_BKP_REMOVABLE`: set unless a base backup runs; nothing for a
-/// reader.
+/// `XLP_BKP_REMOVABLE` in 17 and 18: set unless a base backup runs;
+/// nothing for a reader. 19 dropped it.
 pub(super) const BACKUP_REMOVABLE: u16 = 0x0004;
-/// `XLP_FIRST_IS_OVERWRITE_CONTRECORD`: the page opens where a record
-/// cut off by a crash was, written over.
-pub(super) const FIRST_IS_OVERWRITE: u16 = 0x0008;
-/// `XLP_ALL_FLAGS`: any other bit is a page Straum doesn't know.
-pub(super) const ALL_PAGE_FLAGS: u16 =
-    FIRST_IS_CONTINUATION | LONG_PAGE_HEADER | BACKUP_REMOVABLE | FIRST_IS_OVERWRITE;
+/// `XLP_FIRST_IS_OVERWRITE_CONTRECORD` in 17 and 18.
+const FIRST_IS_OVERWRITE_UNTIL_18: u16 = 0x0008;
+/// `XLP_FIRST_IS_OVERWRITE_CONTRECORD` from 19 on, moved down to the bit
+/// `XLP_BKP_REMOVABLE` left.
+const FIRST_IS_OVERWRITE_FROM_19: u16 = 0x0004;
+/// The first major without `XLP_BKP_REMOVABLE`.
+const PAGE_FLAGS_RENUMBERED_MAJOR: u32 = 19;
+
+/// The page flags whose bits depend on the major that wrote the WAL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PageFlags {
+    /// `XLP_FIRST_IS_OVERWRITE_CONTRECORD`: the page opens where a record
+    /// cut off by a crash was, written over.
+    first_is_overwrite: u16,
+    /// `XLP_ALL_FLAGS`: any other bit is a page Straum doesn't know.
+    all: u16,
+}
+
+/// The page flags of 17 and 18.
+const PAGE_FLAGS_UNTIL_18: PageFlags = PageFlags {
+    first_is_overwrite: FIRST_IS_OVERWRITE_UNTIL_18,
+    all: FIRST_IS_CONTINUATION | LONG_PAGE_HEADER | BACKUP_REMOVABLE | FIRST_IS_OVERWRITE_UNTIL_18,
+};
+
+/// The page flags from 19 on.
+const PAGE_FLAGS_FROM_19: PageFlags = PageFlags {
+    first_is_overwrite: FIRST_IS_OVERWRITE_FROM_19,
+    all: FIRST_IS_CONTINUATION | LONG_PAGE_HEADER | FIRST_IS_OVERWRITE_FROM_19,
+};
+
+impl PageFlags {
+    /// The page flags PostgreSQL `major` writes.
+    fn of_major(major: u32) -> PageFlags {
+        if major >= PAGE_FLAGS_RENUMBERED_MAJOR {
+            PAGE_FLAGS_FROM_19
+        } else {
+            PAGE_FLAGS_UNTIL_18
+        }
+    }
+}
 
 /// The records in a run of WAL bytes, in order. Bytes go in as they come;
 /// a record comes out once all of it is in.
 pub(crate) struct Records {
     segment_size: u64,
+    /// The page flags of the major that wrote the WAL, which the setup
+    /// check knows. The page magic doesn't name a major: it moves with
+    /// each format change during a major's development.
+    page_flags: PageFlags,
     /// The LSN of `buffer[0]`.
     start: u64,
     buffer: Vec<u8>,
@@ -125,14 +164,16 @@ struct PageHeader {
 
 impl Records {
     /// Records from `start`, which must be where a record begins, such as a
-    /// slot's restart LSN. The bytes fed in start at the page holding it.
-    pub(crate) fn new(start: u64, segment_size: u64) -> Records {
+    /// slot's restart LSN, in WAL PostgreSQL `major` wrote. The bytes fed
+    /// in start at the page holding it.
+    pub(crate) fn new(start: u64, segment_size: u64, major: u32) -> Records {
         let mut unchecked = None;
         if !start.is_multiple_of(PAGE_SIZE) {
             unchecked = Some(page_start(start));
         }
         Records {
             segment_size,
+            page_flags: PageFlags::of_major(major),
             start: page_start(start),
             buffer: Vec::new(),
             next: start,
@@ -229,7 +270,7 @@ impl Records {
             let Some(header) = self.page_header(start)? else {
                 return Ok(None);
             };
-            if header.flags & FIRST_IS_OVERWRITE != 0 {
+            if header.flags & self.page_flags.first_is_overwrite != 0 {
                 return Err(at(start, Problem::Overwritten));
             }
             if header.flags & FIRST_IS_CONTINUATION != 0 {
@@ -321,7 +362,7 @@ impl Records {
         if address != page {
             return Err(at(page, Problem::PageAddress));
         }
-        if flags & !ALL_PAGE_FLAGS != 0 {
+        if flags & !self.page_flags.all != 0 {
             return Err(at(page, Problem::PageFlags));
         }
         match self.magic {
@@ -443,10 +484,18 @@ mod tests {
         RESOURCE_MANAGER_TRANSACTION, RESOURCE_MANAGER_XLOG, record_end,
     };
 
+    /// The major a seeded test lays its WAL out as: each in turn, so the
+    /// seeds cover every major without running once per major.
+    fn major_of_seed(seed: u64) -> u32 {
+        let index = usize::try_from(seed).unwrap() % MAJORS.len();
+        MAJORS[index]
+    }
+
     #[test]
     fn reads_back_every_record_however_the_bytes_come() {
         for seed in 0..200 {
             let mut rng = Rng(seed);
+            let major = major_of_seed(seed);
             let start = SEGMENT * (1 + rng.below(4));
             let mut specs = Vec::new();
             for _ in 0..=rng.below(40) {
@@ -457,9 +506,10 @@ mod tests {
                 specs.insert(at, switch());
             }
             let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
-            let laid_out = lay_out(start, &assembled);
+            let laid_out = lay_out(major, start, &assembled);
             let first = rng.below_usize(specs.len());
-            let records = read(&mut rng, &laid_out.wal, start, laid_out.lsns[first]).unwrap();
+            let records =
+                read(&mut rng, major, &laid_out.wal, start, laid_out.lsns[first]).unwrap();
             assert_eq!(records.len(), specs.len() - first, "seed {seed}");
             for (index, record) in records.iter().enumerate() {
                 check(record, &specs[first + index], laid_out.lsns[first + index]);
@@ -484,9 +534,9 @@ mod tests {
         first.main = rng.bytes(main_length);
         let second = random_spec(&mut rng);
         let assembled = vec![assemble(&first), assemble(&second)];
-        let laid_out = lay_out(SEGMENT, &assembled);
+        let laid_out = lay_out(MAJOR, SEGMENT, &assembled);
         assert_eq!(laid_out.lsns[1] % PAGE_SIZE, PAGE_SIZE - left_on_page);
-        let records = read(&mut rng, &laid_out.wal, SEGMENT, laid_out.lsns[0]).unwrap();
+        let records = read(&mut rng, MAJOR, &laid_out.wal, SEGMENT, laid_out.lsns[0]).unwrap();
         check(&records[1], &second, laid_out.lsns[1]);
     }
 
@@ -495,8 +545,8 @@ mod tests {
         let mut rng = Rng(2);
         let mut spec = random_spec(&mut rng);
         spec.main = rng.bytes(20_000);
-        let LaidOut { wal, lsns } = lay_out(SEGMENT, &[assemble(&spec)]);
-        let mut records = Records::new(lsns[0], SEGMENT);
+        let LaidOut { wal, lsns } = lay_out(MAJOR, SEGMENT, &[assemble(&spec)]);
+        let mut records = Records::new(lsns[0], SEGMENT, MAJOR);
         records.feed(SEGMENT, &wal[..wal.len() - 1]).unwrap();
         assert_eq!(records.next_record(), Ok(None));
         records
@@ -510,8 +560,8 @@ mod tests {
     /// and read: where the reader has passed.
     fn passed_after(specs: &[Spec]) -> (u64, LaidOut) {
         let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
-        let laid_out = lay_out(SEGMENT, &assembled);
-        let mut records = Records::new(laid_out.lsns[0], SEGMENT);
+        let laid_out = lay_out(MAJOR, SEGMENT, &assembled);
+        let mut records = Records::new(laid_out.lsns[0], SEGMENT, MAJOR);
         records.feed(SEGMENT, &laid_out.wal).unwrap();
         for _ in specs {
             assert!(records.next_record().unwrap().is_some());
@@ -546,8 +596,8 @@ mod tests {
         let mut rng = Rng(4);
         let mut spec = random_spec(&mut rng);
         spec.main = rng.bytes(200_000);
-        let LaidOut { wal, lsns } = lay_out(SEGMENT, &[assemble(&spec)]);
-        let mut records = Records::new(lsns[0], SEGMENT);
+        let LaidOut { wal, lsns } = lay_out(MAJOR, SEGMENT, &[assemble(&spec)]);
+        let mut records = Records::new(lsns[0], SEGMENT, MAJOR);
         let piece = 1000;
         let mut at = 0;
         while at + piece < wal.len() {
@@ -577,9 +627,9 @@ mod tests {
         first.main = rng.bytes(first_room - RECORD_HEADER - main_data_header);
         let mut second = random_spec(&mut rng);
         second.main = rng.bytes(30_000);
-        let LaidOut { wal, lsns } = lay_out(SEGMENT, &[assemble(&first), assemble(&second)]);
+        let LaidOut { wal, lsns } = lay_out(MAJOR, SEGMENT, &[assemble(&first), assemble(&second)]);
         assert_eq!(lsns[1] % PAGE_SIZE, PAGE_SIZE - left_on_page);
-        let mut records = Records::new(lsns[0], SEGMENT);
+        let mut records = Records::new(lsns[0], SEGMENT, MAJOR);
         let mut read = Vec::new();
         for byte in wal.chunks(100) {
             records.feed(records.wanted(), byte).unwrap();
@@ -633,10 +683,18 @@ mod tests {
                 specs.push(random_spec(&mut rng));
             }
             let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
-            let laid_out = lay_out(SEGMENT, &assembled);
-            let every = read(&mut rng, &laid_out.wal, SEGMENT, laid_out.lsns[0]).unwrap();
+            let major = major_of_seed(seed);
+            let laid_out = lay_out(major, SEGMENT, &assembled);
+            let every = read(&mut rng, major, &laid_out.wal, SEGMENT, laid_out.lsns[0]).unwrap();
             let wanted = Some(chosen.into_iter().collect());
-            let read = read_passing_by(&mut rng, &laid_out.wal, SEGMENT, laid_out.lsns[0], wanted);
+            let read = read_passing_by(
+                &mut rng,
+                major,
+                &laid_out.wal,
+                SEGMENT,
+                laid_out.lsns[0],
+                wanted,
+            );
             let mut read = read.unwrap().into_iter().peekable();
             for record in every {
                 let was_read = read.next_if_eq(&record).is_some();
@@ -674,7 +732,7 @@ mod tests {
         spec.resource_manager = RESOURCE_MANAGER_HEAP;
         spec.blocks[0].file.relation = relation;
         spec.main = vec![1; 100];
-        lay_out(SEGMENT, &[assemble(&spec)])
+        lay_out(MAJOR, SEGMENT, &[assemble(&spec)])
     }
 
     /// The first record past `wal` to a reader of `files`.
@@ -683,7 +741,7 @@ mod tests {
         start: u64,
         files: &[RelationFile],
     ) -> Result<Option<Record>, WalError> {
-        let mut records = Records::new(start, SEGMENT);
+        let mut records = Records::new(start, SEGMENT, MAJOR);
         records.pass_by_other_files(files.iter().copied().collect());
         records.feed(SEGMENT, wal).unwrap();
         Ok(records.next_record()?.cloned())
@@ -703,7 +761,7 @@ mod tests {
             relation: FIRST_USER_OID,
             ..FILE
         };
-        let mut records = Records::new(lsns[0], SEGMENT);
+        let mut records = Records::new(lsns[0], SEGMENT, MAJOR);
         records.pass_by_other_files([theirs].into_iter().collect());
         records.feed(SEGMENT, &wal).unwrap();
         assert_eq!(records.next_record(), Ok(None));
@@ -719,7 +777,7 @@ mod tests {
         let mut spec = plain_block(None, vec![7; 20]);
         spec.resource_manager = RESOURCE_MANAGER_HEAP;
         spec.main = vec![1; 10_000];
-        let LaidOut { mut wal, lsns } = lay_out(SEGMENT, &[assemble(&spec)]);
+        let LaidOut { mut wal, lsns } = lay_out(MAJOR, SEGMENT, &[assemble(&spec)]);
         let page = second_page();
         wal[page + PAGE_REMAINING.start] ^= 1;
         let theirs = RelationFile {
@@ -735,10 +793,26 @@ mod tests {
 
     /// One record of 100 bytes of main data, alone in its segment.
     fn one_record() -> LaidOut {
+        one_record_of(MAJOR)
+    }
+
+    /// As [`one_record`], laid out as PostgreSQL `major` does.
+    fn one_record_of(major: u32) -> LaidOut {
         let mut rng = Rng(3);
         let mut spec = random_spec(&mut rng);
         spec.main = rng.bytes(100);
-        lay_out(SEGMENT, &[assemble(&spec)])
+        lay_out(major, SEGMENT, &[assemble(&spec)])
+    }
+
+    /// The first page's flags in `wal`.
+    fn first_page_flags(wal: &[u8]) -> u16 {
+        read_u16(&wal[PAGE_FLAGS_FIELD])
+    }
+
+    /// `wal` with `flag` also set on its first page.
+    fn set_first_page_flag(wal: &mut [u8], flag: u16) {
+        let flags = first_page_flags(wal) | flag;
+        wal[PAGE_FLAGS_FIELD].copy_from_slice(&flags.to_le_bytes());
     }
 
     /// One record so long it runs on to a second page.
@@ -746,7 +820,7 @@ mod tests {
         let mut rng = Rng(seed);
         let mut spec = random_spec(&mut rng);
         spec.main = rng.bytes(10_000);
-        lay_out(SEGMENT, &[assemble(&spec)])
+        lay_out(MAJOR, SEGMENT, &[assemble(&spec)])
     }
 
     /// Where the second page of a segment laid out by `lay_out` begins.
@@ -756,7 +830,7 @@ mod tests {
 
     #[test]
     fn refuses_a_gap() {
-        let mut records = Records::new(SEGMENT + LONG_HEADER, SEGMENT);
+        let mut records = Records::new(SEGMENT + LONG_HEADER, SEGMENT, MAJOR);
         assert_eq!(
             records.feed(SEGMENT + 8, &[0; 8]),
             Err(WalError::Gap {
@@ -771,29 +845,62 @@ mod tests {
         let LaidOut { mut wal, lsns } = one_record();
         // A byte of the main data, which the checksum covers.
         wal[offset(lsns[0]) + RECORD_HEADER + 6] ^= 1;
-        assert_eq!(first_error(&wal, lsns[0]), at(lsns[0], Problem::Checksum));
+        assert_eq!(
+            first_error(MAJOR, &wal, lsns[0]),
+            at(lsns[0], Problem::Checksum)
+        );
     }
 
     #[test]
     fn refuses_a_page_in_the_wrong_place() {
         let LaidOut { mut wal, lsns } = one_record();
         wal[PAGE_ADDRESS_FIELD.start] ^= 1;
-        assert_eq!(first_problem(&wal, lsns[0]), Some(Problem::PageAddress));
+        assert_eq!(
+            first_problem(MAJOR, &wal, lsns[0]),
+            Some(Problem::PageAddress)
+        );
     }
 
     #[test]
     fn refuses_unknown_page_flags() {
         // No `XLP_` flag uses the eighth bit.
         let unknown_flag = 0x80;
-        let LaidOut { mut wal, lsns } = one_record();
-        wal[PAGE_FLAGS_FIELD.start] |= unknown_flag;
-        assert_eq!(first_problem(&wal, lsns[0]), Some(Problem::PageFlags));
+        for major in MAJORS {
+            let LaidOut { mut wal, lsns } = one_record_of(major);
+            set_first_page_flag(&mut wal, unknown_flag);
+            let problem = first_problem(major, &wal, lsns[0]);
+            assert_eq!(problem, Some(Problem::PageFlags), "{major}");
+        }
+    }
+
+    #[test]
+    fn refuses_the_overwrite_bit_of_18_on_19() {
+        let LaidOut { mut wal, lsns } = one_record_of(19);
+        set_first_page_flag(&mut wal, FIRST_IS_OVERWRITE_UNTIL_18);
+        assert_eq!(first_problem(19, &wal, lsns[0]), Some(Problem::PageFlags));
+    }
+
+    #[test]
+    fn reads_past_backup_removable_before_19() {
+        for major in [17, 18] {
+            let LaidOut { wal, lsns } = one_record_of(major);
+            assert_ne!(first_page_flags(&wal) & BACKUP_REMOVABLE, 0, "{major}");
+            let mut records = Records::new(lsns[0], SEGMENT, major);
+            records.feed(SEGMENT, &wal).unwrap();
+            assert!(records.next_record().unwrap().is_some(), "{major}");
+        }
+    }
+
+    #[test]
+    fn lays_out_19_without_backup_removable() {
+        let LaidOut { wal, .. } = one_record_of(19);
+        assert_eq!(first_page_flags(&wal) & BACKUP_REMOVABLE, 0);
     }
 
     #[test]
     fn waits_for_the_rest_of_a_long_page_header() {
         let LaidOut { wal, lsns } = one_record();
-        let mut records = Records::new(lsns[0], SEGMENT);
+        let mut records = Records::new(lsns[0], SEGMENT, MAJOR);
         let short_header = usize::try_from(SHORT_HEADER).unwrap();
         records.feed(SEGMENT, &wal[..short_header]).unwrap();
         assert_eq!(records.next_record(), Ok(None));
@@ -806,7 +913,7 @@ mod tests {
     #[test]
     fn refuses_another_segment_size() {
         let LaidOut { wal, lsns } = one_record();
-        let mut records = Records::new(lsns[0], SEGMENT * 2);
+        let mut records = Records::new(lsns[0], SEGMENT * 2, MAJOR);
         records.feed(SEGMENT, &wal).unwrap();
         assert!(matches!(records.next_record(), Err(WalError::Sizes { .. })));
     }
@@ -815,7 +922,10 @@ mod tests {
     fn refuses_a_change_of_format() {
         let LaidOut { mut wal, lsns } = record_across_pages(4);
         wal[second_page() + PAGE_MAGIC.start] ^= 1;
-        assert_eq!(first_problem(&wal, lsns[0]), Some(Problem::OtherFormat));
+        assert_eq!(
+            first_problem(MAJOR, &wal, lsns[0]),
+            Some(Problem::OtherFormat)
+        );
     }
 
     #[test]
@@ -823,17 +933,26 @@ mod tests {
         let LaidOut { mut wal, lsns } = record_across_pages(5);
         let flags = second_page() + PAGE_FLAGS_FIELD.start;
         wal[flags] &= !FIRST_IS_CONTINUATION.to_le_bytes()[0];
-        assert_eq!(first_problem(&wal, lsns[0]), Some(Problem::Continuation));
+        assert_eq!(
+            first_problem(MAJOR, &wal, lsns[0]),
+            Some(Problem::Continuation)
+        );
         let LaidOut { mut wal, lsns } = record_across_pages(5);
         wal[second_page() + PAGE_REMAINING.start] ^= 1;
-        assert_eq!(first_problem(&wal, lsns[0]), Some(Problem::Continuation));
+        assert_eq!(
+            first_problem(MAJOR, &wal, lsns[0]),
+            Some(Problem::Continuation)
+        );
     }
 
     #[test]
     fn refuses_a_continuation_where_a_record_should_start() {
         let LaidOut { mut wal, .. } = one_record();
         wal[PAGE_FLAGS_FIELD.start] |= FIRST_IS_CONTINUATION.to_le_bytes()[0];
-        assert_eq!(first_problem(&wal, SEGMENT), Some(Problem::Continuation));
+        assert_eq!(
+            first_problem(MAJOR, &wal, SEGMENT),
+            Some(Problem::Continuation)
+        );
     }
 
     #[test]
@@ -841,16 +960,26 @@ mod tests {
         let LaidOut { wal, .. } = one_record();
         let inside_header = SEGMENT + PAGE_ADDRESS_FIELD.start as u64;
         assert_eq!(
-            first_problem(&wal, inside_header),
+            first_problem(MAJOR, &wal, inside_header),
             Some(Problem::Continuation)
         );
     }
 
     #[test]
     fn refuses_an_overwritten_record() {
-        let LaidOut { mut wal, .. } = one_record();
-        wal[PAGE_FLAGS_FIELD.start] |= FIRST_IS_OVERWRITE.to_le_bytes()[0];
-        assert_eq!(first_problem(&wal, SEGMENT), Some(Problem::Overwritten));
+        for major in [17, 18] {
+            let LaidOut { mut wal, .. } = one_record_of(major);
+            set_first_page_flag(&mut wal, FIRST_IS_OVERWRITE_UNTIL_18);
+            let problem = first_problem(major, &wal, SEGMENT);
+            assert_eq!(problem, Some(Problem::Overwritten), "{major}");
+        }
+    }
+
+    #[test]
+    fn refuses_an_overwritten_record_where_19_moved_the_flag() {
+        let LaidOut { mut wal, .. } = one_record_of(19);
+        set_first_page_flag(&mut wal, FIRST_IS_OVERWRITE_FROM_19);
+        assert_eq!(first_problem(19, &wal, SEGMENT), Some(Problem::Overwritten));
     }
 
     #[test]
@@ -860,6 +989,6 @@ mod tests {
         let length = record + RECORD_LENGTH.start..record + RECORD_LENGTH.end;
         let shorter_than_a_header = 3u32;
         wal[length].copy_from_slice(&shorter_than_a_header.to_le_bytes());
-        assert_eq!(first_problem(&wal, lsns[0]), Some(Problem::Length));
+        assert_eq!(first_problem(MAJOR, &wal, lsns[0]), Some(Problem::Length));
     }
 }

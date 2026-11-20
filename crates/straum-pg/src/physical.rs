@@ -69,7 +69,7 @@ impl Physical {
             "CREATE_REPLICATION_SLOT {slot} TEMPORARY PHYSICAL (RESERVE_WAL)"
         ))?;
         let reserved = reserved(&mut connection, &slot)?;
-        let records = Records::new(reserved.start.0, reserved.segment_size);
+        let records = Records::new(reserved.start.0, reserved.segment_size, reserved.major);
         wait_for_flush(&mut connection, reserved.start)?;
         connection.copy_both(&format!(
             "START_REPLICATION SLOT {slot} PHYSICAL {}",
