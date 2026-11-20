@@ -238,11 +238,11 @@ Once the header is at or past the log sequence number (LSN) read, the
 answer contains the write. Under `synchronous_commit = off` the commit
 may not be written yet, so read `pg_current_wal_insert_lsn()` instead.
 
-The test can only say yes. `pg_current_wal_lsn()` counts all WAL,
-including tables Straum doesn't follow, while the header moves only
-when Straum applies a commit. On a quiet database the header can stay
-below the LSN read even though the write is in, so give up after a
-timeout or fall back to `as_of`.
+A header below the LSN read does not show that the write is missing.
+`pg_current_wal_lsn()` counts all WAL, including tables Straum doesn't
+follow, while the header moves only when Straum applies a commit. On a
+quiet database the header can stay below the LSN read even though the
+write is in, so give up after a timeout or fall back to `as_of`.
 
 ## Errors
 
