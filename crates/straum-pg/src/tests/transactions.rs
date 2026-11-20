@@ -307,7 +307,8 @@ fn running_xids(description: &str) -> Vec<u32> {
 /// A table rewritten, truncated or dropped no longer reads as loaded:
 /// its old pages are gone, and the physical stream says so with an
 /// `Unfit` for each, at the commit that did it. DDL that keeps the file
-/// says nothing.
+/// says nothing. So does a row whose read value is stored out of line,
+/// inserted or updated.
 #[test]
 fn rewritten_and_dropped_tables_are_unfit() {
     let pg = postgres_at_replica(&tag());
@@ -324,6 +325,15 @@ fn rewritten_and_dropped_tables_are_unfit() {
     let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
     let steps = [
         ("ALTER TABLE $S.trips ADD extra int", None),
+        ("INSERT INTO $S.trips (id, kind) VALUES (998, 'bob')", None),
+        // A changed value the update moves out of line: the page holds a
+        // pointer, as for a value the update kept, and the old row's
+        // `bob` is not the new value.
+        (
+            "UPDATE $S.trips SET kind = (SELECT string_agg(md5(i::text), '')
+             FROM generate_series(1, 400) AS i) WHERE id = 998",
+            Some("trips"),
+        ),
         // A value the spec reads, TOASTed out of line: the page holds a
         // pointer, and the chunks may be gone before Straum could read
         // them.

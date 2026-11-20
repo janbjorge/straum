@@ -229,11 +229,19 @@ impl Publisher {
                     relation,
                     new: fields(&read, new, scratch)?,
                 },
-                HeapChange::Update { old, new, .. } => Message::Update {
-                    relation,
-                    old: Some(Old::Row(fields(&read, old, scratch)?)),
-                    new: fields(&read, new, scratch)?,
-                },
+                HeapChange::Update { old, new, .. } => {
+                    let new = fields(&read, new, scratch)?;
+                    if out_of_line(&new) {
+                        scratch.keep(new);
+                        decoder.unfit(relation, Drift::Altered);
+                        continue;
+                    }
+                    Message::Update {
+                        relation,
+                        old: Some(Old::Row(fields(&read, old, scratch)?)),
+                        new,
+                    }
+                }
                 HeapChange::Delete { old, .. } => Message::Delete {
                     relation,
                     old: Old::Row(fields(&read, old, scratch)?),
@@ -322,14 +330,30 @@ fn fields(read: &Read, tuple: &HeapTuple, scratch: &mut Scratch) -> Result<Tuple
         fields.push(
             match std::mem::replace(&mut values[attribute], Value::Missing) {
                 Value::Datum(datum) => Field::Datum(datum),
-                // pgoutput, too, leaves out a value TOASTed out of line that
-                // the change kept.
+                // Only a pointer to the value is on the page. The decoder
+                // can't fill it from an old row: see `out_of_line`.
                 Value::External => Field::Unchanged,
                 Value::Missing => Field::Datum(table.missing[attribute].clone()),
             },
         );
     }
     Ok(fields)
+}
+
+/// Whether a column read of an update's new row holds only a pointer to
+/// a value stored out of line.
+// pgoutput leaves out such a value only when the update kept it: the
+// server keeps the old pointer only for a value equal byte for byte
+// (`toast_helper.c`). The page can't tell a kept value from a changed one
+// moved out of line, so filling it from the old row could publish the old
+// value. Either way the table no longer reads as loaded.
+fn out_of_line(new: &Tuple) -> bool {
+    for field in new {
+        if let Field::Unchanged = field {
+            return true;
+        }
+    }
+    false
 }
 
 /// The stream's error for `problem` at `lsn`.
@@ -527,9 +551,7 @@ mod tests {
 
     #[test]
     fn leaves_out_values_toasted_out_of_line() {
-        let mut pointer = TOAST_POINTER.to_vec();
-        pointer.extend([0; EXTERNAL_POINTER]);
-        let toasted = row(1, &pointer);
+        let toasted = row(1, &toast_pointer());
         let changes = vec![HeapChange::Update {
             file: FILE,
             old: toasted.clone(),
@@ -540,6 +562,61 @@ mod tests {
         assert!(
             matches!(commit.changes[..], [Change::Unfit { .. }]),
             "{commit:?}"
+        );
+    }
+
+    fn toast_pointer() -> Vec<u8> {
+        let mut pointer = TOAST_POINTER.to_vec();
+        pointer.extend([0; EXTERNAL_POINTER]);
+        pointer
+    }
+
+    #[test]
+    fn stops_on_a_value_an_update_moves_out_of_line() {
+        let changes = vec![HeapChange::Update {
+            file: FILE,
+            old: row(1, &short("bob")),
+            new: row(1, &toast_pointer()),
+        }];
+        let commit = publish(changes).unwrap().unwrap();
+        // Not the old row's `bob`: the update changed the value.
+        assert_eq!(
+            commit.changes,
+            [Change::Unfit {
+                table: zones(),
+                drift: Drift::Altered,
+            }]
+        );
+    }
+
+    #[test]
+    fn passes_over_a_pointer_in_a_column_no_fact_reads() {
+        let mut layout = table();
+        layout.attributes[2].kind = Kind::Other;
+        let mut decoder = Decoder::new(
+            vec![Checked {
+                oid: TABLE_OID,
+                ..Checked::public("zones", "zones", &["id"], vec![ColumnType::Int])
+            }],
+            10,
+        );
+        let changes = vec![HeapChange::Update {
+            file: FILE,
+            old: row(1, &short("bob")),
+            new: row(1, &toast_pointer()),
+        }];
+        let mut publisher = Publisher::new(layouts(vec![layout]));
+        let commit = publisher
+            .publish(&committed(changes), &mut decoder)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            commit.changes,
+            [Change::Update {
+                table: zones(),
+                old: vec![Datum::Int(1)],
+                new: vec![Datum::Int(1)],
+            }]
         );
     }
 
