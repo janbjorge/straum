@@ -153,9 +153,10 @@ Update    the old row and the new row, each column as text
 Commit    the end of the commit and its time
 ```
 
-`REPLICA IDENTITY FULL` makes the old row whole; without it, pgoutput
-sends at most the key. Straum reads the spec's columns and skips the
-rest. A truncate empties the table's cells or projection.
+Straum keeps no rows, so the old row is what says which cell an
+update or delete leaves, and what to subtract. `REPLICA IDENTITY FULL`
+logs it whole; by default, PostgreSQL logs at most the key. Straum
+reads the spec's columns and skips the rest. A truncate empties the table's cells or projection.
 
 Straum stops when the publication drops a spec table, and on `ALTER
 COLUMN .. TYPE`, for which logical decoding sends no rows. `VACUUM

@@ -246,6 +246,10 @@ the only limit there. A physical slot keeps WAL from the last
 checkpoint's redo point, which the server keeps until its next
 checkpoint anyway; the watchdog counts from where the slot was made.
 
+With logical decoding, `REPLICA IDENTITY FULL` makes each update and
+delete of a spec table log its whole old row, so they write more WAL;
+inserts write no more.
+
 The physical stream carries the whole server's WAL, every database.
 Straum reads only its tables' pages and passes the other records by
 from their headers. It holds the rows of pages changed since the last
