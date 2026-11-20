@@ -1,7 +1,8 @@
 # Try it on your data
 
-Does Straum answer the queries you run? Write a spec and run one
-command: Straum's shell opens on a copy of your tables in Docker.
+To see whether Straum answers the queries you run, write a spec and
+run one command: Straum's shell opens on a copy of your tables in
+Docker.
 Straum only reads your database.
 
 You need Docker with Compose and a role that can `SELECT` the spec's
