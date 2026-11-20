@@ -1,13 +1,13 @@
 # Quick start
 
-Does Straum work? One command runs it against PostgreSQL 18, both in
-Docker, on one month of New York taxi trips: the yellow trips of the Taxi
-and Limousine Commission (TLC) for January 2024, 2,964,624 of them, and
-the 265 taxi zones. It ends in Straum's shell, where you ask, change the
-data and ask again. The command line and performance pages use these
-tables too.
+Does Straum work? One command runs it and PostgreSQL 18 in Docker on
+one month of New York taxi trips: the Taxi and Limousine Commission
+(TLC) yellow trips for January 2024, 2,964,624 of them, and the 265
+taxi zones. It ends in Straum's shell, where you ask, change the data
+and ask again. The command line and performance pages use these tables
+too.
 
-You need Docker and `curl`, and bash or zsh. The download is 50 MB.
+You need Docker, `curl`, and bash or zsh. The download is 50 MB.
 
 ## 1. Start
 
@@ -16,22 +16,19 @@ docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/strau
   run --rm shell
 ```
 
-The file is `docs/compose/quick-start.yaml` in the repository. It
-names the project `straum`, which later commands use.
-
-The file starts PostgreSQL. A load service fetches the month, loads
-it, runs the setup, and exits. Its container stays on Waiting while it
-fetches the month. Straum starts once that service has exited, and the
-shell opens once Straum can answer:
+The file, `docs/compose/quick-start.yaml` in the repository, names
+the project `straum` and starts PostgreSQL. A load service fetches the
+month, loads it, runs the setup and exits; Compose shows it as Waiting
+while it fetches. Straum starts once it has exited, and the shell
+opens once Straum can answer:
 
 ```text
 Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
 straum>
 ```
 
-An interrupt during the wait stops the wait and leaves the containers
-running. The log is `docker compose -p straum logs`. It ends like
-this:
+An interrupt during the wait leaves the containers running. The log,
+`docker compose -p straum logs`, ends like this:
 
 ```text
 load-1  | loading taxi trips
@@ -41,14 +38,13 @@ straum-1  | straum: loaded every table; streaming from 0/19337960
 ```
 
 [`load_taxi_trips.py`](https://github.com/janbjorge/straum/blob/main/bench/load_taxi_trips.py)
-downloads the trips and loads `taxi_zones` and `yellow_trips`. The
-TLC's times are New York wall clock, so it reads them in that time
-zone. Money and distance are `numeric`, so sums are exact. Straum's
-own load takes about a second.
+downloads the trips and loads `taxi_zones` and `yellow_trips`. It
+reads the TLC's times, New York wall clock, in that time zone, and
+makes money and distance `numeric`, so sums are exact. Straum's own
+load takes about a second.
 
-`\q` leaves the shell. Straum keeps running.
-This opens the shell again, inside the Straum container, at
-`http://127.0.0.1:8080`:
+`\q` leaves the shell; Straum keeps running. This reopens the shell
+inside the Straum container, at `http://127.0.0.1:8080`:
 
 ```sh
 docker compose -p straum exec straum /straum shell
@@ -57,13 +53,12 @@ docker compose -p straum exec straum /straum shell
 ## 2. The spec
 
 The compose file holds this spec, one view, so there is nothing to
-save. Straum never creates the view in PostgreSQL. `buckets(...)` is
-the view's time: the column, then every bucket width Straum keeps, the
+save; Straum never creates the view in PostgreSQL. `buckets(...)` is
+the view's time: the column, then each bucket width Straum keeps, the
 hour each trip goes in first, then days and weeks for long ranges.
-Straum keeps one cell per hour, payment type and pickup zone, and the
-same per day and per week. It reads each cell's borough from
-`taxi_zones` through its pickup zone. [Spec](spec.md) explains each
-line.
+Straum keeps one cell per hour, payment type and pickup zone, the same
+per day and per week, and reads each cell's borough from `taxi_zones`
+through its pickup zone. [Spec](spec.md) explains each line.
 
 ```sql
 CREATE VIEW trips AS
@@ -82,8 +77,8 @@ GROUP BY 1, 2, 3, 4;
 ## 3. Ask
 
 At the prompt, ask for trips and fares by pickup borough on Wednesday
-17 January, New York time. The semicolon ends the ask, and the
-parameters follow it:
+17 January, New York time. The semicolon ends the ask; the parameters
+follow it:
 
 ```text
 straum> SELECT borough, trips, fare, avg_fare
@@ -123,9 +118,9 @@ parameters and the answer.
 
 ## 4. Change the data
 
-In another terminal, add a card trip from Newark Airport at noon, and
+In another terminal, add a card trip from Newark Airport at noon,
 move JFK and LaGuardia, zones 132 and 138, out of Queens into a
-borough of their own, then ask for the day again:
+borough of their own, and ask for the day again:
 
 ```sh
 docker compose -p straum exec postgres psql -U postgres -c "
@@ -156,10 +151,10 @@ curl --json '{
 }
 ```
 
-The new trip added one to EWR, and the two airports' trips of the day
+The new trip added one to EWR, and the airports' trips of the day
 left Queens for Airports, as PostgreSQL's view would show them
-([Dims](how-it-works.md#dims)). Straum follows commits asynchronously,
-so if the answer's `as_of` predates the write, ask once more.
+([Dims](how-it-works.md#dims)). Straum follows commits asynchronously:
+if `as_of` predates the write, ask again.
 
 ## 5. Look around, then clean up
 
@@ -175,5 +170,4 @@ Leave the shell with `\q`, then remove everything:
 docker compose -p straum down --volumes
 ```
 
-Next: [Try it on your data](your-data.md), on a copy of your own
-tables.
+Next: [Try it on your data](your-data.md), on a copy of your tables.
