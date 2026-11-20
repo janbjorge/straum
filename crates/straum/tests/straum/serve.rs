@@ -22,7 +22,16 @@ fn serves_asks_from_postgres() {
     // From a file, as a mounted secret would give it.
     let dsn = scratch.file("dsn", &format!("{}\n", pg.dsn("straum")));
     let mut straum = run(
-        &["run", &spec, "--listen", "127.0.0.1:0", "--dsn-file", &dsn],
+        &[
+            "run",
+            "--wal",
+            "logical",
+            &spec,
+            "--listen",
+            "127.0.0.1:0",
+            "--dsn-file",
+            &dsn,
+        ],
         "not a DSN",
     );
     straum.wait_for("ready", &Until::Ready);

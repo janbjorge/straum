@@ -25,7 +25,7 @@ Guide: https://janbjorge.github.io/straum/
 
 /// What `straum run --help` prints.
 pub(crate) const RUN_HELP: &str = "\
-usage: straum run FILE [flags]
+usage: straum run FILE --wal logical|physical [flags]
 
 Loads every table FILE names, follows their changes and answers asks over
 HTTP. SIGTERM or SIGINT stops it. FILE is the spec. Any failure to load
@@ -33,8 +33,8 @@ or follow ends it with exit 1, for whatever runs it to start it again.
 
   --listen ADDRESS             where to serve HTTP (127.0.0.1:8080)
   --wal logical|physical       logical decoding through the publication, or
-                               the physical WAL wal_level replica writes
-                               (logical)
+                               the physical WAL wal_level replica writes;
+                               required
   --publication NAME           the publication straum plan made (straum)
   --dsn-file FILE              a file holding the DSN; else STRAUM_DSN,
                                else PGHOST and the other libpq variables
@@ -51,13 +51,13 @@ Guide: https://janbjorge.github.io/straum/cli.html#straum-run
 
 /// What `straum plan --help` prints.
 pub(crate) const PLAN_HELP: &str = "\
-usage: straum plan FILE [flags]
+usage: straum plan FILE --wal logical|physical [flags]
        straum plan FILE... --copy DIR
        straum plan FILE... --tables
 
-Prints the SQL that sets PostgreSQL up for FILE, the spec: logical
-decoding, the role, its grants and the publication. With --wal physical
-only the role and its grants. With a DSN the role is its user and gets
+Prints the SQL that sets PostgreSQL up for FILE, the spec. With --wal
+logical: logical decoding, the role, its grants and the publication.
+With --wal physical: the role and its grants. With a DSN the role is its user and gets
 its password, as a SCRAM-SHA-256 verifier. --out writes the SQL to a
 file instead of stdout.
 
@@ -68,7 +68,8 @@ read-only snapshot; load.sql runs on the destination and loads them.
 psql connects, so Straum reads no database.
 
   --wal logical|physical
-                      the WAL straum run reads (logical)
+                      the WAL straum run reads; required for the
+                      setup SQL
   --publication NAME  the publication to make (straum)
   --role NAME         the role straum run connects as (the DSN's user,
                       else straum)

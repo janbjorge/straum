@@ -53,7 +53,7 @@ use crate::testing::{args, server};
 #[test]
 fn reads_run_and_plan() {
     assert_eq!(
-        command_of(&args("run s.sql")),
+        command_of(&args("run s.sql --wal logical")),
         Ok(Command::Run(Run {
             spec: "s.sql".into(),
             listen: LISTEN.into(),
@@ -98,56 +98,58 @@ fn listen_of(line: &str) -> std::net::SocketAddr {
 /// Straum has no authentication, so unless told it serves this host only.
 #[test]
 fn listens_on_this_host_only_unless_told() {
-    assert!(listen_of("run s.sql").ip().is_loopback());
-    let every = listen_of("run s.sql --listen 0.0.0.0:8080");
+    assert!(listen_of("run s.sql --wal logical").ip().is_loopback());
+    let every = listen_of("run s.sql --wal logical --listen 0.0.0.0:8080");
     assert!(!every.ip().is_loopback());
 }
 
 #[test]
 fn reads_plan() {
     assert_eq!(
-        command_of(&args("plan s")),
+        command_of(&args("plan s --wal logical")),
         Ok(Command::Plan(Plan {
             specs: vec!["s".into()],
-            replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
             dsn_file: None,
             out: None,
-            printed: Printed::Setup,
+            printed: Printed::Setup {
+                replication: Replication::Logical,
+            },
         }))
     );
     assert_eq!(
         command_of(&args("plan --role r s --dsn-file d --wal physical")),
         Ok(Command::Plan(Plan {
             specs: vec!["s".into()],
-            replication: Replication::Physical {
-                max_page_memory: MAX_PAGE_MEMORY,
-            },
             publication: PUBLICATION.into(),
             role: Some("r".into()),
             dsn_file: Some("d".into()),
             out: None,
-            printed: Printed::Setup,
+            printed: Printed::Setup {
+                replication: Replication::Physical {
+                    max_page_memory: MAX_PAGE_MEMORY,
+                },
+            },
         }))
     );
     assert_eq!(
-        command_of(&args("plan s --out setup.sql")),
+        command_of(&args("plan s --wal logical --out setup.sql")),
         Ok(Command::Plan(Plan {
             specs: vec!["s".into()],
-            replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
             dsn_file: None,
             out: Some("setup.sql".into()),
-            printed: Printed::Setup,
+            printed: Printed::Setup {
+                replication: Replication::Logical,
+            },
         }))
     );
     assert_eq!(
         command_of(&args("plan s --tables --out t.txt")),
         Ok(Command::Plan(Plan {
             specs: vec!["s".into()],
-            replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
             dsn_file: None,
@@ -175,7 +177,6 @@ fn reads_plan_with_several_specs() {
         command_of(&args("plan a.sql b.sql --copy out")),
         Ok(Command::Plan(Plan {
             specs: vec!["a.sql".into(), "b.sql".into()],
-            replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
             dsn_file: None,
@@ -189,7 +190,6 @@ fn reads_plan_with_several_specs() {
         command_of(&args("plan a b --tables")),
         Ok(Command::Plan(Plan {
             specs: vec!["a".into(), "b".into()],
-            replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
             dsn_file: None,
@@ -300,11 +300,12 @@ fn a_long_flag_takes_its_value_after_an_equals_sign_too() {
 /// flag; before it, it is a flag.
 #[test]
 fn a_double_dash_ends_the_flags() {
-    let Ok(Command::Run(run)) = command_of(&args("run --listen a -- -spec.sql")) else {
+    let Ok(Command::Run(run)) = command_of(&args("run --wal logical --listen a -- -spec.sql"))
+    else {
         panic!("run");
     };
     assert_eq!((run.spec.as_str(), run.listen.as_str()), ("-spec.sql", "a"));
-    let Ok(Command::Plan(plan)) = command_of(&args("plan -- -h")) else {
+    let Ok(Command::Plan(plan)) = command_of(&args("plan --wal logical -- -h")) else {
         panic!("plan -- -h asks for no help");
     };
     assert_eq!(plan.specs, ["-h"]);
@@ -557,13 +558,18 @@ fn wal_flags_say_what_they_take() {
             "--wal takes logical or physical, not \"both\"",
         ),
         ("run s --wal", "--wal needs a value"),
+        ("run s", "straum run needs --wal logical or --wal physical"),
         (
             "run s --max-page-memory 1Gi",
-            "--max-page-memory takes --wal physical",
+            "straum run needs --wal logical or --wal physical",
         ),
         (
-            "run --max-page-memory 1Gi",
-            "--max-page-memory takes --wal physical",
+            "plan s",
+            "straum plan needs --wal logical or --wal physical",
+        ),
+        (
+            "plan s --out setup.sql",
+            "straum plan needs --wal logical or --wal physical",
         ),
         (
             "run s --wal logical --max-page-memory 1Gi",
@@ -651,7 +657,7 @@ fn the_timeout_has_a_maximum() {
 #[test]
 fn number_flags_say_what_they_take() {
     for lag in ["0", "-1", "1.5", "30s", ""] {
-        let line = format!("run s --max-lag {lag}");
+        let line = format!("run s --wal logical --max-lag {lag}");
         let error = if lag.is_empty() {
             "--max-lag needs a value".to_owned()
         } else {
@@ -665,13 +671,13 @@ fn number_flags_say_what_they_take() {
         assert_eq!(usage(&line), error, "{timeout}");
     }
     for size in ["0", "0Gi", "4GB", "4gi", "Gi", "16777216Ti"] {
-        let line = format!("run s --max-retained-wal {size}");
+        let line = format!("run s --wal logical --max-retained-wal {size}");
         let error =
             format!("--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {size:?}");
         assert_eq!(usage(&line), error, "{size}");
     }
     for rows in ["0", "-1", "1.5", "10k", "1Ki"] {
-        let line = format!("run s --max-transaction-rows {rows}");
+        let line = format!("run s --wal logical --max-transaction-rows {rows}");
         let error = format!("--max-transaction-rows takes a count of rows above 0, not {rows:?}");
         assert_eq!(usage(&line), error, "{rows}");
     }

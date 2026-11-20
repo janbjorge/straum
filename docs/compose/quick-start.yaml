@@ -52,7 +52,7 @@ services:
     depends_on:
       load:
         condition: service_completed_successfully
-    command: ["run", "/spec/trips.sql", "--listen", "0.0.0.0:8080"]
+    command: ["run", "/spec/trips.sql", "--wal", "logical", "--listen", "0.0.0.0:8080"]
     environment:
       STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
     configs:

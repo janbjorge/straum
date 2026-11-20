@@ -22,8 +22,8 @@ the [quick start](quick-start.md)'s trips.
 A flag takes its value as the next word or after `=`: `--url
 http://straum:8080` or `--url=http://straum:8080`. A word that starts
 with `-` is a flag, up to a `--`; after it, a spec or a query is taken
-as written, as in `straum run -- -spec.sql`. Each flag goes on the
-line at most once.
+as written, as in `straum run --wal logical -- -spec.sql`. Each flag
+goes on the line at most once.
 
 A flag that takes seconds, rows or bytes takes a whole number above 0.
 A byte count may end in `Ki`, `Mi`, `Gi` or `Ti`, powers of 1024.
@@ -71,7 +71,7 @@ failure to load or follow, for whatever runs it to start it again
 ## straum run
 
 ```text
-straum run FILE [flags]
+straum run FILE --wal logical|physical [flags]
 ```
 
 Loads every table the [spec](spec.md) in `FILE` names, follows their
@@ -80,7 +80,7 @@ changes and answers [asks](asks.md) over HTTP.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--listen ADDRESS` | `127.0.0.1:8080` | Where to serve HTTP. The default reaches this host only ([Who can ask](deploy.md#who-can-ask)). |
-| `--wal logical\|physical` | `logical` | Logical decoding through the publication, or the [physical write-ahead log (WAL)](postgresql.md#physical-wal) that `wal_level = replica` writes. |
+| `--wal logical\|physical` | Required | Logical decoding through the publication, or the [physical write-ahead log (WAL)](postgresql.md#physical-wal) that `wal_level = replica` writes. |
 | `--publication NAME` | `straum` | The publication `straum plan` made. |
 | `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [data source name (DSN)](postgresql.md#2-connect). |
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
@@ -102,7 +102,7 @@ the connection closes. A second signal exits at once.
 ## straum plan
 
 ```text
-straum plan FILE [flags]
+straum plan FILE --wal logical|physical [flags]
 straum plan FILE... --copy DIR
 straum plan FILE... --tables
 ```
@@ -114,7 +114,7 @@ with the columns both read.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--wal logical\|physical` | `logical` | The setup for that stream: the physical one needs no publication or `REPLICA IDENTITY FULL`. |
+| `--wal logical\|physical` | Required for the SQL | The setup for that stream: the physical one needs no publication or `REPLICA IDENTITY FULL`. |
 | `--publication NAME` | `straum` | The publication to make; give `straum run` the same name. |
 | `--role NAME` | The DSN's user, else `straum` | The role `straum run` connects as. |
 | `--dsn-file FILE` | As for `straum run` | With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |

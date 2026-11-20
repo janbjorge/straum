@@ -69,9 +69,9 @@ spec:
             - {{ .Values.maxRetainedWal | quote }}
             - --max-transaction-rows
             - {{ .Values.maxTransactionRows | int64 | quote }}
-            {{- if eq .Values.wal "physical" }}
             - --wal
-            - physical
+            - {{ required "wal: name the WAL straum reads, logical or physical" .Values.wal | quote }}
+            {{- if eq .Values.wal "physical" }}
             - --max-page-memory
             - {{ .Values.maxPageMemory | quote }}
             {{- end }}

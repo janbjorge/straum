@@ -8,6 +8,7 @@ set:
   image.repository: registry.example/straum
   image.tag: "1.0.0"
   dsn.existingSecret: straum-dsn
+  wal: logical
   spec: "CREATE VIEW trips AS SELECT buckets(t.at, '1 hour') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
 tests:
   - it: runs straum on the spec, with the DSN from the Secret
@@ -36,6 +37,8 @@ tests:
             - 4Gi
             - --max-transaction-rows
             - "100000"
+            - --wal
+            - logical
       - equal:
           path: spec.template.spec.containers[0].env
           value:
@@ -81,6 +84,8 @@ tests:
             - 512Mi
             - --max-transaction-rows
             - "2500"
+            - --wal
+            - logical
       - equal:
           path: spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key
           value: url

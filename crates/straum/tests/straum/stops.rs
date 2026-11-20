@@ -24,7 +24,7 @@ fn a_failure_ends_straum_with_exit_1() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let publication = set_up(&pg, &spec, Some("CREATE PUBLICATION"));
-    let args = ["run", &spec, "--listen", "127.0.0.1:0"];
+    let args = ["run", "--wal", "logical", &spec, "--listen", "127.0.0.1:0"];
     let (code, log) = run(&args, &pg.dsn("straum")).exited();
     assert_eq!(code, Some(1), "{log}");
     assert!(log.contains("publication"), "{log}");
@@ -68,7 +68,10 @@ fn answers_not_ready_until_a_silent_server_ends_it() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let dsn = silent_server();
-    let straum = run(&["run", &spec, "--listen", "127.0.0.1:0"], &dsn);
+    let straum = run(
+        &["run", "--wal", "logical", &spec, "--listen", "127.0.0.1:0"],
+        &dsn,
+    );
     let (status, body) = straum.call("GET", "/readyz", "");
     assert_eq!(status, 503);
     assert!(body.starts_with("not ready: "), "{body}");
@@ -99,7 +102,7 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
     set_up(&pg, &spec, None);
     for twice in [false, true] {
         let mut straum = run(
-            &["run", &spec, "--listen", "127.0.0.1:0"],
+            &["run", "--wal", "logical", &spec, "--listen", "127.0.0.1:0"],
             &pg.dsn("straum"),
         );
         straum.wait_for("ready", &Until::Ready);
@@ -134,7 +137,11 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
 fn a_reader_that_left_is_no_failure() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
-    for args in [&["help"][..], &["version"], &["plan", &spec]] {
+    for args in [
+        &["help"][..],
+        &["version"],
+        &["plan", "--wal", "logical", &spec],
+    ] {
         let (reader, writer) = io::pipe().unwrap();
         drop(reader);
         let status = straum(args).stdout(writer).status().unwrap();
@@ -142,7 +149,7 @@ fn a_reader_that_left_is_no_failure() {
     }
     let (reader, writer) = io::pipe().unwrap();
     drop(reader);
-    let mut child = straum(&["run", &spec, "--listen", "127.0.0.1:0"])
+    let mut child = straum(&["run", "--wal", "logical", &spec, "--listen", "127.0.0.1:0"])
         .env("STRAUM_DSN", silent_server())
         .stderr(writer)
         .spawn()

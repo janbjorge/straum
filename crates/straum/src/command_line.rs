@@ -178,7 +178,6 @@ pub(crate) struct Run {
 pub(crate) struct Plan {
     /// One spec, or several with `--copy` or `--tables`.
     pub(crate) specs: Vec<String>,
-    pub(crate) replication: Replication,
     pub(crate) publication: String,
     pub(crate) role: Option<String>,
     pub(crate) dsn_file: Option<String>,
@@ -191,7 +190,7 @@ pub(crate) struct Plan {
 /// line, for a dump to take, or the copy scripts, in a directory.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Printed {
-    Setup,
+    Setup { replication: Replication },
     Tables,
     Copy { directory: String },
 }
@@ -251,6 +250,8 @@ pub(crate) enum UsageError {
         other: &'static str,
     },
     BadWal(String),
+    /// `run`, or `plan` printing the setup, without `--wal`.
+    NeedsWal(Name),
 }
 
 impl Display for UsageError {
@@ -297,6 +298,11 @@ impl Display for UsageError {
             UsageError::BadWal(value) => {
                 write!(formatter, "--wal takes logical or physical, not {value:?}")
             }
+            UsageError::NeedsWal(command) => write!(
+                formatter,
+                "straum {} needs --wal logical or --wal physical",
+                command.as_str()
+            ),
         }
     }
 }
@@ -464,12 +470,8 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
         return Err(UsageError::NeedsSpec(Name::Plan));
     }
     let printed = printed(flags)?;
-    if printed == Printed::Setup && flags.specs.len() > 1 {
-        return Err(UsageError::SetupTakesOneSpec);
-    }
     Ok(Command::Plan(Plan {
         specs: flags.specs.clone(),
-        replication: flags.replication()?,
         publication: flags.publication(),
         role: flags.text("--role"),
         dsn_file: flags.text("--dsn-file"),
@@ -483,11 +485,14 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
 fn printed(flags: &Flags) -> Result<Printed, UsageError> {
     let tables = flags.switch(TABLES);
     let Some(directory) = flags.text(COPY) else {
-        return Ok(if tables {
-            Printed::Tables
-        } else {
-            Printed::Setup
-        });
+        if tables {
+            return Ok(Printed::Tables);
+        }
+        if flags.specs.len() > 1 {
+            return Err(UsageError::SetupTakesOneSpec);
+        }
+        let replication = flags.replication(Name::Plan)?;
+        return Ok(Printed::Setup { replication });
     };
     if tables {
         return Err(UsageError::Together {
@@ -505,14 +510,14 @@ fn printed(flags: &Flags) -> Result<Printed, UsageError> {
 }
 
 fn run_command(flags: &Flags) -> Result<Command, UsageError> {
-    let replication = flags.replication()?;
+    let Some(spec) = flags.specs.first().cloned() else {
+        return Err(UsageError::NeedsSpec(Name::Run));
+    };
+    let replication = flags.replication(Name::Run)?;
     let is_physical = matches!(replication, Replication::Physical { .. });
     if flags.value("--max-page-memory").is_some() && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
-    let Some(spec) = flags.specs.first().cloned() else {
-        return Err(UsageError::NeedsSpec(Name::Run));
-    };
     let max_lag = flags.parsed(
         "--max-lag",
         LIMITS.max_lag,
@@ -718,9 +723,10 @@ impl Flags {
         })
     }
 
-    fn replication(&self) -> Result<Replication, UsageError> {
+    fn replication(&self, command: Name) -> Result<Replication, UsageError> {
         match self.value("--wal") {
-            None | Some("logical") => Ok(Replication::Logical),
+            None => Err(UsageError::NeedsWal(command)),
+            Some("logical") => Ok(Replication::Logical),
             Some("physical") => {
                 let max_page_memory = self.parsed(
                     "--max-page-memory",

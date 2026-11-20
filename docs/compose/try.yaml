@@ -96,7 +96,7 @@ services:
         bind:
           create_host_path: false
       - setup:/setup
-    command: ["plan", "/usage.sql", "--out", "/setup/setup.sql"]
+    command: ["plan", "/usage.sql", "--wal", "logical", "--out", "/setup/setup.sql"]
 
   apply:
     image: postgres:18
@@ -119,7 +119,7 @@ services:
     depends_on:
       apply:
         condition: service_completed_successfully
-    command: ["run", "/usage.sql", "--listen", "0.0.0.0:8080"]
+    command: ["run", "/usage.sql", "--wal", "logical", "--listen", "0.0.0.0:8080"]
     environment:
       STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
     volumes:

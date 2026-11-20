@@ -11,6 +11,9 @@ services:
     command:
       - run
       - /etc/straum/spec.sql
+      # logical decoding; physical reads the WAL of wal_level replica.
+      - --wal
+      - logical
       - --dsn-file
       - /run/secrets/dsn
       - --listen

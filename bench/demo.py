@@ -147,7 +147,7 @@ def straum(password: str) -> dict:
         "image": IMAGE,
         # Every address in the container: unless told, Straum serves its
         # own loopback, which the published port never reaches.
-        "command": ["run", SPEC_IN_IMAGE, "--listen", f"0.0.0.0:{STRAUM_PORT}"],
+        "command": ["run", SPEC_IN_IMAGE, "--wal", "logical", "--listen", f"0.0.0.0:{STRAUM_PORT}"],
         "environment": {"STRAUM_DSN": dsn(password)},
         "volumes": [f"{SPEC}:{SPEC_IN_IMAGE}:ro"],
         "ports": [{"target": STRAUM_PORT, "host_ip": "127.0.0.1"}],
@@ -170,7 +170,7 @@ def load(stack: Stack) -> None:
 
 
 async def apply_plan(pg: asyncpg.Connection, stack: Stack) -> None:
-    sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE)
+    sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE, "--wal", "logical")
     for line in sql.splitlines():
         if line and not line.startswith("--"):
             await pg.execute(line)

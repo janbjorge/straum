@@ -7,8 +7,8 @@ names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run` opens a temporary logical replication slot ([the physical
-stream](#the-physical-stream) differs). The slot names a log sequence
+`straum run --wal logical` opens a temporary logical replication slot
+([the physical stream](#the-physical-stream) differs). The slot names a log sequence
 number (LSN), L, and gives a snapshot at L. Straum loads each spec table
 from that snapshot, then streams every commit after L. No commit is
 missed or applied twice.

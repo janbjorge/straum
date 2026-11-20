@@ -136,10 +136,11 @@ try --help` lists the other flags.
 
 Once the answers hold:
 
-1. `straum plan usage.sql` prints the setup SQL. A table owner runs it
-   once ([Setting up PostgreSQL](postgresql.md)).
-2. `straum run usage.sql`, with `STRAUM_DSN` or libpq's `PGHOST` and
-   the rest set, then ask.
+1. `straum plan usage.sql --wal logical` prints the setup SQL, or
+   `--wal physical` ([Setting up PostgreSQL](postgresql.md)). A table
+   owner runs it once.
+2. `straum run usage.sql` with the same `--wal`, and `STRAUM_DSN` or
+   libpq's `PGHOST` and the rest set, then ask.
 
 Start with few keys: memory grows with each distinct combination of
 keys and bucket ([Cells](how-it-works.md#cells)).

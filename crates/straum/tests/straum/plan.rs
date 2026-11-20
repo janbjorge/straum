@@ -57,7 +57,7 @@ fn plan_tables_names_each_table_once() {
     let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, &other, "--tables"]));
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     assert_eq!(stdout, expected);
-    let (code, _, stderr) = output(&mut straum(&["plan", &spec, &other]));
+    let (code, _, stderr) = output(&mut straum(&["plan", "--wal", "logical", &spec, &other]));
     assert_eq!(code, Some(2), "{stderr}");
 }
 
@@ -66,7 +66,7 @@ fn plan_prints_the_setup_sql() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let parsed = straum_notation::parse(SPEC).unwrap();
-    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec]));
+    let (code, stdout, stderr) = output(&mut straum(&["plan", "--wal", "logical", &spec]));
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     assert_eq!(
         stdout,
@@ -78,7 +78,16 @@ fn plan_prints_the_setup_sql() {
             straum_pg::Replication::Logical
         )
     );
-    let mut custom = straum(&["plan", "--publication", "p", &spec, "--role", "r"]);
+    let mut custom = straum(&[
+        "plan",
+        "--wal",
+        "logical",
+        "--publication",
+        "p",
+        &spec,
+        "--role",
+        "r",
+    ]);
     let (_, stdout, _) = output(&mut custom);
     assert_eq!(
         stdout,
@@ -89,7 +98,7 @@ fn plan_prints_the_setup_sql() {
     // --role still names the role. The password has a hyphen, which no
     // base64 verifier can contain, so the check can't trip on chance.
     let dsn = scratch.file("dsn", "postgres://reader:plain-pw@db/app\n");
-    let mut with_dsn = straum(&["plan", &spec, "--dsn-file", &dsn]);
+    let mut with_dsn = straum(&["plan", "--wal", "logical", &spec, "--dsn-file", &dsn]);
     let (code, stdout, stderr) = output(&mut with_dsn);
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     let role = "CREATE ROLE \"reader\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:";
@@ -98,7 +107,7 @@ fn plan_prints_the_setup_sql() {
         !stdout.contains("plain-pw") && !stdout.contains("\\password"),
         "{stdout}"
     );
-    let mut named = straum(&["plan", &spec, "--role", "r"]);
+    let mut named = straum(&["plan", "--wal", "logical", &spec, "--role", "r"]);
     named.env("STRAUM_DSN", "postgres://reader@db/app");
     let (_, stdout, _) = output(&mut named);
     assert!(
@@ -108,16 +117,18 @@ fn plan_prints_the_setup_sql() {
     // A line break in the role would end a comment line and start a
     // statement: refused, from the flag or the DSN's user.
     let broken = "r\nDROP TABLE t; --";
-    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, "--role", broken]));
+    let (code, stdout, stderr) = output(&mut straum(&[
+        "plan", "--wal", "logical", &spec, "--role", broken,
+    ]));
     assert_eq!((code, stdout.as_str()), (Some(1), ""));
     assert_eq!(
         stderr,
         "straum: the role \"r\\nDROP TABLE t; --\" holds a control character\n"
     );
-    let mut from_dsn = straum(&["plan", &spec]);
+    let mut from_dsn = straum(&["plan", "--wal", "logical", &spec]);
     from_dsn.env("STRAUM_DSN", "postgres://r%0ADROP@db/app");
     assert_eq!(output(&mut from_dsn).0, Some(1));
-    let mut bad = straum(&["plan", &spec]);
+    let mut bad = straum(&["plan", "--wal", "logical", &spec]);
     bad.env("STRAUM_DSN", "mysql://reader@db/app");
     let (code, _, stderr) = output(&mut bad);
     assert_eq!(code, Some(1));
@@ -131,7 +142,7 @@ fn plan_prints_the_setup_sql() {
 fn plan_reads_the_libpq_variables() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
-    let mut command = straum(&["plan", &spec]);
+    let mut command = straum(&["plan", "--wal", "logical", &spec]);
     command
         .env("PGHOST", "db.example")
         .env("PGUSER", "reader")
@@ -145,7 +156,7 @@ fn plan_reads_the_libpq_variables() {
         "{stdout}"
     );
     assert!(!stdout.contains("secret"), "{stdout}");
-    let mut both = straum(&["plan", &spec]);
+    let mut both = straum(&["plan", "--wal", "logical", &spec]);
     both.env(
         "STRAUM_DSN",
         "postgres://owner@db.example/app?sslmode=disable",
@@ -165,7 +176,9 @@ fn plan_can_write_the_setup_sql() {
     let out = scratch.path.join("setup.sql");
     let out = out.to_str().unwrap();
     let parsed = straum_notation::parse(SPEC).unwrap();
-    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, "--out", out]));
+    let (code, stdout, stderr) = output(&mut straum(&[
+        "plan", "--wal", "logical", &spec, "--out", out,
+    ]));
     assert_eq!((code, stdout.as_str(), stderr.as_str()), (Some(0), "", ""));
     let wrote = fs::read_to_string(out).unwrap();
     assert_eq!(
@@ -180,7 +193,9 @@ fn plan_can_write_the_setup_sql() {
     );
     let missing = scratch.path.join("missing").join("setup.sql");
     let missing = missing.to_str().unwrap();
-    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, "--out", missing]));
+    let (code, stdout, stderr) = output(&mut straum(&[
+        "plan", "--wal", "logical", &spec, "--out", missing,
+    ]));
     assert_eq!((code, stdout.as_str()), (Some(1), ""));
     let start = format!("straum: writing {missing}: ");
     assert!(stderr.starts_with(&start), "{stderr}");

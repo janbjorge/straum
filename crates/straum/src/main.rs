@@ -282,7 +282,6 @@ fn read_spec(path: &str) -> Result<SpecFile, Failure> {
 fn plan(
     Plan {
         specs,
-        replication,
         publication,
         role,
         dsn_file,
@@ -297,7 +296,7 @@ fn plan(
     let directory = match printed {
         Printed::Tables => return write_or_print(out.as_deref(), &table_lines(&read)),
         Printed::Copy { directory } => directory,
-        Printed::Setup => {
+        Printed::Setup { replication } => {
             let setup = Setup {
                 replication,
                 publication,

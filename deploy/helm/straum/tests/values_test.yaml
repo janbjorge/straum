@@ -5,8 +5,25 @@ templates:
 set:
   image.tag: "1.0.0"
   dsn.existingSecret: straum-dsn
+  wal: logical
   spec: "CREATE VIEW trips AS SELECT buckets(t.at, '1 hour') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
 tests:
+  - it: refuses a release that names no WAL
+    template: deployment.yaml
+    set:
+      wal: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "wal: name the WAL straum reads"
+
+  - it: refuses a WAL straum doesn't read
+    template: deployment.yaml
+    set:
+      wal: both
+    asserts:
+      - failedTemplate:
+          errorPattern: "wal"
+
   - it: refuses a listen address other than every IPv4 or every IPv6 one
     template: deployment.yaml
     set:

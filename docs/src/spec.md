@@ -407,8 +407,8 @@ never a `sum`, `min` or `max`.
 
 ## Checking a spec
 
-`straum plan FILE` prints the setup SQL, or what is wrong and exits
-with status 1. Each line of the report names the file. Straum reads
+`straum plan FILE --wal logical` prints the setup SQL, or what is
+wrong and exits with status 1. Each line of the report names the file. Straum reads
 the spec in two passes and reports every problem from the first pass
 that finds any. The first pass reads each statement and names the line
 of each problem, such as syntax outside the subset or an unknown

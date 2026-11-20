@@ -26,7 +26,9 @@ are decoded; the others are stepped over, as a busy table's other
 values were most of the decoding. The load is plain SQL in a
 `REPEATABLE READ` transaction, and commits its snapshot saw are
 skipped. A table rewrite, DDL or a TOASTed value Straum can't rebuild
-is `Unfit` and stops Straum. `--wal logical` stays the default.
+is `Unfit` and stops Straum. Neither stream is a default: `straum run`
+and the setup `straum plan` prints take `--wal logical` or `--wal
+physical`, since the two need different server settings and setup.
 
 The reader knows the spec tables' relation files and passes by each
 record that names only other files' pages and whose resource manager

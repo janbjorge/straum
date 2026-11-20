@@ -6,12 +6,12 @@ needs PostgreSQL 17 or newer, self-hosted or managed. Its tests run on
 connects as a role that is not a superuser. A superuser runs a few
 lines of the setup once.
 
-Pick a stream first: logical decoding, the default, or the physical
+Pick a stream first, with `--wal`: logical decoding, or the physical
 write-ahead log (WAL), which leaves `wal_level` alone.
 
 | | Physical WAL | Logical decoding |
 | --- | --- | --- |
-| Run | `straum run FILE --wal physical` | `straum run FILE` |
+| Run | `straum run FILE --wal physical` | `straum run FILE --wal logical` |
 | Server | `wal_level = replica` and `full_page_writes = on`, both defaults. No restart | PostgreSQL 17 and 18 need `wal_level = logical`, then a restart. From 19, `replica` is enough |
 | SQL | A role and `SELECT` | Also a publication and `REPLICA IDENTITY FULL` |
 
@@ -22,7 +22,7 @@ stream. Use logical decoding there.
 ## 1. Run the setup SQL
 
 `straum plan FILE --wal physical` prints the physical setup. `straum
-plan FILE` prints the logical one. With a DSN set, from `--dsn-file`,
+plan FILE --wal logical` prints the logical one. With a DSN set, from `--dsn-file`,
 `STRAUM_DSN` or libpq's variables ([Connect](#2-connect)), the role is
 the user of the data source name (DSN) and its password goes in as a
 SCRAM-SHA-256 verifier, so the password itself is in neither the SQL nor

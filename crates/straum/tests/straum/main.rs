@@ -373,7 +373,7 @@ impl Drop for Running {
 /// returns. The role `straum` gets its password from the DSN the plan
 /// reads, the one `straum run` connects with after.
 fn set_up(pg: &PostgresContainer, spec: &str, hold: Option<&str>) -> Vec<String> {
-    let mut plan = straum(&["plan", spec]);
+    let mut plan = straum(&["plan", "--wal", "logical", spec]);
     plan.env("STRAUM_DSN", pg.dsn("straum"));
     let (code, plan, _) = output(&mut plan);
     assert_eq!(code, Some(0));

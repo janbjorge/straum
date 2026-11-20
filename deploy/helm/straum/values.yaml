@@ -45,8 +45,9 @@ rootCert:
 # wal is the WAL straum reads: "logical", logical decoding through the
 # publication, or "physical", the WAL wal_level replica writes, for a server
 # that can't take the restart logical decoding needs. Run
-# `straum plan --wal physical` for its setup.
-wal: "logical"
+# `straum plan --wal physical` for its setup. Required: the chart assumes
+# neither.
+wal: ""
 
 # maxPageMemory, with wal "physical", is how many bytes of rows straum may
 # hold from the WAL, pages changed since the last checkpoint and changes of

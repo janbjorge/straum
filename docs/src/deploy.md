@@ -36,7 +36,7 @@ as user 65532.
 
 ```sh
 export STRAUM_DSN='postgres://straum:PASSWORD@db.example.com:5432/app'
-straum run usage.sql
+straum run usage.sql --wal logical
 ```
 
 Straum loads every table, then follows the stream. `GET /readyz` says

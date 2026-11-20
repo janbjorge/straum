@@ -64,30 +64,38 @@ fn says_what_is_wrong() {
     let not_found = format!("straum: reading {missing}: No such file or directory (os error 2)\n");
 
     let cases: &[(&[&str], Option<&str>, String)] = &[
-        (&["plan", &missing], None, not_found.clone()),
-        (&["plan", &bad], None, format!("straum: {bad}: line 1: ")),
         (
-            &["run", &spec],
+            &["plan", "--wal", "logical", &missing],
+            None,
+            not_found.clone(),
+        ),
+        (
+            &["plan", "--wal", "logical", &bad],
+            None,
+            format!("straum: {bad}: line 1: "),
+        ),
+        (
+            &["run", "--wal", "logical", &spec],
             None,
             "straum: set STRAUM_DSN, pass --dsn-file, or set PGHOST\n".to_owned(),
         ),
         (
-            &["run", &spec],
+            &["run", "--wal", "logical", &spec],
             Some("mysql://straum@db/straum"),
             "straum: DSN must start with postgres:// or postgresql://\n".to_owned(),
         ),
         (
-            &["run", &spec, "--dsn-file", &missing],
+            &["run", "--wal", "logical", &spec, "--dsn-file", &missing],
             Some("postgres://straum@db/straum"),
             not_found,
         ),
         (
-            &["run", &spec, "--listen", "nowhere"],
+            &["run", "--wal", "logical", &spec, "--listen", "nowhere"],
             Some("postgres://straum@db/straum"),
             "straum: listening on nowhere: invalid socket address\n".to_owned(),
         ),
         (
-            &["run", &spec, "--listen", &taken],
+            &["run", "--wal", "logical", &spec, "--listen", &taken],
             Some("postgres://straum:secret@db/straum"),
             format!("straum: listening on {taken}: Address already in use"),
         ),
