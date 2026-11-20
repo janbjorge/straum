@@ -1,20 +1,19 @@
 # Design
 
-This page names the code behind [How Straum works](how-it-works.md):
-who takes part, what each use case does, how the crates depend on each
-other and what the code holds true. The [glossary](glossary.md) gives
-each term its name in the code. [Reading the code](reading-the-code.md)
-gives the order to read the crates in and the Rust they use.
+This page names the code behind [How Straum works](how-it-works.md).
+The [glossary](glossary.md) gives each term its name in the code;
+[Reading the code](reading-the-code.md) gives the order to read the
+crates in and the Rust they use.
 
 Four participants:
 
-- **PostgreSQL**: the source of truth. Passive: it publishes the
-  stream and serves the snapshot loads. Nothing of Straum runs in it.
+- **PostgreSQL**: the source of truth, passive. It publishes the
+  stream and serves the snapshot loads; nothing of Straum runs in it.
 - **Straum** (`straum run`): active toward PostgreSQL, reactive toward
   clients. One writer thread opens the slot, loads the tables and
   applies every commit; tokio threads answer asks meanwhile.
-- **Clients**: the apps that `POST /ask`. They never see a table, a
-  join or a row, only the names a view gives its keys and measures.
+- **Clients**: the apps that `POST /ask`. They see only the names a
+  view gives its keys and measures, never a table, join or row.
 - **People**: a table owner, who runs the setup SQL `straum plan`
   prints once, and an operator, who runs the binary and reads
   `/readyz`, `/status`, `/views` and the log. In Kubernetes the chart
@@ -23,7 +22,7 @@ Four participants:
 ## Architecture
 
 Straum has six crates. Dependencies point inward only (architecture
-decision record ADR-0002), and `scripts/check-layers.py` enforces it.
+decision record ADR-0002); `scripts/check-layers.py` enforces it.
 
 ![The six crates and their dependencies, inward only](diagrams/crates.svg)
 
@@ -31,15 +30,14 @@ decision record ADR-0002), and `scripts/check-layers.py` enforces it.
 `straum-http` depend on the use cases in `straum-app`;
 `straum-notation` needs only the domain.*
 
-- `straum-domain` has no dependencies and no I/O. Everything an ask
-  or a change needs is a plain struct, enum or function.
+- `straum-domain` has no dependencies and no I/O: plain structs, enums
+  and functions.
 - `straum-app` holds the use cases and the one port, `Source`, the
-  trait PostgreSQL sits behind. Like the domain it takes no outside
-  crate and does no I/O; it reads only the clock.
-- The adapters never meet: `straum-http` is handed the ask syntax by
-  the binary (`AskSyntax` in `straum-http`: a reader and the words for
-  `AskError`, both from `straum-notation`), so HTTP never knows Straum
-  SQL.
+  trait PostgreSQL sits behind. It takes no outside crate and does no
+  I/O either; it reads only the clock.
+- The adapters never meet: the binary hands `straum-http` the ask
+  syntax (`AskSyntax`: a reader and the words for `AskError`, both
+  from `straum-notation`), so HTTP never knows Straum SQL.
 - The domain holds what a spec and an ask mean, never how Straum SQL
   writes them: its errors are data, worded in `straum-notation`
   (`describe_ask_error`). `scripts/check-domain-syntax.py` refuses a
@@ -61,21 +59,20 @@ apps post asks to `straum-http`, which reads the store through the app.
 | Fail              | Writer      | A failure                 | Exit 1, slots dropped  | [States](deploy.md#states) |
 | Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](cli.md#straum-run) |
 
-Run Straum is `run` in the binary. It reads the spec and the data source
-name (DSN), binds the listener and sets a panic hook that aborts the
-process, since the store may be half written. Then it makes an **App**
-with an empty **Store** and the **Limits**, makes a **Writer** over a
-**Postgres** source, spawns the writer thread and serves HTTP until a
-signal. Fail is `run_writer`: a step that fails logs its error and ends
-the process with exit 1, and PostgreSQL drops the slot as the connection
-closes. Straum never retries in the process; whatever runs it starts it
-again.
+Run Straum is `run` in the binary. It reads the spec and the data
+source name (DSN), binds the listener and sets a panic hook that
+aborts the process, since the store may be half written. It makes an
+**App** with an empty **Store** and the **Limits** and a **Writer**
+over a **Postgres** source, spawns the writer thread and serves HTTP
+until a signal. Fail is `run_writer`: a failed step logs its error
+and exits 1, and PostgreSQL drops the slot as the connection closes.
+Straum never retries in the process; whatever runs it starts it again.
 
 `straum plan --copy` writes the psql scripts that copy the spec's
-tables into another database (ADR-0015); Straum itself reads no
-database for it. `copy_scripts.rs` writes them, beside `plan.rs` in
-`straum-pg` and outside the `Source` port, which only loads the store
-and then streams.
+tables into another database (ADR-0015), reading no database itself.
+`copy_scripts.rs` writes them, beside `plan.rs` in `straum-pg` and
+outside the `Source` port, which only loads the store and then
+streams.
 
 ## Start
 
@@ -105,8 +102,8 @@ store outside the lock, so asks never wait on PostgreSQL; they answer
 503 until step 4. A writer starts once: the **App** begins with an
 empty store, and a failed writer takes no more steps.
 
-With `--wal physical`, step 1 differs (ADR-0008);
-[The physical stream](how-it-works.md#the-physical-stream) says why:
+With `--wal physical`, step 1 differs (ADR-0008); [The physical
+stream](how-it-works.md#the-physical-stream) says why:
 
 1. Read the catalog on a plain connection and check it.
 2. Create a temporary physical slot and wait for
@@ -144,22 +141,22 @@ read fact columns, one projection per dim. A rollup is one level per
 width; a bucket is columnar cells with one state per input.*
 
 - A **Rollup** is every cell of one fact: one **Level** per width,
-  the narrowest first, and one **Codes** per rollup-key
-  column. The bucket is not coded; it keys the level's map. Rows
-  without a time go under `None` (`Level::bucket`).
+  the narrowest first, and one **Codes** per rollup-key column. The
+  bucket is not coded; it keys the level's map. Rows without a time go
+  under `None` (`Level::bucket`).
 - A **Bucket** holds its **Cells**, every bucket in memory
   (ADR-0010).
 - **Cells** are columnar: keys, row counts and one **State** per
   input column, side by side (`Cells`), so an ask reads a column of
-  cells in one pass
-  ([rows vs columns](https://spiraldb.com/blog/rows-vs-columns)).
+  cells in one pass ([rows vs
+  columns](https://spiraldb.com/blog/rows-vs-columns)).
   A column of counts or sums is as wide as its widest entry needs,
   and none at all while every entry is zero (`Counts`, `Sums`,
   ADR-0003). An **Index** finds a cell by its key codes: a table of
-  positions, the keys themselves staying in their column. A cell goes
-  with its last row (`Rollup::remove`).
-  `Aggregate::state_kind` picks which **State** a measure reads, so
-  measures over one column share it. A count distinct keeps value
+  positions, the keys staying in their column. A cell goes with its
+  last row (`Rollup::remove`). `Aggregate::state_kind` picks which
+  **State** a measure reads, so measures over one column share it. A
+  count distinct keeps value
   counts as a min or max does while its column holds only numbers,
   and a hash map per cell from its first value of another type
   (`DistinctCells`): the load sets the column types only after the
@@ -252,14 +249,14 @@ The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
 
 `GET /views` takes the read lock once and reports what the store holds
 (`App::held`): per view its widths, cells, range of buckets, keys with
-the types the load set, and measures; per dim its rows. `straum views`
-and `straum ask` print what the server wrote, as `straum status` does.
+the types the load set, and measures; per dim its rows. `straum views`,
+`straum ask` and `straum status` print what the server wrote.
 
-`GET /views/NAME` answers an ask the app builds (`App::rows_ask`):
+`GET /views/NAME` answers an ask the app builds (`App::rows_ask`),
 every measure by the bucket and every key over the buckets the view
 holds, through the same steps as any ask (`App::ask_window`). The
-store builds only the rows of the window asked for, at most 1000,
-though it still merges every cell into its group.
+store builds only the rows of the window asked for, at most 1000, but
+still merges every cell into its group.
 
 `GET /views/NAME/spec` replies with the view's `CREATE VIEW`
 statement, which `straum run` cut from the spec's text at start
@@ -270,11 +267,11 @@ JSON to complete names, prints an answer's `Server-Timing` under it
 beside the time it measured itself, and knows no Straum SQL.
 
 In the binary, `main.rs` reads the command line (`command_line.rs`)
-and wires the crates together. The commands that talk to a running
-Straum go through `client.rs`, one request on a plain socket, which
-also times an ask and a view's rows. `complete.rs` is what Tab offers,
-plain functions over a line and the views, and `shell.rs` is the
-prompt around both, the only code that touches the terminal.
+and wires the crates together. Commands that talk to a running Straum
+go through `client.rs`, one request on a plain socket, which also
+times an ask and a view's rows. `complete.rs` is what Tab offers,
+plain functions over a line and the views; `shell.rs` is the prompt
+around both, the only code that touches the terminal.
 
 ## Model
 
@@ -370,8 +367,8 @@ mutex: a following while every table is loaded.*
 
 ## Invariants
 
-What the code holds true, and where. Planting a bug in any of these
-makes a property test fail.
+What the code holds true, and where. A bug planted in any of these
+fails a property test.
 
 1. **A commit applies whole.** The decoder holds a transaction until
    its Commit message (`Decoder`), and the store takes it under
@@ -442,7 +439,7 @@ A `load` outside `Loading`, and a `next_commit` or `wal` while
 
 ## Which decision shaped what
 
-The reasoning and the tradeoffs are in the
+The reasoning and tradeoffs are in the
 [ADRs](https://github.com/janbjorge/straum/tree/main/docs/adr), one per
 subject (ADR-0001); their index says which record covers which part of
 the model.
