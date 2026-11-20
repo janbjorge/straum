@@ -82,7 +82,7 @@ but takes a table each and writes every change once per Straum.
   not a reload.
 - The app's writes pay the trigger and an insert a statement: on the
   taxi trips a small statement took a quarter to a half longer, and
-  the outbox added about a fifth to the tables' write-ahead log (WAL).
+  the outbox added 8% to 18% to the tables' write-ahead log (WAL).
 - One Straum an outbox: no second replica. On the other streams a
   deploy's new Straum loads beside the old; here the old stops first,
   and nothing answers until the new one has loaded.
