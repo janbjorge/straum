@@ -178,6 +178,38 @@ tests:
             - --max-page-memory
             - 256Mi
 
+  - it: passes no memory limit unless one is set
+    template: deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --max-memory
+
+  - it: passes the memory limit when set
+    template: deployment.yaml
+    set:
+      maxMemory: 900Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - run
+            - /etc/straum/spec.sql
+            - --listen
+            - 0.0.0.0:8080
+            - --publication
+            - straum
+            - --max-lag
+            - "30"
+            - --max-retained-wal
+            - 4Gi
+            - --max-transaction-rows
+            - "100000"
+            - --wal
+            - logical
+            - --max-memory
+            - 900Mi
+
   - it: takes the image's tag
     template: deployment.yaml
     set:

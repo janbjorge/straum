@@ -2,8 +2,10 @@
 //! cases and HTTP meet. `main` reads the command line (`command_line.rs`)
 //! and `execute` runs the command. `straum run` starts one writer thread,
 //! which loads every table, then applies the stream, and ends the process
-//! on a failure, while `straum-http` serves asks. The other commands talk to
-//! a running Straum through `client.rs`, or prompt at it (`shell.rs`).
+//! on a failure, while `straum-http` serves asks. With `--max-memory` a
+//! thread watches resident memory (`memory.rs`) and ends the process past
+//! it. The other commands talk to a running Straum through `client.rs`,
+//! or prompt at it (`shell.rs`).
 
 #![forbid(unsafe_code)]
 
@@ -11,6 +13,7 @@ mod client;
 mod command_line;
 mod complete;
 mod help;
+mod memory;
 mod shell;
 #[cfg(test)]
 mod testing;
@@ -34,6 +37,7 @@ use straum_pg::{Dsn, DsnError, PgEnv, Postgres, Replication};
 use crate::client::{ClientError, Server};
 use crate::command_line::{Command, Environment, Plan, Printed, ROLE, Run, URL_VARIABLE, command};
 use crate::help::HELP;
+use crate::memory::MemoryError;
 use crate::shell::PipeError;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
@@ -44,6 +48,10 @@ const NOT_READY: u8 = 3;
 
 // What a failed writer ends the process with, as every other failure.
 const WRITER_FAILED: i32 = 1;
+
+// What memory past `--max-memory` ends the process with, as every other
+// failure.
+const PAST_MAX_MEMORY: i32 = 1;
 
 /// A command that started and failed.
 #[derive(Debug)]
@@ -78,6 +86,9 @@ enum Failure {
         error: io::Error,
     },
     StartingWriter(io::Error),
+    /// A set `--max-memory` whose reading failed at the start.
+    Memory(MemoryError),
+    StartingWatch(io::Error),
     Serving(io::Error),
 }
 
@@ -110,6 +121,10 @@ impl Display for Failure {
                 write!(formatter, "listening on {address}: {error}")
             }
             Failure::StartingWriter(error) => write!(formatter, "starting the writer: {error}"),
+            Failure::Memory(error) => error.fmt(formatter),
+            Failure::StartingWatch(error) => {
+                write!(formatter, "starting the memory watch: {error}")
+            }
             Failure::Serving(error) => write!(formatter, "serving HTTP: {error}"),
         }
     }
@@ -451,8 +466,12 @@ fn run(
         dsn_file,
         limits,
         max_transaction_rows,
+        max_memory,
     }: Run,
 ) -> Result<(), Failure> {
+    if let Some(limit) = max_memory {
+        start_memory_watch(limit)?;
+    }
     let SpecFile { spec, definitions } = read_spec(&spec)?;
     let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
         return Err(Failure::NoDsn);
@@ -540,6 +559,26 @@ fn run_writer(mut writer: Writer<Postgres>) {
     }
 }
 
+/// Reads resident memory once, so a set `--max-memory` that can't be read
+/// fails the start instead of passing for no limit, then watches it from
+/// before the load on.
+fn start_memory_watch(limit: u64) -> Result<(), Failure> {
+    memory::read_resident(memory::STATUS).map_err(Failure::Memory)?;
+    thread::Builder::new()
+        .name("straum-memory".into())
+        .spawn(move || stop_past(limit))
+        .map_err(Failure::StartingWatch)?;
+    Ok(())
+}
+
+/// Watches resident memory until it passes `limit`, then ends the
+/// process, as a failed writer does.
+fn stop_past(limit: u64) {
+    let stop = memory::watch(memory::STATUS, limit);
+    log(&stop.to_string());
+    process::exit(PAST_MAX_MEMORY);
+}
+
 /// Each line of `message` to stderr, prefixed `straum: `, so a reader
 /// can grep for every line Straum logs. A stderr nobody reads any more is
 /// no reason to stop: `eprintln!` would panic, and a panic aborts.
@@ -604,6 +643,15 @@ mod tests {
                     error: gone(),
                 },
                 "listening on x: gone",
+            ),
+            (
+                Failure::Memory(memory::read_resident("/nowhere/status").unwrap_err()),
+                "--max-memory needs /nowhere/status to read Straum's resident memory: \
+                 No such file or directory (os error 2)",
+            ),
+            (
+                Failure::StartingWatch(gone()),
+                "starting the memory watch: gone",
             ),
         ];
         for (failure, said) in cases {

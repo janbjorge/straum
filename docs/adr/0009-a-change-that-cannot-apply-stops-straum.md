@@ -29,7 +29,8 @@ transactions`. A row counts once, however many views and dims read its
 table; counting a change per view stopped a spec with two views over
 one table at half the rows the flag names. Past
 `--max-retained-wal` (4Gi) Straum stops too, since Azure fixes
-`max_slot_wal_keep_size` at `-1`. A value Straum can't read (`NaN`,
+`max_slot_wal_keep_size` at `-1`, and past `--max-memory`, off unless
+set (ADR-0010). A value Straum can't read (`NaN`,
 an overflowing numeric, non-UTF-8 text) fails the load naming table
 and column.
 
@@ -83,7 +84,8 @@ during a load counts from its start. `/readyz` is off past `--max-lag`
   failure and the next start, as the port closes; the failed run's last
   log lines say why it stopped.
 - A load slower than the WAL cap allows fails each start, which the
-  supervisor's restarts show.
+  supervisor's restarts show. So does a spec whose cells pass
+  `--max-memory`.
 - Lag is up to a second longer than the truth, never shorter. The
   readings need no grant beyond the tables'.
 - Per-table reload and a chunked apply are open, not planned.

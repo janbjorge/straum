@@ -56,7 +56,11 @@ through the app.
 
 ## Running
 
-`run` in the binary reads the spec and the data source name (DSN),
+`run` in the binary first starts the memory watch when `--max-memory`
+is set (`memory.rs`): a thread that reads the process's resident memory
+from `/proc/self/status` every second and exits 1 past the limit. It
+reads once before the thread starts, so a limit it can't read fails the
+start. Then `run` reads the spec and the data source name (DSN),
 binds the listener and sets a panic hook that aborts the process, since
 after a panic the store may be half written. It builds an `App` around
 an empty `Store` and the `Limits`, and a `Writer` over a `Postgres`

@@ -79,6 +79,28 @@ tests:
       - failedTemplate:
           errorPattern: "maxPageMemory"
 
+  - it: takes a memory limit in bytes or with a suffix
+    template: deployment.yaml
+    set:
+      maxMemory: "1073741824"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: refuses a memory limit Straum can't read
+    set:
+      maxMemory: 1GB
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxMemory"
+
+  - it: refuses a memory limit of nothing
+    set:
+      maxMemory: "0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxMemory"
+
   - it: refuses a WAL limit of nothing
     set:
       maxRetainedWal: "0"

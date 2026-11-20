@@ -118,6 +118,7 @@ impl Name {
                 "--max-retained-wal",
                 "--max-transaction-rows",
                 "--max-page-memory",
+                "--max-memory",
             ],
             Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", OUT, COPY],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
@@ -171,6 +172,9 @@ pub(crate) struct Run {
     pub(crate) dsn_file: Option<String>,
     pub(crate) limits: Limits,
     pub(crate) max_transaction_rows: usize,
+    /// Bytes of resident memory before Straum stops; `None`, the default,
+    /// sets no limit and never reads it.
+    pub(crate) max_memory: Option<u64>,
 }
 
 /// What `straum plan` was told.
@@ -547,6 +551,11 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
             max_retained_wal,
         },
         max_transaction_rows,
+        max_memory: flags.parsed_if_given(
+            "--max-memory",
+            bytes,
+            "bytes above 0, as 4294967296 or 4Gi",
+        )?,
     }))
 }
 
@@ -681,14 +690,29 @@ impl Flags {
         parse: fn(&str) -> Option<T>,
         takes: &'static str,
     ) -> Result<T, UsageError> {
+        match self.parsed_if_given(flag, parse, takes)? {
+            Some(parsed) => Ok(parsed),
+            None => Ok(default),
+        }
+    }
+
+    /// The flag's value, parsed, or `None` when the line leaves it out:
+    /// for a limit that is off unless set.
+    // Generic, as `parsed` is.
+    fn parsed_if_given<T>(
+        &self,
+        flag: &'static str,
+        parse: fn(&str) -> Option<T>,
+        takes: &'static str,
+    ) -> Result<Option<T>, UsageError> {
         let Some(value) = self.value(flag) else {
-            return Ok(default);
+            return Ok(None);
         };
         let Some(parsed) = parse(value) else {
             let value = value.to_owned();
             return Err(UsageError::BadValue { flag, takes, value });
         };
-        Ok(parsed)
+        Ok(Some(parsed))
     }
 
     fn publication(&self) -> String {

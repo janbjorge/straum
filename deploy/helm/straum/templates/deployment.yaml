@@ -75,6 +75,10 @@ spec:
             - --max-page-memory
             - {{ .Values.maxPageMemory | quote }}
             {{- end }}
+            {{- with .Values.maxMemory }}
+            - --max-memory
+            - {{ . | quote }}
+            {{- end }}
           env:
             - name: STRAUM_DSN
               valueFrom:

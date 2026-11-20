@@ -1,7 +1,7 @@
-//! How Straum fails and stops: exit 1 on a failure to load or follow,
-//! not ready while PostgreSQL stays silent, a stop that waits for the
-//! requests in flight at most ten seconds, and output to a reader that has
-//! left.
+//! How Straum fails and stops: exit 1 on a failure to load or follow or
+//! past `--max-memory`, not ready while PostgreSQL stays silent, a stop
+//! that waits for the requests in flight at most ten seconds, and output
+//! to a reader that has left.
 
 use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::{
-    ASK, SPEC, Scratch, TABLES, Until, no_slot_left, not_ready_exits_with_3, postgres, run, set_up,
-    straum,
+    ASK, SPEC, Scratch, TABLES, Until, no_slot_left, not_ready_exits_with_3, output, postgres, run,
+    set_up, straum,
 };
 
 /// Straum fails hard: a setup missing at the start, or a table that
@@ -89,6 +89,65 @@ fn answers_not_ready_until_a_silent_server_ends_it() {
     assert!(place.starts_with("127.0.0.1:"), "{place}");
     let named = format!("PostgreSQL at {place} sent nothing for 10 s");
     assert!(log.contains(&named), "{log}");
+}
+
+/// The `straum run` line with `--max-memory 1Ki`, under what any process
+/// holds, against a server that never answers. Straum on Linux holds
+/// about 1.1 MiB as it starts, too close to a limit of 1Mi.
+fn run_with_one_kibibyte(spec: &str, dsn: &str) -> (Option<i32>, String) {
+    let args = [
+        "run",
+        "--wal",
+        "logical",
+        spec,
+        "--listen",
+        "127.0.0.1:0",
+        "--max-memory",
+        "1Ki",
+    ];
+    let (code, _, log) = output(straum(&args).env("STRAUM_DSN", dsn));
+    (code, log)
+}
+
+/// Past `--max-memory` Straum stops with exit 1, from the start on, so
+/// a load is watched too; the line names the flag and both sizes.
+#[cfg(target_os = "linux")]
+#[test]
+fn past_max_memory_straum_stops() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let (code, log) = run_with_one_kibibyte(&spec, &silent_server());
+    assert_eq!(code, Some(1), "{log}");
+    // The main thread may log `listening on` before or after it.
+    let mut stops = Vec::new();
+    for line in log.lines() {
+        if line.starts_with("straum: Straum holds ") {
+            stops.push(line);
+        }
+    }
+    let [stop] = stops.as_slice() else {
+        panic!("{log}");
+    };
+    assert!(
+        stop.ends_with(" MiB of resident memory, past the --max-memory limit of 0.0 MiB"),
+        "{log}"
+    );
+}
+
+/// Where `/proc/self/status` is missing, a set `--max-memory` fails the
+/// start rather than run with no limit.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn max_memory_without_proc_fails_the_start() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let (code, log) = run_with_one_kibibyte(&spec, &silent_server());
+    assert_eq!(code, Some(1), "{log}");
+    assert_eq!(
+        log,
+        "straum: --max-memory needs /proc/self/status to read Straum's resident memory: \
+         No such file or directory (os error 2)\n"
+    );
 }
 
 /// A stop waits for a request still coming in, but at most 10 s, and a

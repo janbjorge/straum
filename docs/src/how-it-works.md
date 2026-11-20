@@ -124,7 +124,8 @@ in memory; the new slot's snapshot brings its rows in through the bulk
 `COPY` instead. The [benchmark](performance.md#transactions) sets
 the default.
 
-Straum also stops on a lost connection or WAL past `--max-retained-wal`
+Straum also stops on a lost connection, WAL past `--max-retained-wal`
+or, when set, resident memory past `--max-memory`
 ([States](deploy.md#states)), and on a spec table that is renamed away
 or replaced by another table under its name. It checks for these once
 a second.

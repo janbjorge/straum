@@ -45,6 +45,8 @@ or follow ends it with exit 1, for whatever runs it to start it again.
                                Straum stops (100000)
   --max-page-memory BYTES      with --wal physical: rows held from the WAL
                                before Straum stops (1Gi)
+  --max-memory BYTES           resident memory before Straum stops (off;
+                               takes Ki, Mi, Gi or Ti; Linux only)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-run
 ";

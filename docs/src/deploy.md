@@ -97,6 +97,15 @@ the process; whatever runs it starts it again, with a wait of its own.
 straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-retained-wal limit of 4096.0 MiB; the watchdog ended the slot's session
 ```
 
+With `--max-memory` set, resident memory past it stops Straum the same
+way, loads included, so the log says why instead of the kernel killing
+the process without a word. A spec too big for the limit fails each
+start.
+
+```text
+straum: Straum holds 1843.2 MiB of resident memory, past the --max-memory limit of 1800.0 MiB
+```
+
 `straum status` says which state it is in and why
 ([Command line](cli.md#straum-status)).
 
@@ -150,6 +159,13 @@ Size `resources` by the cells the spec keeps
 `--wal physical`, the page memory comes on top: keep `maxPageMemory`
 well under the memory limit, or the pod is killed before Straum's own
 limit stops it.
+
+`maxMemory` (`--max-memory`, unset by default) bounds the whole
+process, cells and page memory alike. Set it a little under the memory
+limit, so Straum stops with a line naming it before the kernel kills
+the pod, or, on a shared host, something else. With `--wal physical`
+keep it above `maxPageMemory` plus the cells, or it stops Straum
+before the page memory limit can.
 
 A certificate authority (CA) Straum does not already trust, such as
 Amazon RDS's or Cloud SQL's ([Connect](postgresql.md#2-connect)), is a
