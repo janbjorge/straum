@@ -135,81 +135,68 @@ a second.
 
 ## The logical stream
 
-`--wal logical` opens a temporary logical replication slot. The slot
-names a log sequence number (LSN), L, and gives a snapshot at L.
-Straum loads each spec table from that snapshot, then streams every
-commit after L through the publication.
+`--wal logical` opens a temporary logical slot at a log sequence
+number (LSN), L, with a snapshot at L. Straum loads from the snapshot,
+then streams every commit after L.
 
 ![The load and the stream split the commits at L](diagrams/start.svg)
 
 *Commits up to L come in with the load, later ones through the slot.*
 
-PostgreSQL decodes the WAL itself, through its pgoutput plugin, and
-sends each transaction once it commits. For one `UPDATE` of `events`,
-Straum receives:
+PostgreSQL decodes the WAL itself, with its pgoutput plugin, and sends
+each transaction at its commit. An `UPDATE` of `events` arrives as:
 
 ```text
 Begin     the LSN of the commit
-Relation  public.events and its columns, before the table's first change
+Relation  public.events and its columns, before its first change
 Update    the old row and the new row, each column as text
-Commit    the end of the commit, and its time
+Commit    the end of the commit and its time
 ```
 
-The old row is whole because every spec table has `REPLICA IDENTITY
-FULL`; without it, pgoutput sends at most the key. An insert carries the
-new row, a delete the old one. A truncate names its tables, and Straum
-empties their cells or projection. Every published column comes, and
-Straum reads the spec's columns and steps over the rest. Between
-transactions the server sends keepalives, and Straum answers with what
-it has applied.
+`REPLICA IDENTITY FULL` makes the old row whole; without it, pgoutput
+sends at most the key. Straum reads the spec's columns and skips the
+rest. A truncate empties the table's cells or projection.
 
-Straum stops on a spec table that the publication drops, and on a
-column that `ALTER COLUMN .. TYPE` rewrote, since logical decoding
-sends no row for it. `VACUUM FULL`, `CLUSTER`, a `GRANT` on a column,
-`SET STATISTICS`, `SET STORAGE` and `SET DEFAULT` each stop nothing on
-their own. They leave the type and values as they were.
+Straum stops when the publication drops a spec table, and on `ALTER
+COLUMN .. TYPE`, for which logical decoding sends no rows. `VACUUM
+FULL`, `CLUSTER`, a column `GRANT`, `SET STATISTICS`, `SET STORAGE` and
+`SET DEFAULT` stop nothing.
 
 ## The physical stream
 
-Without logical decoding, the WAL holds pages, not rows. A record says
-which bytes changed in which slot of which page, and only the page
-holds the rest of the row. So `--wal physical` (architecture decision
-record ADR-0008) keeps the pages itself. A temporary physical slot
-streams the WAL from the last checkpoint's redo point. The first change
-to a page after a checkpoint logs a full image of it, which gives
-Straum the page's rows, and each later record on that page applies to
-Straum's copy, as PostgreSQL's own redo does.
+Without logical decoding, a WAL record names a page and the bytes that
+changed on it; the rest of the row is on the page. So `--wal physical`
+(architecture decision record ADR-0008) keeps the pages. A temporary
+physical slot streams the WAL from the last checkpoint's redo point. A
+page's first change after a checkpoint logs the whole page, which
+gives Straum its rows, and later records apply to Straum's copy, as
+PostgreSQL's own redo does.
 
 ![Straum keeps the pages it reads, so a record becomes a row](diagrams/physical.svg)
 
-*A record names a page and the bytes that changed. Straum's copy of the
-page holds the rest of the row.*
+*Straum's copy of the page holds the rest of the row.*
 
-The stream is raw WAL bytes for the whole server, every database.
-Straum cuts them into records and reads four kinds whatever they name:
-checkpoints, transaction ends, file truncations and the lists of
-running transactions. Heap records, an insert, update, delete, bulk
-insert, prune or vacuum, it reads only for its tables' pages. It
-passes any other record by from its header, and checks each record it
-reads against its CRC-32C checksum.
+The stream carries every database's WAL. Straum reads checkpoints,
+transaction ends, file truncations and lists of running transactions,
+and heap records (insert, update, delete, bulk insert, prune, vacuum)
+only for its tables' pages. It passes other records by from their
+headers, and checks each one it reads against its CRC-32C checksum.
 
-A transaction's changes wait for its commit record, then become the
-messages the logical stream gets: Begin, Relation, Insert, Update and
-Delete with the whole old row, and Commit. One decoder serves both
-streams. An abort drops the changes.
+At its commit record, a transaction's changes become the messages the
+logical stream gets, with the whole old row, so one decoder serves
+both. An abort drops them.
 
 The load meets the stream by transaction, not by WAL position. Straum
-waits until every transaction open at start has ended, takes the
-load's snapshot, and drops the commits that snapshot saw. PostgreSQL
-logs a commit before snapshots see it, so Straum takes the snapshot
-again until every commit it has read is in the load.
+waits for the transactions open at start to end, takes the load's
+snapshot and drops the commits it saw. PostgreSQL logs a commit before
+snapshots see it, so Straum takes the snapshot again until every
+commit it has read is in the load.
 
-Straum stops once its pages and the changes waiting for a commit pass
-`--max-page-memory`. A commit that changes a spec table's catalog entry
-makes Straum read the table's columns again, in a snapshot that sees
-the commit; after 10 s without one it stops. A truncate or a rewrite,
-`VACUUM FULL` and `CLUSTER` included, stops Straum, since the pages
-went with the old file.
+Straum stops past `--max-page-memory`, and on a truncate or rewrite of
+a spec table, `VACUUM FULL` and `CLUSTER` included, since the pages
+went with the old file. After DDL on a
+spec table it reads the columns again in a snapshot that sees the
+change, and stops if none does within 10 s.
 
 ## Answering an ask
 
