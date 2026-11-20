@@ -19,6 +19,7 @@ One record per subject; each says what holds today (ADR-0001).
 | [0013](0013-code-reads-plainly-and-clippy-holds-it-there.md) | Code style, lints, the one `unsafe` |
 | [0014](0014-the-guide-is-one-path-of-fixed-pages.md) | The guide's pages, order and what each owns |
 | [0015](0015-straum-writes-the-copy-and-psql-runs-it.md) | Copying a spec's tables for a try |
+| [0016](0016-a-mysql-source-is-the-test-of-every-source-boundary.md) | The MySQL test for the source port |
 
 ## Numbers before 2026-11-16
 
