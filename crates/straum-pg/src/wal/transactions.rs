@@ -261,11 +261,9 @@ impl Transactions {
         {
             waiting.retain(|xid| follows(*xid, oldest));
         }
-        // PostgreSQL found none before the oldest still running, so any
-        // later snapshot sees them.
-        if let Some(dropped) = &mut self.dropped {
-            dropped.retain(|xid| follows(*xid, oldest));
-        }
+        // The dropped xids stay, though none before the oldest runs: the
+        // load's snapshot may be older than this record, taken while one
+        // still ran. Only commits before the start add to them.
         if let Start::From { next_xid, .. } = &self.start
             && !first
             && follows(oldest, *next_xid)
@@ -608,7 +606,6 @@ mod tests {
             let event = running(next, oldest, names);
             let lsn = self.lsn;
             assert_eq!(self.transactions.event(event, lsn, lsn + 4), Ok(None));
-            self.dropped.retain(|xid| follows(*xid, oldest));
             self.dropped.sort_unstable();
             let unseen = self.transactions.unseen_dropped(&blind());
             assert_eq!(unseen, self.dropped, "seed {seed}");
@@ -823,7 +820,8 @@ mod tests {
     }
 
     /// Commits dropped as not whole wait for the load's snapshot to see
-    /// them, until PostgreSQL says none older runs.
+    /// them, though PostgreSQL says none older runs: the snapshot may be
+    /// older than that.
     #[test]
     fn keeps_what_it_dropped_for_the_load_to_see() {
         let mut transactions = Transactions::new(10);
@@ -844,16 +842,15 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        // 5 ended before 6, the oldest running then: every snapshot sees it.
-        assert_eq!(transactions.unseen_dropped(&blind), [6]);
+        assert_eq!(transactions.unseen_dropped(&blind), [5, 6]);
         let before = TransactionSnapshot::parse("6:9:6").unwrap();
         assert_eq!(transactions.unseen_dropped(&before), [6]);
         let after = TransactionSnapshot::parse("9:9:").unwrap();
         assert_eq!(transactions.unseen_dropped(&after), Vec::<u32>::new());
+        // None before 7 runs now, yet a snapshot taken earlier missed 6.
         assert_eq!(transactions.event(running(9, 7, vec![]), 56, 60), Ok(None));
-        assert_eq!(transactions.unseen_dropped(&blind), Vec::<u32>::new());
-        assert_eq!(transactions.event(commit(6, vec![]), 64, 68), Ok(None));
-        assert_eq!(transactions.unseen_dropped(&blind), [6]);
+        assert_eq!(transactions.unseen_dropped(&before), [6]);
+        assert_eq!(transactions.unseen_dropped(&after), Vec::<u32>::new());
         transactions.loaded();
         assert_eq!(transactions.event(commit(6, vec![]), 72, 76), Ok(None));
         assert_eq!(transactions.unseen_dropped(&blind), Vec::<u32>::new());

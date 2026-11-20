@@ -909,6 +909,36 @@ mod tests {
         );
     }
 
+    /// The load's snapshot can be older than the last `RUNNING_XACTS`
+    /// read: one that says no xid before the dropped commit runs doesn't
+    /// make a snapshot taken while it still ran see it.
+    #[test]
+    fn a_snapshot_older_than_the_last_running_xacts_must_see_what_was_dropped() {
+        let mut pipeline = pipeline(1 << 20);
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        for record in [
+            wal.insert(99, 1),
+            wal.running(100, &[99]),
+            wal.commit(99),
+            wal.running(101, &[]),
+        ] {
+            assert_eq!(pipeline.record(&record, no_layouts).unwrap(), []);
+        }
+        let blind = TransactionSnapshot::parse("99:101:99").unwrap();
+        assert_eq!(
+            pipeline.see(blind, Lsn(7)).unwrap(),
+            (Sight::Blind(vec![99]), Vec::new())
+        );
+        let fine = TransactionSnapshot::parse("101:101:").unwrap();
+        assert_eq!(
+            pipeline.see(fine, Lsn(7)).unwrap(),
+            (Sight::Through(Lsn(7)), Vec::new())
+        );
+    }
+
     /// A snapshot taken with the server's WAL past what the stream read
     /// is in the load only up to what was read: a commit after that the
     /// snapshot doesn't see streams later, and the start is before it.
