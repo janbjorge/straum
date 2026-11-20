@@ -200,12 +200,15 @@ impl Records {
                 Some(Found::Whole(span)) => span,
             };
             decode_into(span.start, span.end, &mut self.record)?;
+            // The zeros after a switch hold no record, and an idle server
+            // writes none after them: the server stands at the segment's
+            // end, so the stream must say it has passed them.
             if self.record.is_switch() {
                 self.next = span.end.div_ceil(self.segment_size) * self.segment_size;
             } else {
                 self.next = align(span.end);
             }
-            self.passed = align(span.end);
+            self.passed = self.next;
             return Ok(Some(&self.record));
         }
     }
@@ -437,7 +440,7 @@ mod tests {
     use crate::wal::test_support::*;
     use crate::wal::{
         Oid, RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_STORAGE,
-        RESOURCE_MANAGER_TRANSACTION, RESOURCE_MANAGER_XLOG,
+        RESOURCE_MANAGER_TRANSACTION, RESOURCE_MANAGER_XLOG, record_end,
     };
 
     #[test]
@@ -501,6 +504,41 @@ mod tests {
             .unwrap();
         check(records.next_record().unwrap().unwrap(), &spec, lsns[0]);
         assert_eq!(records.next_record(), Ok(None));
+    }
+
+    /// The records of `specs` laid out from the first segment, all fed
+    /// and read: where the reader has passed.
+    fn passed_after(specs: &[Spec]) -> (u64, LaidOut) {
+        let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
+        let laid_out = lay_out(SEGMENT, &assembled);
+        let mut records = Records::new(laid_out.lsns[0], SEGMENT);
+        records.feed(SEGMENT, &laid_out.wal).unwrap();
+        for _ in specs {
+            assert!(records.next_record().unwrap().is_some());
+        }
+        assert_eq!(records.next_record(), Ok(None));
+        (records.passed(), laid_out)
+    }
+
+    #[test]
+    fn passes_the_padding_a_switch_leaves() {
+        let mut rng = Rng(5);
+        let (passed, laid_out) = passed_after(&[random_spec(&mut rng), switch()]);
+        let segment_end = 2 * SEGMENT;
+        assert_eq!(SEGMENT + laid_out.wal.len() as u64, segment_end);
+        assert_eq!(passed, segment_end);
+        // An idle server's insert position after the switch, past the
+        // next segment's long header.
+        let inserted = straum_app::Lsn(segment_end + LONG_HEADER);
+        assert_eq!(record_end(inserted, SEGMENT), straum_app::Lsn(passed));
+    }
+
+    #[test]
+    fn passes_no_further_than_a_record_mid_segment() {
+        let mut rng = Rng(5);
+        let (passed, laid_out) = passed_after(&[random_spec(&mut rng), random_spec(&mut rng)]);
+        assert!(passed < 2 * SEGMENT);
+        assert_eq!(passed, SEGMENT + laid_out.wal.len() as u64);
     }
 
     #[test]
