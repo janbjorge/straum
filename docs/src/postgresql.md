@@ -228,9 +228,9 @@ the start waited 5 s for a lock on public.events; another session holds or waits
 Each Straum takes one replication connection and one slot, out of
 `max_wal_senders` and `max_replication_slots`, of which managed
 services often keep some. It also opens plain connections, one for
-the WAL position and one for the watchdog, plus one for the load and
-one for table layouts with `--wal physical`; a role `CONNECTION LIMIT`
-needs room for them. Run one Straum per database: a second needs
+the WAL position and one for the watchdog, and with `--wal physical`
+two more, for the load and for table layouts; a role `CONNECTION
+LIMIT` needs room for them. Run one Straum per database: a second needs
 another slot and load, and with logical decoding the server decodes
 the WAL once for each.
 
