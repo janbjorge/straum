@@ -65,6 +65,9 @@ jobs:
   test:
     name: test (${{ matrix.postgres }})
     runs-on: ubuntu-latest
+    # A run takes about 5 minutes. A test waiting on a commit that never
+    # comes fails here instead of holding the runner for 6 hours.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
