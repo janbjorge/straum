@@ -1,11 +1,11 @@
 # Aggregates 101
 
-What does a measure cost? Straum holds [cells](how-it-works.md#cells),
-never rows, so it asks two things of every aggregate. Can cells merge? An
-ask merges many cells into one answer per group. Can a row leave? A
-`DELETE` or `UPDATE` in PostgreSQL takes a row out of a cell, which must
-then read as if the row had never been there. The answers decide which
-aggregates Straum has and what each cell keeps for them.
+Straum holds [cells](how-it-works.md#cells), never rows, so every
+aggregate must do two things. Its cells must merge, because an ask
+merges many cells into one answer per group. A row must be able to
+leave, because a `DELETE` or `UPDATE` in PostgreSQL takes a row out of a
+cell, which must then read as if the row had never been there. These two
+decide which aggregates Straum has and what each cell keeps for them.
 
 ## Merging
 
@@ -54,8 +54,8 @@ So aggregates split a second way, independent of the first: one whose
 state can subtract takes a delete, and one that keeps only the winner
 does not. `min` and `max` merge well and delete badly.
 
-Straum's way out is to keep more than the answer. For `min` and `max` a
-cell keeps a count per value, `10: 1, 20: 1, 30: 1`. Deleting 10 drops its
+So for `min` and `max` a cell keeps more than the answer: a count per
+value, `10: 1, 20: 1, 30: 1`. Deleting 10 drops its
 count to zero, and 20 is the smallest value left. The same count per value
 tells `count(DISTINCT c)` when a value's last row has gone, and `bool_and`
 and `bool_or` keep a count of true and of false for the same reason.
@@ -185,7 +185,7 @@ Straum's answers are exact and follow deletes, so it has no sketch
 ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
 
 The sources behind this page, and how PostgreSQL and other systems handle
-the same two questions, are in
+merging and removing a row, are in
 [AGGREGATES.md](https://github.com/janbjorge/straum/blob/main/research/AGGREGATES.md).
 
 Next: [Setting up PostgreSQL](postgresql.md), to connect a database of your
