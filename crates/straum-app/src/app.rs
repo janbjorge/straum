@@ -460,6 +460,10 @@ fn apply_change(store: &mut Store, change: &Change) -> Result<(), Unfitting> {
             ..
         } => return Err(Unfitting::Altered),
         Change::Unfit {
+            drift: Drift::OutOfLine,
+            ..
+        } => return Err(Unfitting::OutOfLine),
+        Change::Unfit {
             drift: Drift::Renamed,
             ..
         } => return Err(Unfitting::Renamed),
@@ -632,6 +636,9 @@ pub enum Unfitting {
     Altered,
     /// A value a column of the table reads was renamed.
     Renamed,
+    /// A value a column of the table reads is stored out of line, and the
+    /// stream holds only a pointer to it.
+    OutOfLine,
 }
 
 impl fmt::Display for Unfitting {
@@ -645,6 +652,10 @@ impl fmt::Display for Unfitting {
             Unfitting::Renamed => formatter.write_str(
                 "a value of a column Straum reads was renamed, and the rows held carry the \
                  old one",
+            ),
+            Unfitting::OutOfLine => formatter.write_str(
+                "a value of a column Straum reads is stored out of line, and the stream \
+                 holds only a pointer to it, not the value",
             ),
         }
     }
@@ -813,6 +824,10 @@ mod tests {
                 Drift::Renamed,
                 "a value of a column Straum reads was renamed",
             ),
+            (
+                Drift::OutOfLine,
+                "a value of a column Straum reads is stored out of line",
+            ),
         ] {
             let app = app();
             follow(&app);
@@ -833,6 +848,9 @@ mod tests {
                 "{error}"
             );
             assert!(error.contains(words), "{error}");
+            if drift == Drift::OutOfLine {
+                assert!(!error.contains("altered"), "{error}");
+            }
         }
     }
 

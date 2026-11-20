@@ -65,6 +65,9 @@ pub(crate) struct Publisher {
 struct Scratch {
     values: Vec<Value>,
     tuples: Vec<Tuple<'static>>,
+    /// Whether a row read for the change being published holds only a
+    /// pointer to a value of a column read, stored out of line.
+    out_of_line: bool,
 }
 
 impl Publisher {
@@ -229,24 +232,21 @@ impl Publisher {
                     relation,
                     new: fields(&read, new, scratch)?,
                 },
-                HeapChange::Update { old, new, .. } => {
-                    let new = fields(&read, new, scratch)?;
-                    if out_of_line(&new) {
-                        scratch.keep(new);
-                        decoder.unfit(relation, Drift::Altered);
-                        continue;
-                    }
-                    Message::Update {
-                        relation,
-                        old: Some(Old::Row(fields(&read, old, scratch)?)),
-                        new,
-                    }
-                }
+                HeapChange::Update { old, new, .. } => Message::Update {
+                    relation,
+                    old: Some(Old::Row(fields(&read, old, scratch)?)),
+                    new: fields(&read, new, scratch)?,
+                },
                 HeapChange::Delete { old, .. } => Message::Delete {
                     relation,
                     old: Old::Row(fields(&read, old, scratch)?),
                 },
             };
+            if std::mem::take(&mut scratch.out_of_line) {
+                scratch.give_back(message);
+                decoder.unfit(relation, Drift::OutOfLine);
+                continue;
+            }
             decoder.feed(&message)?;
             scratch.give_back(message);
         }
@@ -330,30 +330,24 @@ fn fields(read: &Read, tuple: &HeapTuple, scratch: &mut Scratch) -> Result<Tuple
         fields.push(
             match std::mem::replace(&mut values[attribute], Value::Missing) {
                 Value::Datum(datum) => Field::Datum(datum),
-                // Only a pointer to the value is on the page. The decoder
-                // can't fill it from an old row: see `out_of_line`.
-                Value::External => Field::Unchanged,
+                // Only a pointer to the value is on the page. pgoutput
+                // leaves out such a value only when the update kept it:
+                // the server keeps the old pointer only for a value equal
+                // byte for byte (`toast_helper.c`). The page can't tell a
+                // kept value from a changed one moved out of line, so
+                // filling it from the old row could publish the old value.
+                // The change is unfit for this cause, said before the
+                // decoder sees a row it can't fill, which it would take
+                // for one without its old row.
+                Value::External => {
+                    scratch.out_of_line = true;
+                    Field::Unchanged
+                }
                 Value::Missing => Field::Datum(table.missing[attribute].clone()),
             },
         );
     }
     Ok(fields)
-}
-
-/// Whether a column read of an update's new row holds only a pointer to
-/// a value stored out of line.
-// pgoutput leaves out such a value only when the update kept it: the
-// server keeps the old pointer only for a value equal byte for byte
-// (`toast_helper.c`). The page can't tell a kept value from a changed one
-// moved out of line, so filling it from the old row could publish the old
-// value. Either way the table no longer reads as loaded.
-fn out_of_line(new: &Tuple) -> bool {
-    for field in new {
-        if let Field::Unchanged = field {
-            return true;
-        }
-    }
-    false
 }
 
 /// The stream's error for `problem` at `lsn`.
@@ -559,10 +553,40 @@ mod tests {
         }];
         let commit = publish(changes).unwrap().unwrap();
         // Unchanged in the old row too: there is nothing to take it from.
-        assert!(
-            matches!(commit.changes[..], [Change::Unfit { .. }]),
-            "{commit:?}"
-        );
+        assert_eq!(commit.changes, [out_of_line_zones()]);
+    }
+
+    fn out_of_line_zones() -> Change {
+        Change::Unfit {
+            table: zones(),
+            drift: Drift::OutOfLine,
+        }
+    }
+
+    /// An insert, a delete, and an update whose old row alone holds the
+    /// pointer each stop with the cause, not as an altered table.
+    #[test]
+    fn stops_on_any_change_with_a_value_out_of_line() {
+        let toasted = row(1, &toast_pointer());
+        let plain = row(1, &short("bob"));
+        for change in [
+            HeapChange::Insert {
+                file: FILE,
+                new: toasted.clone(),
+            },
+            HeapChange::Delete {
+                file: FILE,
+                old: toasted.clone(),
+            },
+            HeapChange::Update {
+                file: FILE,
+                old: toasted.clone(),
+                new: plain.clone(),
+            },
+        ] {
+            let commit = publish(vec![change]).unwrap().unwrap();
+            assert_eq!(commit.changes, [out_of_line_zones()]);
+        }
     }
 
     fn toast_pointer() -> Vec<u8> {
@@ -580,13 +604,7 @@ mod tests {
         }];
         let commit = publish(changes).unwrap().unwrap();
         // Not the old row's `bob`: the update changed the value.
-        assert_eq!(
-            commit.changes,
-            [Change::Unfit {
-                table: zones(),
-                drift: Drift::Altered,
-            }]
-        );
+        assert_eq!(commit.changes, [out_of_line_zones()]);
     }
 
     #[test]

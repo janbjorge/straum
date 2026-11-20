@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::{Commit, Lsn};
+use straum_app::{Commit, Drift, Lsn};
 use straum_domain::{ColumnType, Datum};
 
 use super::decoding::Pipeline;
@@ -307,8 +307,8 @@ fn running_xids(description: &str) -> Vec<u32> {
 /// A table rewritten, truncated or dropped no longer reads as loaded:
 /// its old pages are gone, and the physical stream says so with an
 /// `Unfit` for each, at the commit that did it. DDL that keeps the file
-/// says nothing. So does a row whose read value is stored out of line,
-/// inserted or updated.
+/// says nothing. A row whose read value is stored out of line, inserted,
+/// updated or deleted, is unfit for that cause, not as an altered table.
 #[test]
 fn rewritten_and_dropped_tables_are_unfit() {
     let pg = postgres_at_replica(&tag());
@@ -332,7 +332,7 @@ fn rewritten_and_dropped_tables_are_unfit() {
         (
             "UPDATE $S.trips SET kind = (SELECT string_agg(md5(i::text), '')
              FROM generate_series(1, 400) AS i) WHERE id = 998",
-            Some("trips"),
+            Some(("trips", Drift::OutOfLine)),
         ),
         // A value the spec reads, TOASTed out of line: the page holds a
         // pointer, and the chunks may be gone before Straum could read
@@ -340,31 +340,38 @@ fn rewritten_and_dropped_tables_are_unfit() {
         (
             "INSERT INTO $S.trips (id, kind) SELECT 999, string_agg(md5(i::text), '')
              FROM generate_series(1, 400) AS i",
-            Some("trips"),
+            Some(("trips", Drift::OutOfLine)),
         ),
-        ("VACUUM FULL $S.zones", Some("zones")),
-        ("TRUNCATE $S.logins", Some("logins")),
-        ("ALTER TABLE $S.trips ALTER tip TYPE bigint", Some("trips")),
-        ("DROP TABLE $S.zones", Some("zones")),
+        (
+            "DELETE FROM $S.trips WHERE id = 999",
+            Some(("trips", Drift::OutOfLine)),
+        ),
+        ("VACUUM FULL $S.zones", Some(("zones", Drift::Altered))),
+        ("TRUNCATE $S.logins", Some(("logins", Drift::Altered))),
+        (
+            "ALTER TABLE $S.trips ALTER tip TYPE bigint",
+            Some(("trips", Drift::Altered)),
+        ),
+        ("DROP TABLE $S.zones", Some(("zones", Drift::Altered))),
     ];
     for (sql, unfit) in steps {
         db.run(sql);
         let commits = pipeline.through_now(&mut db, &mut stream);
-        let expected: Vec<String> = match unfit {
-            Some(table) => vec![table.to_owned()],
+        let expected: Vec<(String, Drift)> = match unfit {
+            Some((table, drift)) => vec![(table.to_owned(), drift)],
             None => Vec::new(),
         };
         assert_eq!(unfit_tables(&commits), expected, "{sql}");
     }
 }
 
-/// The tables `commits` say no longer fit, in order.
-fn unfit_tables(commits: &[Commit]) -> Vec<String> {
+/// The tables `commits` say no longer fit, and why, in order.
+fn unfit_tables(commits: &[Commit]) -> Vec<(String, Drift)> {
     let mut names = Vec::new();
     for commit in commits {
         for change in &commit.changes {
-            if let straum_app::Change::Unfit { table, .. } = change {
-                names.push(table.to_string());
+            if let straum_app::Change::Unfit { table, drift } = change {
+                names.push((table.to_string(), *drift));
             }
         }
     }

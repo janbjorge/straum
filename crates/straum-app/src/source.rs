@@ -96,9 +96,9 @@ pub enum Change {
     },
     /// The table changed shape, so rows already read may no longer read the
     /// same; a column's type changed, for example. Also a change the source
-    /// can't read whole: an update or delete without the old row, or one
+    /// can't read whole: an update or delete without the old row, one
     /// that left out an unchanged `TOASTed` value with no old row to take it
-    /// from.
+    /// from, or a row whose value is stored out of line.
     Unfit {
         table: Identifier,
         drift: Drift,
@@ -113,6 +113,10 @@ pub enum Drift {
     /// A value a column reads was renamed, so the rows held carry the old
     /// one and the rows to come the new.
     Renamed,
+    /// A value a column reads is stored out of line, apart from its row,
+    /// and the change carries only a pointer to it, which the source
+    /// can't follow.
+    OutOfLine,
 }
 
 impl Change {

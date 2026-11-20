@@ -192,9 +192,11 @@ commit it has read is in the load.
 
 Straum stops past `--max-page-memory`, and on a truncate or rewrite of
 a spec table, `VACUUM FULL` and `CLUSTER` included, since the pages
-went with the old file. After DDL on a spec table it reads the columns
-again in a snapshot that sees the change, and stops if none does within
-10 s.
+went with the old file. It stops on a changed row whose read value is
+stored out of line, since the page holds only a pointer to it, and
+says so ([Physical WAL](postgresql.md#physical-wal)). After DDL on a
+spec table it reads the columns again in a snapshot that sees the
+change, and stops if none does within 10 s.
 
 ## Answering an ask
 

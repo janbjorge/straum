@@ -97,11 +97,16 @@ Straum reads the WAL of PostgreSQL 17 to 19. The server needs
 `UNLOGGED`, and a column the spec reads must not be a virtual
 generated column (the default from 18): the WAL holds neither.
 
-Straum stops on a changed row whose value in a column the spec reads
-is stored out of line in the table's TOAST (The Oversized-Attribute
-Storage Technique) table, since the page holds only a pointer.
-PostgreSQL moves a row's largest values there until the row fits in
-about 2 KB, so a short value can go too.
+Straum stops on a row inserted, updated or deleted whose value in a
+column the spec reads is stored out of line in the table's TOAST (The
+Oversized-Attribute Storage Technique) table, since the page holds
+only a pointer. PostgreSQL moves a row's largest values there until
+the row fits in about 2 KB, so a short value can go too. The log
+says:
+
+```text
+straum: a change no longer fits trips: a value of a column Straum reads is stored out of line, and the stream holds only a pointer to it, not the value
+```
 
 It stops too on a rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`,
 `CLUSTER`, or an `ALTER TABLE` that moves the rows to a new file. It

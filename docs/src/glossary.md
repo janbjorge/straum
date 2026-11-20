@@ -286,7 +286,8 @@ and this glossary. The clashes at the end are open.
   table's catalog entry changed.
 - **Varlena** and **TOAST** (The Oversized-Attribute Storage Technique):
   a value with a length header, and the table a long one moves to,
-  leaving a pointer.
+  leaving a pointer. Such a value is **stored out of line**
+  (`Drift::OutOfLine`).
 - **WAL problem** (`wal::Problem`): WAL Straum can't read; it stops the
   stream.
 - **Replication connection**: the session that creates the slot, loads
