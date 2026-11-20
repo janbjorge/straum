@@ -80,9 +80,9 @@ changes and answers [asks](asks.md) over HTTP.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--listen ADDRESS` | `127.0.0.1:8080` | Where to serve HTTP. The default reaches this host only ([Who can ask](deploy.md#who-can-ask)). |
-| `--wal logical\|physical` | `logical` | Logical decoding through the publication, or the [physical WAL](postgresql.md#physical-wal) that `wal_level = replica` writes. |
+| `--wal logical\|physical` | `logical` | Logical decoding through the publication, or the [physical write-ahead log (WAL)](postgresql.md#physical-wal) that `wal_level = replica` writes. |
 | `--publication NAME` | `straum` | The publication `straum plan` made. |
-| `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [DSN](postgresql.md#2-connect). |
+| `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [data source name (DSN)](postgresql.md#2-connect). |
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | `4Gi` | WAL retained for the slot before Straum stops. The [watchdog](postgresql.md#what-straum-costs-the-server) checks it every second, during loads too. |
 | `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
@@ -181,9 +181,9 @@ WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
 - `lag` and `WAL retained`: against `--max-lag` and
   `--max-retained-wal`.
 
-A failure ends the process (ADR-0009), so the status keeps no count of
-starts or failures: whatever runs Straum counts its restarts, and the
-log of the run that stopped says why.
+A failure ends the process (architecture decision record ADR-0009), so
+the status keeps no count of starts or failures: whatever runs Straum
+counts its restarts, and the log of the run that stopped says why.
 
 It exits with 3 while `ready` is no, as `/readyz` answers 503, so a
 script can wait for Straum:

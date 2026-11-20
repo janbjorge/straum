@@ -1,10 +1,11 @@
 # Quick start
 
 Does Straum work? One command runs it against PostgreSQL 18, both in
-Docker, on one month of New York taxi trips: the TLC's yellow trips of
-January 2024, 2,964,624 of them, and the 265 taxi zones. It ends in
-Straum's shell, where you ask, change the data and ask again. The
-command line and performance pages use these tables too.
+Docker, on one month of New York taxi trips: the yellow trips of the Taxi
+and Limousine Commission (TLC) for January 2024, 2,964,624 of them, and
+the 265 taxi zones. It ends in Straum's shell, where you ask, change the
+data and ask again. The command line and performance pages use these
+tables too.
 
 You need Docker and `curl`, and bash or zsh. The download is 50 MB.
 

@@ -107,8 +107,8 @@ by side.
 
 Straum runs against PostgreSQL 17 or newer as shipped. It needs a role
 with `SELECT` and a publication, so managed services work. `--wal
-physical` reads the WAL a server you run already writes; RDS, Aurora
-and Cloud SQL do not hand out that stream
+physical` reads the write-ahead log (WAL) a server you run already
+writes; RDS, Aurora and Cloud SQL do not hand out that stream
 ([setup](https://janbjorge.github.io/straum/postgresql.html)).
 
 Straum keeps nothing on disk. Every start loads the tables again, and a

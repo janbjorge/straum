@@ -188,9 +188,9 @@ the edges on either side.
 
 `as_of` says that every commit made before this time is in the answer.
 It is Straum's wall time when it last confirmed that it had applied all
-WAL PostgreSQL had written, so it keeps moving on a quiet database. A
-transaction is applied whole, so an answer never sees half of one. An
-answer can predate a client's commit ([Seeing your own
+write-ahead log (WAL) PostgreSQL had written, so it keeps moving on a
+quiet database. A transaction is applied whole, so an answer never sees
+half of one. An answer can predate a client's commit ([Seeing your own
 write](#seeing-your-own-write)).
 
 `rows` holds one object per group, keyed by the names in `SELECT`,
@@ -245,9 +245,9 @@ SELECT '0/1A2B3D0'::pg_lsn >= '0/1A2B3C8'::pg_lsn;  -- Straum-LSN >= mine
 ```
 
 Compare as `pg_lsn` or as two hexadecimal numbers, never as strings.
-Once the header is at or past the LSN read, the answer contains the
-write. Under `synchronous_commit = off` the commit may not be written
-yet, so read `pg_current_wal_insert_lsn()` instead.
+Once the header is at or past the log sequence number (LSN) read, the
+answer contains the write. Under `synchronous_commit = off` the commit
+may not be written yet, so read `pg_current_wal_insert_lsn()` instead.
 
 The test can only say yes. `pg_current_wal_lsn()` counts all WAL,
 including tables Straum doesn't follow, while the header moves only

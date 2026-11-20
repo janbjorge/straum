@@ -9,7 +9,8 @@ nothing in the spec runs in PostgreSQL: to load a view, Straum copies
 only the columns it reads.
 
 Straum SQL has one spelling per meaning and infers nothing
-([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
+([architecture decision record
+ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
 The synopsis is the whole language: anything it does not show is an
 error that names the construct and says what to write.
 
@@ -342,9 +343,9 @@ Had `kind` been an enum, the view would read it so, as its label.
   type's labels, which Straum reads at start. A label added later is
   read as it comes.
 - A renamed label stops Straum, since the rows it loaded hold the old
-  text. Each reading of the server's WAL, once a second, compares the
-  labels, and under `--wal physical` the rename's own commit stops it,
-  before any row with the new text.
+text. Each reading of the server's write-ahead log (WAL), once a second,
+compares the labels, and under `--wal physical` the rename's own commit
+stops it, before any row with the new text.
 - The label is a text key: asks filter it with a string, and answers
   sort labels as text, not in the type's order
   ([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).

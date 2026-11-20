@@ -192,12 +192,13 @@ set of bits from the least to the greatest, then counts the marks;
 values too far apart for that are sorted instead. One of other types
 unites them by reference, without copying.
 
-Other systems answer with a sketch: a small summary that merges and gives
-an approximate answer. Examples are t-digest, KLL and DDSketch for
-percentiles, and HyperLogLog for distinct counts. The common sketches merge
-but can't take a delete, and their answers are estimates. Straum's answers
-are exact and follow deletes, so it has no sketch
-([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
+Other systems answer with a sketch: a small summary that merges and
+gives an approximate answer. Examples are t-digest, KLL and DDSketch for
+percentiles, and HyperLogLog for distinct counts. The common sketches
+merge but can't take a delete, and their answers are estimates. Straum's
+answers are exact and follow deletes, so it has no sketch ([architecture
+decision record
+ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
 
 The sources behind this page, and how PostgreSQL and other systems handle
 the same two questions, are in

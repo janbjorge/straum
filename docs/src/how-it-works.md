@@ -7,9 +7,9 @@ names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run` opens a temporary logical replication slot
-([the physical stream](#the-physical-stream) differs). The slot names
-an LSN, L, and gives a snapshot at L. Straum loads each spec table
+`straum run` opens a temporary logical replication slot ([the physical
+stream](#the-physical-stream) differs). The slot names a log sequence
+number (LSN), L, and gives a snapshot at L. Straum loads each spec table
 from that snapshot, then streams every commit after L. No commit is
 missed or applied twice.
 
@@ -98,9 +98,9 @@ applied. The writer takes the write lock per commit; asks take the read
 lock.*
 
 Asks and the writer share the store behind a read-write lock. A long ask
-delays the writer, which shows as lag. The stream reads up to 64 commits or
-200,000 changes ahead of the writer and confirms what has been applied, so
-PostgreSQL can recycle WAL.
+delays the writer, which shows as lag. The stream reads up to 64 commits
+or 200,000 changes ahead of the writer and confirms what has been
+applied, so PostgreSQL can recycle write-ahead log (WAL).
 
 Straum stops with exit 1 when a change does not fit what it holds, and the
 next start loads from a new slot. That covers an update or delete whose old
@@ -124,9 +124,10 @@ their own. They leave the type and values as they were.
 
 ## The physical stream
 
-`--wal physical` skips logical decoding (ADR-0008). A temporary physical slot
-streams the WAL from the last checkpoint's redo point, and Straum turns it
-into the same messages, so one decoder serves both.
+`--wal physical` skips logical decoding (architecture decision record
+ADR-0008). A temporary physical slot streams the WAL from the last
+checkpoint's redo point, and Straum turns it into the same messages, so
+one decoder serves both.
 
 Most records name only other tables' pages, so Straum reads their block
 headers and passes them by. Each record it does read, it checks against

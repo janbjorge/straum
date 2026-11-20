@@ -128,9 +128,9 @@ Straum and opens the shell. It prints the port Straum answers on,
 which Docker picks unless `--port` names one. Leaving the shell
 removes both containers.
 
-`--wal physical` has Straum read the
-[physical WAL](postgresql.md#physical-wal) in place of logical
-decoding. `just try --help` lists the other flags.
+`--wal physical` has Straum read the [physical write-ahead log
+(WAL)](postgresql.md#physical-wal) in place of logical decoding. `just
+try --help` lists the other flags.
 
 ## On the database itself
 

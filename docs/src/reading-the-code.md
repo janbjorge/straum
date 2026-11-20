@@ -22,7 +22,7 @@ before it.
 3. `straum-app`: the use cases. `app.rs` holds `App`, which answers
    asks, and `Writer`, the loop that loads the tables and applies the
    stream. `source.rs` is the one trait PostgreSQL sits behind;
-   `lag.rs` keeps the WAL readings `as_of` comes from.
+   `lag.rs` keeps the write-ahead log (WAL) readings `as_of` comes from.
 4. `straum-pg`: talks to PostgreSQL. `source.rs` is where it meets
    `straum-app`: it checks the setup (`catalog/`), loads each table
    (`load.rs`), then hands a thread the stream (`stream.rs`), which
@@ -199,10 +199,10 @@ named and the ones under it, nothing at all only inside the file.
 written in place or in a `tests.rs` beside the file; `tests/` beside
 `src/` holds the tests that use the crate from outside.
 
-**Type aliases.** `type TransactionId = u32;` gives `u32` a second
-name, so `xid: TransactionId` says what the number is. The two are the
-same type, so the compiler doesn't stop a slot number going where an
-xid should; the name only tells the reader.
+**Type aliases.** `type TransactionId = u32;` gives `u32` a second name,
+so `xid: TransactionId` says what the number is. The two are the same
+type, so the compiler doesn't stop a slot number going where an
+transaction id (xid) should; the name only tells the reader.
 
 **Reading bytes.** The WAL code reads PostgreSQL's structs from raw
 bytes. A field's place is a named constant, often a range:

@@ -1,10 +1,10 @@
 # Glossary
 
-One name per thing, in the guide, the ADRs, the code and its errors.
-The code's name follows in parentheses where it differs; "also" lists
-spellings still found elsewhere, such as in the notes under
-`research/`. ADRs win over the guide and this glossary. The clashes at
-the end are open.
+One name per thing, in the guide, the architecture decision records
+(ADRs), the code and its errors. The code's name follows in parentheses
+where it differs; "also" lists spellings still found elsewhere, such as
+in the notes under `research/`. ADRs win over the guide and this
+glossary. The clashes at the end are open.
 
 ## Straum
 
@@ -194,7 +194,7 @@ the end are open.
 - **Ready** (`Status::ready`): every table loaded and lag within
   `--max-lag`; else "not ready" and why.
 - **Lag** (`Lag`): time since Straum last caught up with PostgreSQL's
-  WAL ([States](deploy.md#states)). Also "behind".
+  write-ahead log (WAL) ([States](deploy.md#states)). Also "behind".
 - **Snapshot** (`Snapshot`, `TransactionSnapshot`): the database at the
   consistent point, which the load reads.
 - **Consistent point** (`Snapshot::at`, `Consistency`): where the
@@ -257,8 +257,8 @@ the end are open.
 - **Problem**: one line of a failed setup check.
 - **Role**: the role Straum connects as (`--role`); unrelated to
   `catalog::Purpose`.
-- **DSN** (`Dsn`): the connection URL, or libpq's variables when no
-  URL is set ([Connect](postgresql.md#2-connect)).
+- **DSN** (`Dsn`): data source name, the connection URL, or libpq's
+  variables when no URL is set ([Connect](postgresql.md#2-connect)).
 - **Publication**: holds every spec table on the logical stream
   (`--publication`).
 - **Replication slot**: the temporary slot each start creates; "the
@@ -288,16 +288,17 @@ the end are open.
   record.
 - **Relcache invalidation** (`Invalidated`): a commit's note that a
   table's catalog entry changed.
-- **Varlena** and **TOAST**: a value with a length header, and the table
-  a long one moves to, leaving a pointer.
+- **Varlena** and **TOAST** (The Oversized-Attribute Storage Technique):
+  a value with a length header, and the table a long one moves to,
+  leaving a pointer.
 - **WAL problem** (`wal::Problem`): WAL Straum can't read; it stops the
   stream.
 - **Replication connection**: the session that creates the slot, loads
   and streams.
-- **LSN** (`Lsn`): a WAL position; a `Wal` reading holds `written`,
-  `confirmed` and `restart`.
-- **OID** (`Oid`): PostgreSQL's id for a catalog row: table, type, enum
-  label.
+- **LSN** (`Lsn`): log sequence number, a WAL position; a `Wal` reading
+  holds `written`, `confirmed` and `restart`.
+- **OID** (`Oid`): object identifier, PostgreSQL's id for a catalog row:
+  table, type, enum label.
 - **Catalog** (`Catalog`, `Class`, `Column`): the system tables as the
   setup check reads them.
 - **Old row** (`Change::Update::old`): the row before an update or
@@ -313,9 +314,10 @@ the end are open.
   planted bug must make it fail.
 - **Fake** (`Fake`): a scripted PostgreSQL; `PostgresContainer` is a
   real one in Docker.
-- **Taxi trips**: the TLC yellow trips of January to June 2024
-  ([Performance](performance.md)); the **taxi month** is January. The
-  **warehouse copy** is outside the repository.
+- **Taxi trips**: the yellow trips of the Taxi and Limousine Commission
+  (TLC) for January to June 2024 ([Performance](performance.md)); the
+  **taxi month** is January. The **warehouse copy** is outside the
+  repository.
 
 ## Clashes
 

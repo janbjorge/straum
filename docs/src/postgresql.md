@@ -7,7 +7,7 @@ connects as a role that is not a superuser. A superuser runs a few
 lines of the setup once.
 
 Pick a stream first: logical decoding, the default, or the physical
-WAL, which leaves `wal_level` alone.
+write-ahead log (WAL), which leaves `wal_level` alone.
 
 | | Physical WAL | Logical decoding |
 | --- | --- | --- |
@@ -24,10 +24,10 @@ stream. Use logical decoding there.
 `straum plan FILE --wal physical` prints the physical setup. `straum
 plan FILE` prints the logical one. With a DSN set, from `--dsn-file`,
 `STRAUM_DSN` or libpq's variables ([Connect](#2-connect)), the role is
-the DSN's user and its password goes in as a SCRAM-SHA-256 verifier,
-so the password itself is in neither the SQL nor the server's log.
-Without a DSN the role is `straum` and the SQL says how to give it a
-password. `--role NAME` picks another role
+the user of the data source name (DSN) and its password goes in as a
+SCRAM-SHA-256 verifier, so the password itself is in neither the SQL nor
+the server's log. Without a DSN the role is `straum` and the SQL says
+how to give it a password. `--role NAME` picks another role
 ([flags](cli.md#straum-plan)).
 
 Run the SQL as an owner of the tables. A superuser runs the lines the
@@ -61,18 +61,18 @@ from 18, since no page holds its value.
 
 The `GRANT EXECUTE` lets a start proceed without waiting for the next
 checkpoint. A start still waits until every transaction open when it
-began has ended. After a minute Straum says what it waits for and
-exits. After DDL, while streaming, it waits until a snapshot sees the
-changed table's columns. That wait gives up after 10 seconds and
-Straum stops.
-[The physical stream](how-it-works.md#the-physical-stream) says why.
+began has ended. After a minute Straum says what it waits for and exits.
+After data definition language (DDL) statements, while streaming, it
+waits until a snapshot sees the changed table's columns. That wait
+gives up after 10 seconds and Straum stops. [The physical
+stream](how-it-works.md#the-physical-stream) says why.
 
 Straum also stops on an insert, update or delete of a row whose value,
 in a column the spec reads, is stored out of line in the table's TOAST
-table: the page holds only a pointer. PostgreSQL moves the largest
-values of a row over about 2 KB there, one by one, until the row fits,
-so a short value can go too. A value out of line in a column no view
-reads is passed over.
+(The Oversized-Attribute Storage Technique) table: the page holds only
+a pointer. PostgreSQL moves the largest values of a row over about 2 KB
+there, one by one, until the row fits, so a short value can go too. A
+value out of line in a column no view reads is passed over.
 
 It stops too on a rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`,
 `CLUSTER`, or an `ALTER TABLE` that moves the rows to a new file. It
@@ -162,10 +162,11 @@ this for every `sslmode` but `disable`:
 | `disable` | Plain TCP |
 | `allow`, `prefer` | Refused, since they fall back to plain TCP |
 
-The built-in roots are Mozilla's. If your provider signs with a CA of
-its own, as Amazon RDS and Cloud SQL do, download its bundle and name
-it with `sslrootcert`. The [chart](deploy.md#kubernetes) mounts
-its bundle at `/etc/straum-tls/ca.pem`:
+The built-in roots are Mozilla's. If your provider signs with a
+certificate authority (CA) of its own, as Amazon RDS and Cloud SQL do,
+download its bundle and name it with `sslrootcert`. The
+[chart](deploy.md#kubernetes) mounts its bundle at
+`/etc/straum-tls/ca.pem`:
 
 ```text
 postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum-tls/ca.pem

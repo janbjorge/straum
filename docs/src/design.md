@@ -22,8 +22,8 @@ Four participants:
 
 ## Architecture
 
-Straum has six crates. Dependencies point inward only (ADR-0002), and
-`scripts/check-layers.py` enforces it.
+Straum has six crates. Dependencies point inward only (architecture
+decision record ADR-0002), and `scripts/check-layers.py` enforces it.
 
 ![The six crates and their dependencies, inward only](diagrams/crates.svg)
 
@@ -61,14 +61,15 @@ apps post asks to `straum-http`, which reads the store through the app.
 | Fail              | Writer      | A failure                 | Exit 1, slots dropped  | [States](deploy.md#states) |
 | Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](cli.md#straum-run) |
 
-Run Straum is `run` in the binary. It reads the spec and the DSN, binds
-the listener and sets a panic hook that aborts the process, since the
-store may be half written. Then it makes an **App** with an empty
-**Store** and the **Limits**, makes a **Writer** over a **Postgres**
-source, spawns the writer thread and serves HTTP until a signal. Fail is
-`run_writer`: a step that fails logs its error and ends the process with
-exit 1, and PostgreSQL drops the slot as the connection closes. Straum
-never retries in the process; whatever runs it starts it again.
+Run Straum is `run` in the binary. It reads the spec and the data source
+name (DSN), binds the listener and sets a panic hook that aborts the
+process, since the store may be half written. Then it makes an **App**
+with an empty **Store** and the **Limits**, makes a **Writer** over a
+**Postgres** source, spawns the writer thread and serves HTTP until a
+signal. Fail is `run_writer`: a step that fails logs its error and ends
+the process with exit 1, and PostgreSQL drops the slot as the connection
+closes. Straum never retries in the process; whatever runs it starts it
+again.
 
 `straum plan --copy` writes the psql scripts that copy the spec's
 tables into another database (ADR-0015); Straum itself reads no
@@ -91,8 +92,8 @@ and then streams.
    the catalog, run one binary `COPY` of the columns the spec names,
    add rows by the batch (`Store::add_rows`). The snapshot
    transaction commits with the last load.
-3. Read the server's WAL once; start the **Lag** from when the slot
-   was opened.
+3. Read the server's write-ahead log (WAL) once; start the **Lag**
+   from when the slot was opened.
 4. Take the write lock, swap the store in at L, then set
    **Following** at L in the progress. Straum is ready. The stream
    thread starts at the first `next_commit`: it reads the stream,
@@ -114,8 +115,9 @@ With `--wal physical`, step 1 differs (ADR-0008);
    rewrite between the two is in the WAL read. Start the stream thread
    with a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes
    into records and pass by those of other tables' pages, `Heap` keeps
-   the pages, `Transactions` holds changes by xid, and `Publisher`
-   turns commits into pgoutput messages for the same `Decoder`.
+   the pages, `Transactions` holds changes by transaction id (xid),
+   and `Publisher` turns commits into pgoutput messages for the same
+   `Decoder`.
 3. Try `pg_log_standby_snapshot()`, then wait for the **Consistent
    point**: past the first `RUNNING_XACTS` and every transaction it
    names.
@@ -127,9 +129,9 @@ With `--wal physical`, step 1 differs (ADR-0008);
    them as the logical start does.
 
 The pure parts, `wal/` and the pipeline, read no socket: a layout read
-again after DDL comes in through a closure, given the DDL's xid.
-`physical::read_layouts_seeing` reads it in a snapshot that sees that
-xid.
+again after data definition language (DDL) comes in through a closure,
+given the DDL's xid. `physical::read_layouts_seeing` reads it in a
+snapshot that sees that xid.
 
 ## The store
 
@@ -206,7 +208,8 @@ Steps 2 to 4 repeat for every level.
    is due.
 3. Under the write lock, apply the commit (`State::apply`): each
    change to its rollup or projection, tables the spec doesn't name
-   skipped, then move **Following** to the commit's LSN and time.
+   skipped, then move **Following** to the commit's log sequence
+   number (LSN) and time.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The watchdog

@@ -79,11 +79,11 @@ answer is exact.
 ## What it is not
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
-answers only what its spec declares, so it has no ad hoc queries,
-keeps no table rows and uses
-[no sketch](aggregates.md#median-and-percentiles). It keeps nothing on
-disk: every start loads every table again, and a crash leaves no slot
-behind holding WAL. PostgreSQL stays the source of truth.
+answers only what its spec declares, so it has no ad hoc queries, keeps
+no table rows and uses [no
+sketch](aggregates.md#median-and-percentiles). It keeps nothing on disk:
+every start loads every table again, and a crash leaves no slot behind
+holding write-ahead log (WAL). PostgreSQL stays the source of truth.
 
 Straum supports PostgreSQL 17 and newer as shipped. It needs no
 extension, and connects as a role that is not a superuser, so managed

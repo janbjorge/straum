@@ -6,14 +6,14 @@ one benchmark's numbers and the commands to measure them yourself.
 The benchmark sends Straum and PostgreSQL the same asks about six months
 of New York taxi trips. It checks that the answers are equal, then times
 both. [Transactions](#transactions) measures what one large transaction
-costs Straum, [Physical WAL](#physical-wal) how fast Straum reads the
-physical WAL, and [Memory](#memory) how many bytes a cell takes, on the
-taxi month and on a copy of a warehouse's tables.
+costs Straum, [Physical write-ahead log (WAL)](#physical-wal) how fast
+Straum reads the physical WAL, and [Memory](#memory) how many bytes a
+cell takes, on the taxi month and on a copy of a warehouse's tables.
 
-The data is the TLC yellow trips of January to June 2024, 20,332,093
-trips, and the 265 rows of `taxi_zone_lookup.csv`. The loader pins each
-file's SHA-256 and stops if the TLC republished one, since these counts
-hold only for those bytes.
+The data is the Taxi and Limousine Commission (TLC) yellow trips of
+January to June 2024, 20,332,093 trips, and the 265 rows of
+`taxi_zone_lookup.csv`. The loader pins each file's SHA-256 and stops if
+the TLC republished one, since these counts hold only for those bytes.
 
 ## Results
 
@@ -50,8 +50,8 @@ use.
 | Fares per week | 31 | 2,154.9 ms | 233 µs | 9,260x |
 | Tips by dropoff borough | 8 | 1,746.0 ms | 225 µs | 7,754x |
 
-The target is under 1 ms for every ask
-([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md)).
+The target is under 1 ms for every ask ([architecture decision record
+ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md)).
 The percentile, mode and distinct asks over every trip miss it, and so
 does the month of hourly rows by borough, which writes 4,454 rows.
 

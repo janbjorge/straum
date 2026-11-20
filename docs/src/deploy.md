@@ -87,9 +87,10 @@ a new slot. SIGTERM leads to Stopping.*
 
 Stopping ends with exit 0 ([straum run](cli.md#straum-run)).
 
-Straum reads the server's WAL position every second. Lag is the time
-since Straum last caught up with a position the server had reached. It
-can overstate the true delay by up to one second, never understate it.
+Straum reads the server's write-ahead log (WAL) position every second.
+Lag is the time since Straum last caught up with a position the server
+had reached. It can overstate the true delay by up to one second, never
+understate it.
 
 Straum fails hard. Any failure ends the process with exit 1: a lost
 connection, a missing setup, a change Straum can't apply, a table
@@ -119,11 +120,11 @@ says what it requires, and
 [`values.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/helm/straum/values.yaml)
 documents every value. The chart needs Kubernetes 1.30 or newer.
 
-It runs one pod. The spec is a ConfigMap. The DSN comes from a Secret,
-which the chart never holds. Readiness is `/readyz` and liveness is
-`/livez`, so a load or a lag takes the pod out of the Service and
-never restarts it. Each replica holds its own slot and loads every
-table.
+It runs one pod. The spec is a ConfigMap. The data source name (DSN)
+comes from a Secret, which the chart never holds. Readiness is `/readyz`
+and liveness is `/livez`, so a load or a lag takes the pod out of the
+Service and never restarts it. Each replica holds its own slot and loads
+every table.
 
 A new spec rolls the pod. The new pod loads every table before the old
 one stops, so asks keep answering, and PostgreSQL holds two slots until
@@ -147,9 +148,9 @@ Size `resources` by the cells the spec keeps
 well under the memory limit, or the pod is killed before Straum's own
 limit stops it.
 
-A CA Straum does not already trust, such as Amazon RDS or Cloud SQL
-([Connect](postgresql.md#2-connect)), is a Secret named by
-`rootCert.existingSecret`. The chart mounts it at
+A certificate authority (CA) Straum does not already trust, such as
+Amazon RDS or Cloud SQL ([Connect](postgresql.md#2-connect)), is a
+Secret named by `rootCert.existingSecret`. The chart mounts it at
 `/etc/straum-tls/ca.pem`. The DSN names that path:
 
 ```text
