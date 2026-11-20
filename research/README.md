@@ -59,4 +59,4 @@ version `20devel` (`meson.build:11`), master `0f3b42ce806`
 branches. Versions are placed by ancestry against the stamp commits
 `2652835d3ef` (19devel, the PG18 branch point) and `a281a3e6dbb`
 (20devel, the PG19 branch point). PostgreSQL 17 and newer is the
-target (jb, 2026-11-15); CI tests 17, 18 and 19rc2.
+target (jb, 2026-11-15); CI tests 17, 18 and 19.

@@ -68,8 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 19rc2 until PostgreSQL 19 ships.
-        postgres: ["17", "18", "19rc2"]
+        postgres: ["17", "18", "19"]
         include:
           - postgres: "18"
             coverage: true
@@ -106,7 +105,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: ["17", "18", "19rc2"]
+        postgres: ["17", "18", "19"]
     env:
       STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
       STRAUM_TEST_SEEDS: "50"

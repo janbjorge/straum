@@ -69,9 +69,8 @@ const RIDERS: [&str; 4] = ["ann", "bo", "cy", "di"];
 /// Logical decoding and a short `wal_sender_timeout`.
 const FLAGS: [&str; 4] = ["-c", "wal_level=logical", "-c", "wal_sender_timeout=4s"];
 
-/// The first major where `wal_level = replica` is enough; `19rc2` until 19
-/// ships.
-pub(super) const NINETEEN: &str = "19rc2";
+/// The first major where `wal_level = replica` is enough.
+pub(super) const NINETEEN: &str = "19";
 
 /// Makes a CA and a certificate it signs for 127.0.0.1, then starts
 /// PostgreSQL with ssl on. Both are valid from 2024, whatever the clocks.
