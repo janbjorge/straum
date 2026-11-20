@@ -39,8 +39,8 @@ quick start January 2024, performance January to June 2024.
   Running it for real: the binary, the image, the chart and who can
   reach it. Examples use the usage view.
 - [Performance](https://janbjorge.github.io/straum/performance.html):
-  What to expect: the benchmark and memory sizing. Examples use the
-  taxi trips.
+  What to expect: the benchmark against the raw tables and a
+  materialized view, and memory sizing. Examples use the taxi trips.
 
 ## Reference
 

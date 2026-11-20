@@ -30,6 +30,13 @@ the fares by payment type against PostgreSQL and fails if an answer
 differs or Straum stops answering. --max-transaction-rows takes its
 default from this table.
 
+materialized: builds a materialized view per view of bench/trips.sql, the
+same keys at its narrowest bucket (bench/materialized.py), and times its
+build, a refresh and a concurrent refresh, and its size. Then it asks as
+asks does, and asks the materialized views too where one can answer;
+their answers must equal Straum's as well. A median, percentile, mode or
+distinct count has no such form: its row says it needs the raw rows.
+
 shell: leaves you in `straum shell` at the trips.
 
 --wal physical has Straum read the physical WAL instead of logical decoding.
@@ -40,7 +47,6 @@ Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
 import argparse
 import asyncio
 import contextlib
-import datetime
 import decimal
 import json
 import os
@@ -52,7 +58,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
 from collections.abc import AsyncIterator
 
 import aiohttp
@@ -60,6 +65,14 @@ import asyncpg
 import orjson
 import psutil
 import tabulate
+from answers import alike, duration
+from materialized import (
+    MATERIALIZED_ASKS,
+    MATERIALIZED_VIEWS,
+    MaterializedView,
+    answer_cell,
+    create_statements,
+)
 from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_service
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -275,10 +288,11 @@ def main() -> int:
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=["asks", "transactions", "shell"],
+        choices=["asks", "transactions", "materialized", "shell"],
         default="asks",
         help="asks: time the asks on both sides (default); "
         "transactions: what one large transaction costs Straum; "
+        "materialized: the asks over materialized views too, and their upkeep; "
         "shell: open straum shell at the trips",
     )
     parser.add_argument(
@@ -356,6 +370,8 @@ async def run(
                 return await shell(straum, dsn, flags)
             case "transactions":
                 return await transactions(pg, straum, dsn, flags)
+            case "materialized":
+                return await materialized(pg, straum, dsn, flags)
             case _:
                 return await asks(pg, straum, dsn, flags)
 
@@ -447,6 +463,126 @@ async def transactions(
     ]
     print_table(rows, headers, "rrrr")
     return 0
+
+
+async def materialized(
+    pg: asyncpg.Connection, straum: str, dsn: str, flags: list[str]
+) -> int:
+    version = (await pg.fetchval("SHOW server_version")).split()[0]
+    trips, size = await pg.fetchrow(
+        "SELECT count(*), pg_total_relation_size('yellow_trips') FROM yellow_trips"
+    )
+    upkeep = []
+    for view in MATERIALIZED_VIEWS:
+        log(f"building and refreshing {view.name}")
+        upkeep.append(await keep(pg, view))
+    async with serve(straum, dsn, *flags) as (http, loaded, process, _):
+        rss = held(process)
+        log("asking")
+        results = [await compare_materialized(pg, http, *each) for each in ASKS]
+
+    views_size = sum(each[2] for each in upkeep)
+    print(f"PostgreSQL {version}: {trips:,} trips, {size / 2**20:,.0f} MiB.")
+    print(
+        f"Materialized views: {views_size / 2**20:,.0f} MiB together. "
+        f"Straum: ready in {loaded:.1f} s, holding {rss / 2**20:,.0f} MiB."
+    )
+    print()
+    table = [
+        (
+            name,
+            rows,
+            duration(pg_time),
+            answer_cell(materialized_time),
+            duration(straum_time),
+        )
+        for name, rows, pg_time, materialized_time, straum_time in results
+    ]
+    headers = ["Ask", "Rows", "PostgreSQL", "Materialized view", "Straum"]
+    print_table(table, headers, "lrrrr")
+    print()
+    table = [
+        (
+            name,
+            f"{rows:,}",
+            f"{bytes_on_disk / 2**20:,.0f} MiB",
+            duration(built),
+            duration(refreshed),
+            duration(concurrently),
+        )
+        for name, rows, bytes_on_disk, built, refreshed, concurrently in upkeep
+    ]
+    headers = [
+        "Materialized view",
+        "Rows",
+        "Size",
+        "Build",
+        "Refresh",
+        "Refresh concurrently",
+    ]
+    print_table(table, headers, "lrrrrr")
+    return 0
+
+
+# Refreshes of each kind per materialized view; the median counts. Each
+# reads every trip, so a few, not the second that median() runs.
+REFRESH_RUNS = 3
+
+
+async def keep(
+    pg: asyncpg.Connection, view: MaterializedView
+) -> tuple[str, int, int, float, float, float]:
+    """Builds `view`, then refreshes it each way: its rows, its bytes
+    with its index, and the seconds of the build and of each refresh."""
+    create, index = create_statements(view)
+    start = time.perf_counter()
+    await pg.execute(create)
+    await pg.execute(index)
+    built = time.perf_counter() - start
+    await pg.execute(f"VACUUM ANALYZE {view.name}")
+    refreshes = {}
+    for how in ["", "CONCURRENTLY "]:
+        times = []
+        for _ in range(REFRESH_RUNS):
+            start = time.perf_counter()
+            await pg.execute(f"REFRESH MATERIALIZED VIEW {how}{view.name}")
+            times.append(time.perf_counter() - start)
+        refreshes[how] = statistics.median(times)
+    # The answers are timed after a vacuum, as after an autovacuum.
+    await pg.execute(f"VACUUM ANALYZE {view.name}")
+    rows, bytes_on_disk = await pg.fetchrow(
+        f"SELECT count(*), pg_total_relation_size('{view.name}') FROM {view.name}"
+    )
+    return (
+        view.name,
+        rows,
+        bytes_on_disk,
+        built,
+        refreshes[""],
+        refreshes["CONCURRENTLY "],
+    )
+
+
+async def compare_materialized(
+    pg: asyncpg.Connection,
+    http: aiohttp.ClientSession,
+    name: str,
+    sql: str,
+    query: str,
+    parameters: list,
+) -> tuple[str, int, float, float | None, float]:
+    """As `compare`, and the ask over the materialized views where one
+    answers it: it must answer as Straum does, then it is timed."""
+    name, rows, pg_time, straum_time = await compare(
+        pg, http, name, sql, query, parameters
+    )
+    materialized_sql = MATERIALIZED_ASKS[name]
+    if materialized_sql is None:
+        return name, rows, pg_time, None, straum_time
+    body = orjson.dumps({"query": query, "parameters": parameters})
+    await check(pg, http, f"{name}, materialized view", materialized_sql, body)
+    materialized_time = await median(lambda: pg.fetch(materialized_sql))
+    return name, rows, pg_time, materialized_time, straum_time
 
 
 def print_table(rows: list, headers: list[str], align: str) -> None:
@@ -599,45 +735,9 @@ async def check(
     """Fails unless both sides answer alike; the rows they answered."""
     expected = [list(row.values()) for row in await pg.fetch(sql)]
     got = [list(row.values()) for row in await ask(http, body, exact)]
-    places = scales(got)
-    if Counter(plain(row, places) for row in got) != Counter(
-        plain(row, places) for row in expected
-    ):
+    if not alike(got, expected):
         raise SystemExit(f"taxi: {name}: Straum answered {got}, PostgreSQL {expected}")
     return len(got)
-
-
-def scales(rows: list[list]) -> list[decimal.Decimal | None]:
-    """Per column, the finest place Straum's decimals reach: a sum keeps
-    its column's scale, an avg and a standard deviation four places more,
-    a variance four past twice its column's."""
-    finest: list[decimal.Decimal | None] = [None] * (len(rows[0]) if rows else 0)
-    for row in rows:
-        for column, value in enumerate(row):
-            if not isinstance(value, decimal.Decimal):
-                continue
-            place = decimal.Decimal(1).scaleb(value.as_tuple().exponent)
-            if finest[column] is None or place < finest[column]:
-                finest[column] = place
-    return finest
-
-
-def plain(row: list, places: list[decimal.Decimal | None]) -> tuple:
-    """The row in one form for both sides. A decimal is exact on both,
-    PostgreSQL's avg, variance and standard deviation rounded half to even
-    at the place Straum's has; a
-    bucket comes from Straum as RFC 3339 text."""
-    values = []
-    for column, value in enumerate(row):
-        match value:
-            case decimal.Decimal() if places[column] is not None:
-                value = value.quantize(places[column], rounding=decimal.ROUND_HALF_EVEN)
-            case int() if places[column] is not None:
-                value = decimal.Decimal(value).quantize(places[column])
-            case datetime.datetime():
-                value = value.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        values.append(value)
-    return tuple(values)
 
 
 async def median(run) -> float:
@@ -725,12 +825,6 @@ def held(process: psutil.Process) -> int:
 def lsn(text: str) -> int:
     high, low = text.split("/")
     return (int(high, 16) << 32) | int(low, 16)
-
-
-def duration(seconds: float) -> str:
-    if seconds >= 1e-3:
-        return f"{seconds * 1e3:.1f} ms"
-    return f"{seconds * 1e6:.0f} µs"
 
 
 def log(message: str) -> None:

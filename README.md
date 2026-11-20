@@ -29,6 +29,13 @@ both, answers checked equal
 | Fares per week | 2,154.9 ms | 233 µs | 9,260x |
 | Median fare | 4,839.8 ms | 25.2 ms | 192x |
 
+Those times are PostgreSQL reading every trip. A materialized view of
+the same rollup answers in 903 µs to 68.3 ms, but only as of its last
+refresh, which reads every trip again and took 6,934.4 to 10,819.7 ms
+here, and it has no answer for the median, percentile, mode and
+distinct asks ([against a materialized
+view](https://janbjorge.github.io/straum/performance.html#against-a-materialized-view)).
+
 One run on an Apple M2 Pro with 16 GB, on 2026-11-19. Straum held
 305 MiB, and 202 MiB on 2026-11-20 once the distinct fares read the
 percentiles' counts; the table and its indexes take 2,475 MiB in

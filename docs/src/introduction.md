@@ -49,7 +49,8 @@ curl --json '{
 
 Every commit made before `as_of` is in the answer, and an ask never
 touches PostgreSQL. [Performance](performance.md) times the same asks
-against PostgreSQL.
+against PostgreSQL, over the raw tables and over a materialized view
+with its refresh.
 
 ![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
 

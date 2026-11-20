@@ -73,7 +73,7 @@ domain-syntax:
 test-checks:
     scripts/test-checks.py
 
-# Tests of how the bench scripts name and clean up their Compose projects
+# Tests of the bench scripts: Compose project names, answer checks, materialized views
 [group('check')]
 test-bench:
     bench/test-stack.py
@@ -98,7 +98,7 @@ docs:
 docs-build:
     mdbook build docs
 
-# Taxi trips in a throwaway PostgreSQL: asks, transactions or shell
+# Taxi trips in a throwaway PostgreSQL: asks, transactions, materialized or shell
 [group('taxi')]
 taxi mode="asks":
     bench/taxi.py {{ mode }} --wal {{ wal }}

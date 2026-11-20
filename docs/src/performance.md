@@ -4,9 +4,11 @@ One benchmark measures how fast Straum answers and how much memory it
 takes; [Running it yourself](#running-it-yourself) has the commands. It
 sends Straum and PostgreSQL the same asks about six months
 of New York taxi trips, checks that the answers are equal, then times
-both. [Transactions](#transactions) measures what one large transaction
-costs Straum, [Physical write-ahead log (WAL)](#physical-wal) how fast
-Straum reads the physical WAL, and [Memory](#memory) how many bytes a
+both. [Against a materialized view](#against-a-materialized-view) asks
+the same of a materialized view and measures its refresh,
+[Transactions](#transactions) what one large transaction costs Straum,
+[Physical write-ahead log (WAL)](#physical-wal) how fast Straum reads
+the physical WAL, and [Memory](#memory) how many bytes a
 cell takes, on the taxi month and on a copy of a warehouse's tables.
 
 The data is the Taxi and Limousine Commission (TLC) yellow trips of
@@ -84,9 +86,86 @@ which counts the pages the system compressed; on a busy machine one
 resident set read 21 MiB. Elsewhere it reads the resident set.
 
 Straum answers only what the views keep: these keys, on hour edges.
-PostgreSQL answers any query over the raw rows. Straum keeps its cells
-current as trips change; a summary table in PostgreSQL would have to be
-rebuilt or maintained.
+PostgreSQL answers any query over the raw rows. The times above are
+PostgreSQL reading every trip; a dashboard that can't wait for that
+keeps a summary instead. [Against a materialized
+view](#against-a-materialized-view) measures that summary: it answers
+in milliseconds too, but only as of its last refresh, and it has no
+answer for the percentile, mode and distinct asks.
+
+## Against a materialized view
+
+`bench/taxi.py materialized` builds one materialized view per view of
+`bench/trips.sql`, with the same keys at the narrowest bucket, an hour
+on the epoch grid, and a unique index on them so it can refresh
+concurrently. `bench/materialized.py` writes both. The materialized
+views keep counts and sums only, since those add across buckets: an
+average is a sum over a count, a variance and standard deviation come
+from the count, sum and sum of squares. Each ask then goes to
+PostgreSQL over the raw tables, to the materialized view with the
+ask's own range, and to Straum. The materialized view's answer must
+equal Straum's, as the raw table's must, or the run stops.
+
+A median, percentile, mode or distinct count over a range does not
+merge from per-bucket rows ([Merging](aggregates.md#merging)), so
+those asks have no materialized view form here. Straum answers them
+from the count per value each cell keeps; a materialized view could
+keep a row per bucket, key and fare to do the same, which this bench
+does not build.
+
+One run on 2026-11-20, on the machine and PostgreSQL of the
+[Results](#results). Other builds and tests ran on the machine
+meanwhile, its load average 6.08 when the run began, so these times
+are rough; the raw-table times differ from the Results' for that
+reason.
+
+| Ask | Rows | PostgreSQL | Materialized view | Straum |
+| --- | ---: | ---: | ---: | ---: |
+| Trips | 1 | 225.5 ms | 31.4 ms | 145 µs |
+| Card trips | 1 | 413.8 ms | 27.2 ms | 225 µs |
+| Trips by pickup borough | 8 | 1,126.3 ms | 52.2 ms | 265 µs |
+| Fares by payment type | 6 | 850.4 ms | 61.2 ms | 337 µs |
+| Fare spread by payment type | 6 | 953.2 ms | 68.3 ms | 438 µs |
+| Median fare | 1 | 5,293.9 ms | needs the raw rows | 25.7 ms |
+| p99 fare by payment type | 6 | 9,079.2 ms | needs the raw rows | 21.6 ms |
+| Most common fare by payment type | 6 | 9,661.6 ms | needs the raw rows | 36.4 ms |
+| Distinct fares by payment type | 6 | 11,200.9 ms | needs the raw rows | 8.6 ms |
+| Median fare per hour, one day | 24 | 49.3 ms | needs the raw rows | 639 µs |
+| Manhattan pickups, one week | 1 | 75.9 ms | 3.1 ms | 203 µs |
+| Trips per hour, one day | 24 | 17.8 ms | 903 µs | 162 µs |
+| Trips per hour by borough, one month | 4,454 | 994.8 ms | 30.7 ms | 2.6 ms |
+| Trips per day by borough, one month | 243 | 982.6 ms | 27.1 ms | 387 µs |
+| Fares per week | 31 | 2,619.9 ms | 61.6 ms | 234 µs |
+| Tips by dropoff borough | 8 | 1,814.2 ms | 58.0 ms | 216 µs |
+
+The materialized view reads its rows in the ask's range: every hour
+of six months for the asks over all time, a day's or a week's through
+its index for the rest. It answers in 903 µs to 68.3 ms, faster than
+the raw tables and slower than Straum, which reads cells of the widest
+width that fits. This bench builds one materialized view per view. One
+per ask, grouped by that ask's keys alone, would hold fewer rows and
+answer sooner, and need a refresh of its own.
+
+What keeps it current is the refresh. Each one reads every trip again:
+
+| Materialized view | Rows | Size | Build | Refresh | Refresh concurrently |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `trips_hourly` | 1,157,581 | 153 MiB | 9,171.5 ms | 7,855.1 ms | 10,819.7 ms |
+| `dropoffs_hourly` | 713,457 | 91 MiB | 6,794.4 ms | 6,934.4 ms | 9,320.0 ms |
+
+Build is the `CREATE` and its index; each refresh time is the median
+of three. A plain refresh locks the materialized view, so asks wait
+for it; a concurrent one lets them read the old rows and takes longer.
+Between refreshes every answer is as old as the last refresh's start,
+and the server pays a refresh's read of every trip each time, whether
+a trip changed or not. Straum applies a commit in milliseconds
+([Transactions](#transactions)), and an ask after it reads the change.
+
+The rows match the cells Straum keeps at its hour width
+([The views](#the-views)). The two materialized views took 245 MiB on
+disk with their indexes; Straum held 201 MiB in memory in the same
+run, both views with every measure, the fares' counts per value
+included.
 
 ## Running it yourself
 
@@ -107,8 +186,11 @@ PostgreSQL's `avg`, variance and standard deviation rounded half to even
 at the places Straum gives them. A run takes about 80 seconds once the
 data is there.
 
-The script has three modes, each after the same setup. `bench/taxi.py`
+The script has four modes, each after the same setup. `bench/taxi.py`
 or `bench/taxi.py asks` gives the [Results](#results).
+`bench/taxi.py materialized` builds and refreshes the materialized
+views, then asks all three sides
+([Against a materialized view](#against-a-materialized-view)).
 `bench/taxi.py transactions` runs one transaction of 1,000 to 1,000,000
 changed rows while a client asks Straum back to back
 ([Transactions](#transactions)). `bench/taxi.py shell` opens
@@ -121,9 +203,9 @@ decoding. The script then turns `full_page_writes` back on after the
 load and takes a checkpoint, since the physical stream needs page
 images.
 
-`just taxi [asks|transactions|shell]` runs the same, with `wal=physical`
-for the physical WAL and `postgres=17` for another major, as in
-`just postgres=17 wal=physical taxi`.
+`just taxi [asks|transactions|materialized|shell]` runs the same, with
+`wal=physical` for the physical WAL and `postgres=17` for another
+major, as in `just postgres=17 wal=physical taxi`.
 
 ## The views
 
