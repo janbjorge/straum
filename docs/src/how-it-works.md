@@ -144,10 +144,24 @@ commit after L through the publication.
 
 *Commits up to L come in with the load, later ones through the slot.*
 
-PostgreSQL decodes the WAL and sends each transaction at its commit.
-The old row of an update or delete comes whole because every spec
-table has `REPLICA IDENTITY FULL`. A truncate empties the cells or the
-projection.
+PostgreSQL decodes the WAL itself, through its pgoutput plugin, and
+sends each transaction once it commits. For one `UPDATE` of `events`,
+Straum receives:
+
+```text
+Begin     the LSN of the commit
+Relation  public.events and its columns, before the table's first change
+Update    the old row and the new row, each column as text
+Commit    the end of the commit, and its time
+```
+
+The old row is whole because every spec table has `REPLICA IDENTITY
+FULL`; without it, pgoutput sends at most the key. An insert carries the
+new row, a delete the old one. A truncate names its tables, and Straum
+empties their cells or projection. Every published column comes, and
+Straum reads the spec's columns and steps over the rest. Between
+transactions the server sends keepalives, and Straum answers with what
+it has applied.
 
 Straum stops on a spec table that the publication drops, and on a
 column that `ALTER COLUMN .. TYPE` rewrote, since logical decoding
@@ -171,11 +185,18 @@ Straum's copy, as PostgreSQL's own redo does.
 *A record names a page and the bytes that changed. Straum's copy of the
 page holds the rest of the row.*
 
-Straum passes records of other tables by from their headers, and checks
-each record it reads against its CRC-32C checksum. A transaction's
-changes wait for its commit record, then go to the writer as the same
-messages the logical stream sends, so one decoder serves both. An abort
-drops them.
+The stream is raw WAL bytes for the whole server, every database.
+Straum cuts them into records and reads four kinds whatever they name:
+checkpoints, transaction ends, file truncations and the lists of
+running transactions. Heap records, an insert, update, delete, bulk
+insert, prune or vacuum, it reads only for its tables' pages. It
+passes any other record by from its header, and checks each record it
+reads against its CRC-32C checksum.
+
+A transaction's changes wait for its commit record, then become the
+messages the logical stream gets: Begin, Relation, Insert, Update and
+Delete with the whole old row, and Commit. One decoder serves both
+streams. An abort drops the changes.
 
 The load meets the stream by transaction, not by WAL position. Straum
 waits until every transaction open at start has ended, takes the
