@@ -1,20 +1,19 @@
 # How Straum works
 
 What does Straum hold, and how does it stay current? It loads each table
-once into cells, keeps the cells current from PostgreSQL's replication
-stream, and answers every ask from the cells alone. [Design](design.md)
+once into cells, keeps them current from PostgreSQL's replication stream,
+and answers every ask from the cells alone. [Design](design.md)
 names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run` loads each spec table once, from a snapshot, then streams
-every commit that snapshot did not see. No commit is missed or applied
-twice. How the load and the stream meet depends on the stream: [the
-logical stream](#the-logical-stream) or [the physical
-stream](#the-physical-stream).
+`straum run` loads each spec table once from a snapshot, then streams
+every commit the snapshot did not see, none missed or applied twice. How
+the two meet depends on [the logical stream](#the-logical-stream) or [the
+physical stream](#the-physical-stream).
 
-The load is one binary `COPY` per table, grouped into cells as rows arrive,
-so Straum never holds a table's rows. Straum installs nothing in
+The load is one binary `COPY` per table, grouped into cells as rows
+arrive, so Straum never holds a table's rows. It installs nothing in
 PostgreSQL and writes nothing to disk. The slot is temporary, so every
 start loads again.
 
@@ -33,8 +32,8 @@ the view but not of the cell ([Dims](#dims)). Each width the view's
 
 A measure is an aggregate the view names, such as `sum(e.amount) AS amount`.
 A cell keeps a row count plus the counts and sums each measure needs, so a
-row can be added or removed exactly. [Aggregates 101](aggregates.md) covers
-the details. A `FILTER` names parts of the cell key, so a cell counts whole
+row can be added or removed exactly ([Aggregates 101](aggregates.md)). A
+`FILTER` names parts of the cell key, so a cell counts whole
 or not at all.
 
 ![A row adds to its cell](diagrams/cell.svg)
@@ -51,7 +50,7 @@ Memory per width:
 cells <= min(rows, distinct key combinations x buckets)
 ```
 
-Keys close to unique per row keep nearly a cell per row. The
+Keys close to unique per row keep nearly a cell per row; the
 [benchmark](performance.md#memory) has measured numbers.
 
 A value keeps its code after its last cell or dim row goes. Once a column
@@ -68,17 +67,16 @@ FROM public.events AS e
 LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 ```
 
-Straum treats the two tables differently. The `FROM` table, `events`,
-is the fact table: each row is something that happened, and the
-measures count and add up its rows. A joined table, `accounts`, is a
-dim, short for dimension: each row describes something the fact rows
-point at, here an account and its region.
+The `FROM` table, `events`, is the fact table: each row is something
+that happened, and the measures count and add up its rows. A joined
+table, `accounts`, is a dim, short for dimension: each row describes
+something the fact rows point at, here an account and its region.
 
-A cell keeps the join column, `account_id`, and not `region`. Beside
-the cells, Straum keeps a projection of each dim: its key and the
-columns the views read, here `id` and `region`, kept current from the
-stream. An ask by region looks up each cell's `account_id` in the
-projection and adds up the cells of each region:
+A cell keeps the join column, `account_id`, not `region`. Beside the
+cells, Straum keeps a projection of each dim, kept current from the
+stream: its key and the columns the views read, here `id` and `region`.
+An ask by region looks up each cell's `account_id` in the projection and
+adds up the cells of each region:
 
 ![Cells keep the join column; an ask reads the dim through it](diagrams/dims.svg)
 
@@ -87,10 +85,10 @@ projection and adds up the cells of each region:
 Moving account 7 from `eu` to `us` changes one projection row, and the
 next answer counts its events under `us`, as PostgreSQL's view would.
 Had cells kept `region`, the move would have to find every cell of
-account 7, in every bucket of every width. The cost is in the cell
-key: the join column is part of it, so a join column with many
-distinct values means many cells. [Joining a
-dim](spec.md#joining-a-dim) has the rules for writing a join.
+account 7, in every bucket of every width. The cost is that the join
+column is in the cell key, so one with many distinct values means many
+cells. [Joining a dim](spec.md#joining-a-dim) has the rules for writing
+a join.
 
 A view that selects `a.region` but not `e.account_id` would make every
 ask by region add up the cells of each account. For such a view, when
@@ -102,10 +100,10 @@ cells once under the write lock, and skips keys no fact row names.
 
 ## Following
 
-Each transaction applies whole, under one write lock, with nothing read from
-PostgreSQL in between. An insert adds its row to a cell, or to a projection
-for a dim. An update removes the old row and adds the new one. A delete
-removes the old row. Both streams give the whole old row.
+Each transaction applies whole, under one write lock, with nothing read
+from PostgreSQL in between. An insert adds its row to a cell, or to a
+projection for a dim. An update removes the old row and adds the new
+one. A delete removes the old row. Both streams give the whole old row.
 
 ![Following and answering at once](diagrams/follow.svg)
 
@@ -113,16 +111,15 @@ removes the old row. Both streams give the whole old row.
 applied. The writer takes the write lock per commit; asks take the read
 lock.*
 
-Asks and the writer share the store behind a read-write lock. A long ask
-delays the writer, which shows as lag. The stream reads up to 64 commits
-or 200,000 changes ahead of the writer and confirms what has been
-applied, so PostgreSQL can recycle write-ahead log (WAL).
+A long ask delays the writer, which shows as lag. The stream reads up to
+64 commits or 200,000 changes ahead of the writer and confirms what has
+been applied, so PostgreSQL can recycle write-ahead log (WAL).
 
-Straum stops with exit 1 when a change does not fit what it holds, and the
-next start loads from a new slot. That covers an update or delete whose old
-row is missing, a row never added, a dim row never held, a value it cannot
-read, a table whose columns now read differently, a renamed label of an
-enum it reads ([Enum columns](spec.md#enum-columns)), and a transaction above
+Straum stops with exit 1 when a change does not fit what it holds, and
+the next start loads from a new slot: an update or delete whose old row is
+missing, a row never added, a dim row never held, a value it cannot read,
+a table whose columns now read differently, a renamed label of an enum it
+reads ([Enum columns](spec.md#enum-columns)), and a transaction above
 `--max-transaction-rows`. The row limit is deliberate: a large transaction
 would wait in memory, while the new slot's snapshot brings its rows in
 through the bulk `COPY`. The [benchmark](performance.md#transactions) sets
@@ -156,7 +153,8 @@ Commit    the end of the commit and its time
 Straum keeps no rows, so the old row is what says which cell an
 update or delete leaves, and what to subtract. `REPLICA IDENTITY FULL`
 logs it whole; by default, PostgreSQL logs at most the key. Straum
-reads the spec's columns and skips the rest. A truncate empties the table's cells or projection.
+reads the spec's columns and skips the rest. A truncate empties the
+table's cells or projection.
 
 Straum stops when the publication drops a spec table, and on `ALTER
 COLUMN .. TYPE`, for which logical decoding sends no rows. `VACUUM
@@ -195,9 +193,9 @@ commit it has read is in the load.
 
 Straum stops past `--max-page-memory`, and on a truncate or rewrite of
 a spec table, `VACUUM FULL` and `CLUSTER` included, since the pages
-went with the old file. After DDL on a
-spec table it reads the columns again in a snapshot that sees the
-change, and stops if none does within 10 s.
+went with the old file. After DDL on a spec table it reads the columns
+again in a snapshot that sees the change, and stops if none does within
+10 s.
 
 ## Answering an ask
 
@@ -243,8 +241,8 @@ ask grouped by the bucket reads no bucket wider than its rows: hours
 for `bucket`, days for `buckets(bucket, '1 day')`, one stored day a
 row ([Rows a day or a week apart](asks.md#rows-a-day-or-a-week-apart)).
 
-Every answer carries `as_of` and includes every commit before it. Following
-is asynchronous, so an answer can predate your own commit.
-[Seeing your own write](asks.md#seeing-your-own-write) explains how to wait.
+Every answer carries `as_of` and includes every commit before it.
+Following is asynchronous, so an answer can predate your own commit;
+[Seeing your own write](asks.md#seeing-your-own-write) says how to wait.
 
 Next: [Aggregates 101](aggregates.md), what each measure keeps in a cell.
