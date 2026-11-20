@@ -11,8 +11,9 @@ major STRAUM_TEST_POSTGRES names, 18 by default. One run, no flags.
 
 First the checks of what the design claims, some with a planted break.
 
-capture: what a statement writes, skips, and survives (renames, drops,
-retypes, TRUNCATE, NaN, json columns).
+capture: a statement's whole rows with their types, through renamed,
+dropped, retyped and added columns; and what writes nothing but counts
+as skipped: a TRUNCATE, a statement over the row cap, an expired sign.
 lock: the second writer of a row gets the later id. Planted: CACHE 20.
 deferred: a deferred unique key lets a new key in before the old one out.
 drain: a low id that commits late is not lost. Planted: a range delete.
@@ -23,30 +24,30 @@ horizon: poll cost while a snapshot is held open, and after.
 
 Then the taxi workload. January's trips are loaded; the app then writes
 February's real trips in small batches from 8 workers, with tip
-corrections and vendor changes (a column the spec never reads) mixed in,
-then a week's fare repricing, a day's payment fix, a delete of negative
-fares and a zone's borough renamed. It runs once without the triggers
-and once with them and a consumer that applies the outbox to count and
-fare per hour and payment type, which must equal PostgreSQL's at the
-end. Each phase reports its time, statement latency, the write-ahead
-log (WAL) written to the app's tables and to the outbox, and the
-outbox's backlog and size.
+corrections and vendor changes mixed in, then a week's fare repricing, a
+day's payment fix, a delete of negative fares and a zone's borough
+renamed. It runs once without the triggers and once with them and a
+consumer that keeps a hash of every row the outbox says the tables hold,
+which must equal PostgreSQL's. A statement the triggers skip costs the
+consumer a reload, as it would Straum. Each phase reports its time,
+statement latency, the write-ahead log (WAL) written to the app's tables
+and to the outbox, and the outbox's backlog and size.
 
-Not here yet, though ADR-0018 decides them: the sign, its count of skipped
-writes, the start, the row cap and whole transactions. Rows go as JSON.
+Not here yet: a start while writers run, and whole transactions only.
 
 Needs Docker and uv. Downloads go to bench/data, which git ignores.
 """
 
 import asyncio
 import collections
-import datetime
 import decimal
+import hashlib
 import json
 import pathlib
 import random
 import secrets
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -60,64 +61,45 @@ from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_servi
 
 OUTBOX = """
 CREATE SCHEMA straum;
+CREATE SEQUENCE straum.sign;
+CREATE SEQUENCE straum.skipped;
 CREATE TABLE straum.outbox (
-  id       bigint GENERATED ALWAYS AS IDENTITY (CACHE {cache} NO CYCLE) PRIMARY KEY,
-  relid    oid      NOT NULL,
-  kind     smallint NOT NULL,
-  types    text[],
-  old_rows json,
-  new_rows json
-) WITH (
-  fillfactor = 100,
-  vacuum_truncate = false,
-  autovacuum_vacuum_scale_factor = 0,
-  autovacuum_vacuum_threshold = 1000,
-  autovacuum_vacuum_cost_delay = 0,
-  toast.autovacuum_vacuum_scale_factor = 0,
-  toast.autovacuum_vacuum_threshold = 1000,
-  toast.autovacuum_vacuum_cost_delay = 0
+  id       bigint GENERATED ALWAYS AS IDENTITY (CACHE {cache}) PRIMARY KEY,
+  relid    oid     NOT NULL,
+  incoming boolean NOT NULL,
+  rows     bytea   NOT NULL
 );
-ALTER TABLE straum.outbox ALTER old_rows SET COMPRESSION lz4,
-                          ALTER new_rows SET COMPRESSION lz4;
 
-CREATE FUNCTION straum.capture() RETURNS trigger LANGUAGE plpgsql AS $f$
+CREATE FUNCTION straum.capture() RETURNS trigger LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET client_encoding = 'UTF8'
+AS $f$
 DECLARE
-  cols text;
-  kinds text[];
-  diff text;
+  changed bigint;
 BEGIN
   IF TG_OP = 'TRUNCATE' THEN
-    INSERT INTO straum.outbox (relid, kind) VALUES (TG_RELID, 2);
+    PERFORM nextval('straum.skipped');
+    RETURN NULL;
+  ELSIF TG_OP = 'DELETE' THEN
+    SELECT count(*) INTO changed FROM (SELECT FROM old_rows LIMIT {cap} + 1) c;
+  ELSE
+    SELECT count(*) INTO changed FROM (SELECT FROM new_rows LIMIT {cap} + 1) c;
+  END IF;
+  IF changed = 0 THEN
     RETURN NULL;
   END IF;
-  SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum),
-         array_agg(format_type(atttypid, atttypmod) ORDER BY attnum)
-    INTO cols, kinds
-    FROM pg_attribute
-   WHERE attrelid = TG_RELID
-     AND attnum = ANY (TG_ARGV[0]::int2[])
-     AND NOT attisdropped;
-  IF TG_OP = 'INSERT' THEN
-    diff := format('SELECT 1 AS side, json_build_array(%s)::text AS r FROM new_rows', cols);
-  ELSIF TG_OP = 'DELETE' THEN
-    diff := format('SELECT 0 AS side, json_build_array(%s)::text AS r FROM old_rows', cols);
-  ELSE
-    diff := format(
-      'SELECT 0 AS side, r FROM (SELECT json_build_array(%1$s)::text r FROM old_rows'
-      ' EXCEPT ALL SELECT json_build_array(%1$s)::text FROM new_rows) a'
-      ' UNION ALL '
-      'SELECT 1 AS side, r FROM (SELECT json_build_array(%1$s)::text r FROM new_rows'
-      ' EXCEPT ALL SELECT json_build_array(%1$s)::text FROM old_rows) b', cols);
+  IF changed > {cap}
+     OR (SELECT last_value FROM straum.sign) < extract(epoch FROM clock_timestamp()) THEN
+    PERFORM nextval('straum.skipped');
+    RETURN NULL;
   END IF;
-  EXECUTE format(
-    'INSERT INTO straum.outbox (relid, kind, types, old_rows, new_rows)'
-    ' SELECT $1, 1, $2,'
-    '  CASE WHEN side = 0 THEN json_agg(r::json) END,'
-    '  CASE WHEN side = 1 THEN json_agg(r::json) END'
-    ' FROM (SELECT side, r, (row_number() OVER (PARTITION BY side) - 1) / %s AS chunk'
-    '       FROM (%s) d) c'
-    ' GROUP BY side, chunk ORDER BY side, chunk', {chunk}, diff)
-    USING TG_RELID, kinds;
+  IF TG_OP <> 'INSERT' THEN
+    INSERT INTO straum.outbox (relid, incoming, rows)
+    SELECT TG_RELID, false, string_agg(record_send(o), ''::bytea) FROM old_rows o;
+  END IF;
+  IF TG_OP <> 'DELETE' THEN
+    INSERT INTO straum.outbox (relid, incoming, rows)
+    SELECT TG_RELID, true, string_agg(record_send(n), ''::bytea) FROM new_rows n;
+  END IF;
   RETURN NULL;
 END
 $f$;
@@ -125,25 +107,39 @@ $f$;
 
 TRIGGERS = """
 CREATE TRIGGER {t}_ins AFTER INSERT ON {t} REFERENCING NEW TABLE AS new_rows
-  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture('{cols}');
+  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture();
 CREATE TRIGGER {t}_upd AFTER UPDATE ON {t}
   REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
-  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture('{cols}');
+  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture();
 CREATE TRIGGER {t}_del AFTER DELETE ON {t} REFERENCING OLD TABLE AS old_rows
-  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture('{cols}');
+  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture();
 CREATE TRIGGER {t}_trunc AFTER TRUNCATE ON {t}
-  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture('{cols}');
+  FOR EACH STATEMENT EXECUTE FUNCTION straum.capture();
 """
 
 DRAIN = """
 DELETE FROM straum.outbox
  WHERE id IN (SELECT id FROM straum.outbox ORDER BY id LIMIT {limit})
-RETURNING id, relid, kind, types, old_rows::text, new_rows::text
+RETURNING id, relid, incoming, rows
+"""
+# The sign as seconds since 1970: one far ahead, and one long past.
+FRESH = "SELECT setval('straum.sign', 4102444800)"
+EXPIRED = "SELECT setval('straum.sign', 1)"
+SKIPPED = "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM straum.skipped"
+# A count and a 128-bit sum of md5s over a table's rows as the triggers
+# send them: equal for two tables holding the same rows.
+TALLY = """
+SELECT count(*)::int AS rows,
+       coalesce(sum(('x' || substr(h, 1, 16))::bit(64)::bigint::numeric), 0) AS high,
+       coalesce(sum(('x' || substr(h, 17, 16))::bit(64)::bigint::numeric), 0) AS low
+  FROM (SELECT md5(record_send(t)) AS h FROM {table} t) hashed
 """
 
 HOT_KEYS = 20
-# Rows per outbox row, so no value nears PostgreSQL's 1 GB limit.
-CHUNK_ROWS = 10000
+# The most rows a statement may change and still be sent, as
+# --max-transaction-rows is.
+ROW_CAP = 100_000
+INT4, TEXT, VARCHAR = 23, 25, 1043
 RESULTS: list[tuple[str, str, str]] = []
 
 
@@ -152,21 +148,54 @@ def record(check: str, passed: bool, detail: str) -> None:
     print(f"{check}: {'PASS' if passed else 'FAIL'} {detail}", flush=True)
 
 
-def rows_of(text: str | None) -> list[tuple]:
-    if text is None:
-        return []
-    parsed = json.loads(text, parse_float=decimal.Decimal, parse_int=decimal.Decimal)
-    return [tuple(value for value in row) for row in parsed]
+def records(rows: bytes) -> list[bytes]:
+    """The rows of an outbox value, each as `record_send` wrote it: a
+    column count, then for each column a type OID, a length and that many
+    bytes; a NULL has length -1 and none."""
+    found = []
+    at = 0
+    while at < len(rows):
+        start = at
+        (columns,) = struct.unpack_from(">i", rows, at)
+        at += 4
+        for _ in range(columns):
+            (length,) = struct.unpack_from(">i", rows, at + 4)
+            at += 8 + max(length, 0)
+        found.append(rows[start:at])
+    return found
+
+
+def fields(row: bytes) -> list[tuple[int, bytes | None]]:
+    """A row's columns: each type OID and its bytes, None for NULL."""
+    (columns,) = struct.unpack_from(">i", row, 0)
+    at = 4
+    found = []
+    for _ in range(columns):
+        oid, length = struct.unpack_from(">Ii", row, at)
+        at += 8
+        found.append((oid, None if length < 0 else row[at : at + length]))
+        at += max(length, 0)
+    return found
+
+
+def number(value: bytes | None) -> int | None:
+    return None if value is None else int.from_bytes(value, "big", signed=True)
+
+
+def numbers(outbox_row: asyncpg.Record, column: int) -> list[int | None]:
+    """One integer column of every row in an outbox row."""
+    return [number(fields(row)[column][1]) for row in records(outbox_row["rows"])]
 
 
 async def fresh(dsn: str, cache: int) -> asyncpg.Connection:
-    """A database with only the outbox and its function, at `cache`."""
+    """A database with only the outbox, its function and a fresh sign."""
     admin = await asyncpg.connect(dsn)
     await admin.execute("DROP DATABASE IF EXISTS t WITH (FORCE)")
     await admin.execute("CREATE DATABASE t")
     await admin.close()
-    conn = await asyncpg.connect(dsn.rsplit("/", 1)[0] + "/t")
-    await conn.execute(OUTBOX.format(cache=cache, chunk=CHUNK_ROWS))
+    conn = await asyncpg.connect(db(dsn))
+    await conn.execute(OUTBOX.format(cache=cache, cap=ROW_CAP))
+    await conn.execute(FRESH)
     return conn
 
 
@@ -182,80 +211,107 @@ async def drain(conn: asyncpg.Connection, limit: int = 200) -> list[asyncpg.Reco
 async def check_capture(dsn: str) -> None:
     conn = await fresh(dsn, 1)
     await conn.execute(
-        "CREATE TABLE items (id int PRIMARY KEY, grp int, amount numeric,"
+        "CREATE TABLE items (id int PRIMARY KEY, grp int, amount int,"
         " note text, extra text)"
     )
-    await conn.execute(TRIGGERS.format(t="items", cols="{1,2,3}"))
+    await conn.execute(TRIGGERS.format(t="items"))
 
     async def written(sql: str) -> list[asyncpg.Record]:
         await conn.execute(sql)
         return await drain(conn)
 
+    def shape(got: list[asyncpg.Record]) -> list[tuple[bool, int]]:
+        return [(row["incoming"], len(records(row["rows"]))) for row in got]
+
     got = await written(
-        "INSERT INTO items VALUES (1,1,10,'a','x'),(2,1,20,'b','x'),(3,2,'NaN','c','x')"
+        "INSERT INTO items VALUES (1,1,10,'a','x'),(2,1,20,'b','x'),(3,2,NULL,'c','x')"
     )
-    new = rows_of(got[0]["new_rows"]) if got else []
-    types = got[0]["types"] if got else None
-    nan = new[2][2] if len(new) == 3 else None
+    types = [oid for oid, _ in fields(records(got[0]["rows"])[0])] if got else None
+    amounts = numbers(got[0], 2) if got else None
     record(
         "capture/insert",
-        len(got) == 1 and len(new) == 3 and types == ["integer", "integer", "numeric"],
-        f"outbox rows {len(got)}, rows in {len(new)}, types {types}, NaN as {nan!r}",
+        shape(got) == [(True, 3)]
+        and types == [INT4, INT4, INT4, TEXT, TEXT]
+        and sorted(amounts, key=str) == [10, 20, None],
+        f"outbox rows {shape(got)}, types {types}, amounts {amounts}",
     )
-    got = await written("UPDATE items SET note = note || '!'")
-    record("capture/other-column-skips", got == [], f"outbox rows {len(got)}")
     got = await written("DELETE FROM items WHERE false")
-    record("capture/zero-rows-skips", got == [], f"outbox rows {len(got)}")
-    got = await written("UPDATE items SET amount = amount WHERE id = 1")
-    record("capture/same-value-skips", got == [], f"outbox rows {len(got)}")
+    record("capture/zero-rows-writes-nothing", got == [], f"outbox rows {shape(got)}")
+    got = await written("UPDATE items SET note = note || '!'")
+    record(
+        "capture/every-change-is-sent",
+        shape(got) == [(False, 3), (True, 3)],
+        f"outbox rows {shape(got)}",
+    )
     got = await written("UPDATE items SET amount = amount + 1 WHERE id IN (1, 2)")
-    out = rows_of(got[0]["old_rows"]) if got else []
-    into = rows_of(got[-1]["new_rows"]) if got else []
+    out = sorted(numbers(got[0], 2)) if got else None
+    into = sorted(numbers(got[-1], 2)) if got else None
     record(
         "capture/update-out-then-in",
-        len(got) == 2
-        and got[0]["new_rows"] is None
-        and len(out) == 2
-        and len(into) == 2,
-        f"outbox rows {len(got)}, out {out}, in {into}",
+        shape(got) == [(False, 2), (True, 2)] and out == [10, 20] and into == [11, 21],
+        f"outbox rows {shape(got)}, amounts out {out}, in {into}",
     )
     await conn.execute("ALTER TABLE items RENAME amount TO amt")
     got = await written("UPDATE items SET amt = amt + 1 WHERE id = 1")
-    record("capture/spec-column-renamed", len(got) == 2, f"outbox rows {len(got)}")
+    record(
+        "capture/column-renamed",
+        shape(got) == [(False, 1), (True, 1)],
+        f"outbox rows {shape(got)}",
+    )
     await conn.execute("ALTER TABLE items DROP COLUMN extra")
     await conn.execute("ALTER TABLE items ALTER note TYPE varchar(20)")
+    await conn.execute("ALTER TABLE items ADD COLUMN more int")
     got = await written("UPDATE items SET amt = amt + 1 WHERE id = 1")
+    types = [oid for oid, _ in fields(records(got[-1]["rows"])[0])] if got else None
     record(
-        "capture/other-column-dropped-retyped",
-        len(got) == 2,
-        f"outbox rows {len(got)}",
-    )
-    await conn.execute("ALTER TABLE items ALTER amt TYPE numeric(12,2)")
-    got = await written("UPDATE items SET amt = amt + 1 WHERE id = 1")
-    record(
-        "capture/spec-column-retyped",
-        len(got) == 2 and got[0]["types"][2] == "numeric(12,2)",
-        f"types {got[0]['types'] if got else None}",
+        "capture/dropped-retyped-added",
+        shape(got) == [(False, 1), (True, 1)]
+        and types == [INT4, INT4, INT4, VARCHAR, INT4],
+        f"outbox rows {shape(got)}, types {types}",
     )
     got = await written(
         "INSERT INTO items (id, grp, amt) VALUES (1, 9, 9) ON CONFLICT (id)"
         " DO UPDATE SET amt = items.amt + 1"
     )
-    record("capture/on-conflict-update", len(got) == 2, f"outbox rows {len(got)}")
-    got = await written("TRUNCATE items")
     record(
-        "capture/truncate-resets",
-        len(got) == 1 and got[0]["kind"] == 2,
-        f"kinds {[row['kind'] for row in got]}",
+        "capture/on-conflict-update",
+        shape(got) == [(False, 1), (True, 1)],
+        f"outbox rows {shape(got)}",
     )
-    await conn.execute("CREATE TABLE j (v json)")
-    await conn.execute(TRIGGERS.format(t="j", cols="{1}"))
-    try:
-        await conn.execute("INSERT INTO j VALUES ('{}')")
-        await conn.execute("UPDATE j SET v = '[]'")
-        record("capture/json-column", True, "update on a json column works")
-    except asyncpg.PostgresError as error:
-        record("capture/json-column", False, f"update on a json column: {error}")
+
+    async def skips(sql: str) -> tuple[list[tuple[bool, int]], int]:
+        before = await conn.fetchval(SKIPPED)
+        got = await written(sql)
+        return shape(got), await conn.fetchval(SKIPPED) - before
+
+    over = f"INSERT INTO items (id, grp, amt) SELECT g, 1, 1 FROM generate_series(10, {10 + ROW_CAP}) g"
+    wrote, skipped = await skips(over)
+    record(
+        "capture/over-the-row-cap-skips",
+        wrote == [] and skipped == 1,
+        f"{ROW_CAP + 1} rows: outbox rows {wrote}, skipped {skipped}",
+    )
+    wrote, skipped = await skips("DELETE FROM items WHERE id > 10")
+    record(
+        "capture/at-the-row-cap-is-sent",
+        wrote == [(False, ROW_CAP)] and skipped == 0,
+        f"{ROW_CAP} rows: outbox rows {wrote}, skipped {skipped}",
+    )
+    wrote, skipped = await skips("TRUNCATE items")
+    record(
+        "capture/truncate-skips",
+        wrote == [] and skipped == 1,
+        f"outbox rows {wrote}, skipped {skipped}",
+    )
+    await conn.execute(EXPIRED)
+    wrote, skipped = await skips("INSERT INTO items (id, grp, amt) VALUES (1, 1, 1)")
+    await conn.execute(FRESH)
+    again, none = await skips("UPDATE items SET amt = 2 WHERE id = 1")
+    record(
+        "capture/expired-sign-skips",
+        wrote == [] and skipped == 1 and again == [(False, 1), (True, 1)] and none == 0,
+        f"expired: outbox rows {wrote}, skipped {skipped}; fresh again: {again}",
+    )
     await conn.close()
 
 
@@ -267,8 +323,9 @@ async def worker(dsn: str, rng: random.Random, statements: int) -> int:
         choice = rng.random()
         if choice < 0.25:
             sql = (
-                f"INSERT INTO items VALUES ({key}, {rng.randint(1, 3)}, {rng.randint(1, 9)},"
-                f" 'n') ON CONFLICT (id) DO UPDATE SET amount = items.amount + 1"
+                f"INSERT INTO items VALUES ({key}, {rng.randint(1, 3)},"
+                f" {rng.randint(1, 9)}, 'n') ON CONFLICT (id)"
+                " DO UPDATE SET amount = items.amount + 1"
             )
         elif choice < 0.55:
             sql = f"UPDATE items SET amount = amount + {rng.randint(1, 5)} WHERE id = {key}"
@@ -287,8 +344,9 @@ async def worker(dsn: str, rng: random.Random, statements: int) -> int:
             async with conn.transaction():
                 await conn.execute(sql)
                 if rng.random() < 0.3:
+                    again = rng.randint(1, HOT_KEYS)
                     await conn.execute(
-                        f"UPDATE items SET amount = amount + 1 WHERE id = {rng.randint(1, HOT_KEYS)}"
+                        f"UPDATE items SET amount = amount + 1 WHERE id = {again}"
                     )
                 await asyncio.sleep(rng.random() * 0.002)
         except (asyncpg.DeadlockDetectedError, asyncpg.UniqueViolationError):
@@ -299,12 +357,12 @@ async def worker(dsn: str, rng: random.Random, statements: int) -> int:
 
 async def order_run(dsn: str, cache: int, seed: int) -> tuple[int, bool, int]:
     """(out rows that found nothing to take, table equals the multiset,
-    statements applied)."""
+    outbox rows applied)."""
     setup = await fresh(dsn, cache)
     await setup.execute(
         "CREATE TABLE items (id int PRIMARY KEY, grp int, amount numeric, note text)"
     )
-    await setup.execute(TRIGGERS.format(t="items", cols="{1,2,3}"))
+    await setup.execute(TRIGGERS.format(t="items"))
     rng = random.Random(seed)
     tasks = [
         asyncio.create_task(worker(db(dsn), random.Random(rng.random()), 400))
@@ -319,25 +377,26 @@ async def order_run(dsn: str, cache: int, seed: int) -> tuple[int, bool, int]:
         got = await drain(consumer)
         for row in got:
             applied += 1
-            for gone in rows_of(row["old_rows"]):
-                if held[gone] == 0:
+            for sent in records(row["rows"]):
+                if row["incoming"]:
+                    held[sent] += 1
+                elif held[sent] == 0:
                     missing += 1
                 else:
-                    held[gone] -= 1
-            for came in rows_of(row["new_rows"]):
-                held[came] += 1
+                    held[sent] -= 1
         if done and not got:
             break
         if not got:
             await asyncio.sleep(0.005)
     await asyncio.gather(*tasks)
     table = collections.Counter(
-        (decimal.Decimal(r["id"]), decimal.Decimal(r["grp"]), r["amount"])
-        for r in await consumer.fetch("SELECT id, grp, amount FROM items")
+        r["sent"]
+        for r in await consumer.fetch("SELECT record_send(i) AS sent FROM items i")
     )
+    skipped = await consumer.fetchval(SKIPPED)
     await consumer.close()
     await setup.close()
-    return missing, +held == table, applied
+    return missing, +held == table and skipped == 0, applied
 
 
 async def check_order(dsn: str, seeds: int) -> None:
@@ -369,9 +428,9 @@ async def check_lock(dsn: str) -> None:
     for cache, label in ((1, "lock"), (20, "lock/planted-cache-20")):
         setup = await fresh(dsn, cache)
         await setup.execute(
-            "CREATE TABLE items (id int PRIMARY KEY, grp int, amount numeric)"
+            "CREATE TABLE items (id int PRIMARY KEY, grp int, amount int)"
         )
-        await setup.execute(TRIGGERS.format(t="items", cols="{1,2,3}"))
+        await setup.execute(TRIGGERS.format(t="items"))
         await setup.execute("INSERT INTO items VALUES (300, 1, 0)")
         first = await asyncpg.connect(db(dsn))
         second = await asyncpg.connect(db(dsn))
@@ -387,12 +446,13 @@ async def check_lock(dsn: str) -> None:
         await wait_for_lock(setup, second.get_server_pid())
         await tx.commit()
         await later
-        got = await drain(setup)
-        order = [rows_of(row["new_rows"])[0][2] for row in got if row["new_rows"]]
-        ids = [row["id"] for row in got if row["new_rows"]]
-        right = order == [1, 2]
+        came = [row for row in await drain(setup) if row["incoming"]]
+        order = [numbers(row, 2)[0] for row in came]
+        ids = [row["id"] for row in came]
         record(
-            label, right == (cache == 1), f"ids {ids}, amounts in outbox order {order}"
+            label,
+            (order == [1, 2]) == (cache == 1),
+            f"ids {ids}, amounts in outbox order {order}",
         )
         for conn in (first, second, setup):
             await conn.close()
@@ -403,7 +463,7 @@ async def check_deferred(dsn: str) -> None:
     await setup.execute(
         "CREATE TABLE d (k int, v int, UNIQUE (k) DEFERRABLE INITIALLY DEFERRED)"
     )
-    await setup.execute(TRIGGERS.format(t="d", cols="{1,2}"))
+    await setup.execute(TRIGGERS.format(t="d"))
     await setup.execute("INSERT INTO d VALUES (1, 10)")
     await drain(setup)
     newer = await asyncpg.connect(db(dsn))
@@ -418,17 +478,13 @@ async def check_deferred(dsn: str) -> None:
     await wait_for_lock(setup, newer.get_server_pid())
     await older_tx.commit()
     await commit
-    got = await drain(setup)
     events = [
-        ("in", rows_of(r["new_rows"]))
-        if r["new_rows"]
-        else ("out", rows_of(r["old_rows"]))
-        for r in got
+        ("in" if row["incoming"] else "out", numbers(row, 0), numbers(row, 1))
+        for row in await drain(setup)
     ]
-    inverted = [event[0] for event in events] == ["in", "out"]
     record(
         "deferred/in-before-out",
-        inverted,
+        [event[0] for event in events] == ["in", "out"],
         f"outbox order {events}; a multiset still ends right, a key match sees k=1 twice",
     )
     for conn in (newer, older, setup):
@@ -437,10 +493,8 @@ async def check_deferred(dsn: str) -> None:
 
 async def check_drain(dsn: str) -> None:
     setup = await fresh(dsn, 1)
-    await setup.execute(
-        "CREATE TABLE items (id int PRIMARY KEY, grp int, amount numeric)"
-    )
-    await setup.execute(TRIGGERS.format(t="items", cols="{1,2,3}"))
+    await setup.execute("CREATE TABLE items (id int PRIMARY KEY, grp int, amount int)")
+    await setup.execute(TRIGGERS.format(t="items"))
     late = await asyncpg.connect(db(dsn))
     tx = late.transaction()
     await tx.start()
@@ -493,8 +547,8 @@ async def churn(dsn: str, seconds: float) -> dict[str, float]:
     async def produce() -> None:
         while time.monotonic() < end:
             await producer.execute(
-                "INSERT INTO straum.outbox (relid, kind, new_rows)"
-                " SELECT 1, 1, json_build_array(g, repeat('x', 200)) FROM generate_series(1, 10) g"
+                "INSERT INTO straum.outbox (relid, incoming, rows) SELECT 1, true,"
+                " convert_to(repeat('x', 200), 'UTF8') FROM generate_series(1, 10)"
             )
 
     async def consume() -> None:
@@ -507,13 +561,14 @@ async def churn(dsn: str, seconds: float) -> dict[str, float]:
     for _ in range(50):
         await consumer.fetch(DRAIN.format(limit=1000))
     plan = await consumer.fetchval(
-        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT id FROM straum.outbox ORDER BY id LIMIT 100"
+        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)"
+        " SELECT id FROM straum.outbox ORDER BY id LIMIT 100"
     )
     node = json.loads(plan)[0]["Plan"]
     await consumer.execute("SELECT pg_stat_force_next_flush()")
     await asyncio.sleep(1)
     stats = await consumer.fetchrow(
-        "SELECT n_dead_tup, n_live_tup, pg_relation_size('straum.outbox') AS heap,"
+        "SELECT n_dead_tup, pg_relation_size('straum.outbox') AS heap,"
         " pg_relation_size('straum.outbox_pkey') AS idx FROM pg_stat_all_tables"
         " WHERE relid = 'straum.outbox'::regclass"
     )
@@ -544,7 +599,7 @@ async def check_horizon(dsn: str, seconds: float) -> None:
     await tx.rollback()
     await holder.close()
     rows.append({"phase": "released", **await churn(dsn, seconds)})
-    await setup.execute("VACUUM (SKIP_LOCKED, TRUNCATE false) straum.outbox")
+    await setup.execute("VACUUM straum.outbox")
     rows.append({"phase": "after VACUUM", **await churn(dsn, 2)})
     print(tabulate.tabulate(rows, headers="keys"), flush=True)
     held = rows[1]["empty_poll_buffers"]
@@ -552,7 +607,8 @@ async def check_horizon(dsn: str, seconds: float) -> None:
     record(
         "horizon",
         held > free,
-        f"empty poll buffers free {free}, held {held}, released {rows[2]['empty_poll_buffers']},"
+        f"empty poll buffers free {free}, held {held},"
+        f" released {rows[2]['empty_poll_buffers']},"
         f" after VACUUM {rows[3]['empty_poll_buffers']}",
     )
     await setup.close()
@@ -563,17 +619,7 @@ NEW_YORK = zoneinfo.ZoneInfo("America/New_York")
 # February's trips the app writes; enough for a run of a minute or two.
 FEBRUARY_TRIPS = 300_000
 WRITERS = 8
-# The yellow_trips columns the taxi specs read; vendor_id is not one.
-READ_TRIP_COLUMNS = [
-    "pickup_at",
-    "pu_location_id",
-    "do_location_id",
-    "payment_type",
-    "fare_amount",
-    "tip_amount",
-    "trip_distance",
-]
-READ_ZONE_COLUMNS = ["location_id", "borough"]
+TABLES = ["yellow_trips", "taxi_zones"]
 INSERT_TRIPS = (
     f"INSERT INTO yellow_trips ({', '.join(COLUMNS.values())})"
     " SELECT * FROM unnest($1::int[], $2::timestamptz[], $3::int[], $4::int[],"
@@ -666,48 +712,34 @@ def batches(trips: list[tuple], rng: random.Random) -> collections.deque:
     return cut
 
 
-def hour_of(text: str | None) -> datetime.datetime | None:
-    if text is None:
-        return None
-    stamp = datetime.datetime.fromisoformat(text).astimezone(datetime.UTC)
-    return stamp.replace(minute=0, second=0, microsecond=0, tzinfo=None)
+async def tallies(conn: asyncpg.Connection) -> dict[int, list[int]]:
+    """Each table's rows, count and hash sums, by the table's OID."""
+    found = {}
+    for table in TABLES:
+        relid = await conn.fetchval("SELECT $1::regclass::oid", table)
+        row = await conn.fetchrow(TALLY.format(table=table), timeout=600)
+        found[relid] = [row["rows"], int(row["high"]), int(row["low"])]
+    return found
 
 
-async def reference_from_sql(conn: asyncpg.Connection) -> dict:
-    totals = {}
-    for row in await conn.fetch(
-        "SELECT date_trunc('hour', pickup_at AT TIME ZONE 'UTC') AS hour, payment_type,"
-        " count(*) AS trips, coalesce(sum(fare_amount), 0) AS fare"
-        " FROM yellow_trips GROUP BY 1, 2"
-    ):
-        totals[(row["hour"], row["payment_type"])] = [row["trips"], row["fare"]]
-    return totals
+def apply(totals: dict[int, list[int]], got: list[asyncpg.Record]) -> None:
+    """Takes each drained row out of, or into, its table's tally."""
+    for row in got:
+        tally = totals[row["relid"]]
+        sign = 1 if row["incoming"] else -1
+        for sent in records(row["rows"]):
+            digest = hashlib.md5(sent).digest()
+            tally[0] += sign
+            tally[1] += sign * int.from_bytes(digest[:8], "big", signed=True)
+            tally[2] += sign * int.from_bytes(digest[8:], "big", signed=True)
 
 
-def apply_trip(totals: dict, row: tuple, sign: int) -> None:
-    pickup, _, _, payment, fare = row[0], row[1], row[2], row[3], row[4]
-    key = (hour_of(pickup), None if payment is None else int(payment))
-    entry = totals.setdefault(key, [0, decimal.Decimal(0)])
-    entry[0] += sign
-    entry[1] += sign * (fare or 0)
-    if entry[0] == 0:
-        del totals[key]
-
-
-async def consume(
-    dsn: str, trips_relid: int, totals: dict, stop: asyncio.Event, state: dict
-) -> None:
+async def consume(dsn: str, totals: dict, stop: asyncio.Event, state: dict) -> None:
     conn = await asyncpg.connect(dsn)
     limit = 1000
     while True:
         got = await drain(conn, limit)
-        for row in got:
-            if row["relid"] != trips_relid:
-                continue
-            for gone in rows_of(row["old_rows"]):
-                apply_trip(totals, gone, -1)
-            for came in rows_of(row["new_rows"]):
-                apply_trip(totals, came, 1)
+        apply(totals, got)
         state["drained"] += len(got)
         limit = min(limit * 2, 20000) if len(got) == limit else max(limit // 2, 1000)
         if not got:
@@ -717,9 +749,8 @@ async def consume(
     await conn.close()
 
 
-async def watch_backlog(
-    conn: asyncpg.Connection, state: dict, stop: asyncio.Event
-) -> None:
+async def watch_backlog(dsn: str, state: dict, stop: asyncio.Event) -> None:
+    conn = await asyncpg.connect(dsn)
     while not stop.is_set():
         written = await conn.fetchval(
             "SELECT pg_sequence_last_value('straum.outbox_id_seq')"
@@ -728,6 +759,7 @@ async def watch_backlog(
             state["backlog_max"], (written or 0) - state["drained"]
         )
         await asyncio.sleep(0.5)
+    await conn.close()
 
 
 async def write(
@@ -741,24 +773,15 @@ async def write(
     correct a tip or change a vendor, each its own statement."""
     conn = await asyncpg.connect(dsn)
     statements = 0
+    tip = "UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = $1"
+    vendor = "UPDATE yellow_trips SET vendor_id = 2 WHERE id = $1"
     while queue:
         batch = queue.popleft()
-        columns = [list(column) for column in zip(*batch)]
-        work = [(INSERT_TRIPS, columns)]
+        work = [(INSERT_TRIPS, [list(column) for column in zip(*batch, strict=True)])]
         if rng.random() < 0.3:
-            work.append(
-                (
-                    "UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = $1",
-                    [rng.randint(1, top_id)],
-                )
-            )
+            work.append((tip, [rng.randint(1, top_id)]))
         if rng.random() < 0.2:
-            work.append(
-                (
-                    "UPDATE yellow_trips SET vendor_id = 2 WHERE id = $1",
-                    [rng.randint(1, top_id)],
-                )
-            )
+            work.append((vendor, [rng.randint(1, top_id)]))
         for sql, params in work:
             started = time.perf_counter()
             await conn.execute(sql, *params)
@@ -778,19 +801,16 @@ async def lsn(conn: asyncpg.Connection) -> str:
 async def relations(conn: asyncpg.Connection, tables: list[str]) -> list[int]:
     """The file nodes of `tables` with their indexes, TOAST tables and
     TOAST indexes, which is where their WAL lands."""
-    return [
-        r["node"]
-        for r in await conn.fetch(
-            "SELECT pg_relation_filenode(c.oid) AS node FROM pg_class c"
-            " WHERE c.oid = ANY($1::regclass[])"
-            " OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid = ANY($1::regclass[]))"
-            " OR c.oid IN (SELECT reltoastrelid FROM pg_class WHERE oid = ANY($1::regclass[]))"
-            " OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN"
-            "  (SELECT reltoastrelid FROM pg_class WHERE oid = ANY($1::regclass[])))",
-            tables,
-        )
-        if r["node"]
-    ]
+    rows = await conn.fetch(
+        "SELECT pg_relation_filenode(c.oid) AS node FROM pg_class c"
+        " WHERE c.oid = ANY($1::regclass[])"
+        " OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid = ANY($1::regclass[]))"
+        " OR c.oid IN (SELECT reltoastrelid FROM pg_class WHERE oid = ANY($1::regclass[]))"
+        " OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN"
+        "  (SELECT reltoastrelid FROM pg_class WHERE oid = ANY($1::regclass[])))",
+        tables,
+    )
+    return [row["node"] for row in rows if row["node"]]
 
 
 async def wal_since(conn: asyncpg.Connection, start: str, triggers: bool) -> dict:
@@ -803,7 +823,7 @@ async def wal_since(conn: asyncpg.Connection, start: str, triggers: bool) -> dic
     )
     if not total:
         return {"app tables MB": 0.0, "outbox MB written": 0.0, "rest MB": 0.0}
-    app = await relations(conn, ["yellow_trips", "taxi_zones"])
+    app = await relations(conn, TABLES)
     outbox = await relations(conn, ["straum.outbox"]) if triggers else []
     rows = await conn.fetch(
         "SELECT relfilenode, sum(record_length::numeric / n) AS bytes FROM"
@@ -832,120 +852,106 @@ async def outbox_size(conn: asyncpg.Connection) -> float:
     return round(size / 2**20, 1)
 
 
-async def run_taxi(
-    base: str, trips: list[tuple], triggers: bool
-) -> tuple[list[dict], bool | None]:
-    name = "with_outbox" if triggers else "plain"
+async def copy_of_taxi(base: str, name: str, triggers: bool) -> asyncpg.Connection:
+    """A copy of the loaded trips, with or without the outbox."""
     admin = await asyncpg.connect(base + "/postgres")
     await admin.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
     await admin.execute(f"CREATE DATABASE {name} TEMPLATE taxi STRATEGY file_copy")
     await admin.close()
-    dsn = f"{base}/{name}"
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(f"{base}/{name}")
     await conn.execute("VACUUM ANALYZE")
     await conn.execute("CREATE EXTENSION pg_walinspect")
     if triggers:
-        await conn.execute(OUTBOX.format(cache=1, chunk=CHUNK_ROWS))
-        for table, columns in (
-            ("yellow_trips", READ_TRIP_COLUMNS),
-            ("taxi_zones", READ_ZONE_COLUMNS),
-        ):
-            attnums = await conn.fetchval(
-                "SELECT array_agg(attnum ORDER BY attnum)::text FROM pg_attribute"
-                " WHERE attrelid = $1::regclass AND attname = ANY($2)",
-                table,
-                columns,
-            )
-            await conn.execute(TRIGGERS.format(t=table, cols=attnums))
-    totals = await reference_from_sql(conn)
-    trips_relid = await conn.fetchval("SELECT 'yellow_trips'::regclass::oid")
+        await conn.execute(OUTBOX.format(cache=1, cap=ROW_CAP))
+        await conn.execute(FRESH)
+        for table in TABLES:
+            await conn.execute(TRIGGERS.format(t=table))
+    return conn
+
+
+async def run_taxi(base: str, trips: list[tuple], triggers: bool) -> list[dict]:
+    name = "with_outbox" if triggers else "plain"
+    conn = await copy_of_taxi(base, name, triggers)
+    dsn = f"{base}/{name}"
+    totals = await tallies(conn) if triggers else {}
     top_id = await conn.fetchval("SELECT max(id) FROM yellow_trips")
     state = {"drained": 0, "backlog_max": 0}
+    phases = []
+
+    async def phase(
+        label: str, took: float, latencies: list[float], start: str
+    ) -> dict:
+        ordered = sorted(latencies)
+        last = len(ordered) - 1
+        row = {
+            "outbox": "yes" if triggers else "no",
+            "phase": label,
+            "seconds": round(took, 2),
+            "statements": len(ordered),
+            "p50 ms": round(ordered[last // 2], 2),
+            "p99 ms": round(ordered[last * 99 // 100], 2),
+            **await wal_since(conn, start, triggers),
+        }
+        phases.append(row)
+        return row
+
     stop = asyncio.Event()
     background = []
     if triggers:
-        background.append(
-            asyncio.create_task(consume(dsn, trips_relid, totals, stop, state))
-        )
-        background.append(
-            asyncio.create_task(watch_backlog(await asyncpg.connect(dsn), state, stop))
-        )
-    phases = []
-
-    def phase(
-        label: str,
-        seconds: float,
-        statements: int,
-        latencies: list[float],
-        wal: dict,
-        size: float,
-    ) -> None:
-        ordered = sorted(latencies)
-        last = len(ordered) - 1
-        phases.append(
-            {
-                "outbox": "yes" if triggers else "no",
-                "phase": label,
-                "seconds": round(seconds, 2),
-                "statements": statements,
-                "p50 ms": round(ordered[last // 2], 2),
-                "p99 ms": round(ordered[last * 99 // 100], 2),
-                **wal,
-                "backlog max": state["backlog_max"] if triggers else "",
-                "outbox size MB": size if triggers else "",
-            }
-        )
-        print(phases[-1], flush=True)
-
+        background.append(asyncio.create_task(consume(dsn, totals, stop, state)))
+        background.append(asyncio.create_task(watch_backlog(dsn, state, stop)))
     queue = batches(trips, random.Random(7))
     latencies: list[float] = []
     start = await lsn(conn)
     started = time.perf_counter()
-    counts = await asyncio.gather(
+    await asyncio.gather(
         *[
             write(dsn, queue, top_id, random.Random(seed), latencies)
             for seed in range(WRITERS)
         ]
     )
-    phase(
-        "February written",
-        time.perf_counter() - started,
-        sum(counts),
-        latencies,
-        await wal_since(conn, start, triggers),
-        await outbox_size(conn) if triggers else 0,
+    row = await phase(
+        "February written", time.perf_counter() - started, latencies, start
     )
+    stop.set()
+    await asyncio.gather(*background)
+    if triggers:
+        row |= {"backlog max": state["backlog_max"], "reload": "no"}
+        row["outbox size MB"] = await outbox_size(conn)
+        record(
+            "taxi/february",
+            totals == await tallies(conn) and await conn.fetchval(SKIPPED) == 0,
+            f"{state['drained']} outbox rows applied; rows and hashes {totals}",
+        )
+    print(row, flush=True)
     for label, sql in BULK:
-        state["backlog_max"] = 0
+        skipped = await conn.fetchval(SKIPPED) if triggers else 0
         start = await lsn(conn)
         started = time.perf_counter()
         await conn.execute(sql, timeout=1800)
         took = time.perf_counter() - started
-        phase(
-            label,
-            took,
-            1,
-            [took * 1000],
-            await wal_since(conn, start, triggers),
-            await outbox_size(conn) if triggers else 0,
-        )
-    equal = None
+        row = await phase(label, took, [took * 1000], start)
+        if triggers:
+            reload = await conn.fetchval(SKIPPED) != skipped
+            row["outbox size MB"] = await outbox_size(conn)
+            if reload:
+                # As a start does: what the load holds goes in its snapshot.
+                async with conn.transaction(isolation="repeatable_read"):
+                    await conn.execute("DELETE FROM straum.outbox")
+                    totals = await tallies(conn)
+            else:
+                while got := await drain(conn, 1000):
+                    apply(totals, got)
+            row |= {"backlog max": "", "reload": "yes" if reload else "no"}
+        print(row, flush=True)
     if triggers:
-        start = await lsn(conn)
-        started = time.perf_counter()
-        stop.set()
-        await asyncio.gather(*background)
-        phase(
-            "outbox drained",
-            time.perf_counter() - started,
-            0,
-            [0.0],
-            await wal_since(conn, start, triggers),
-            await outbox_size(conn),
+        record(
+            "taxi/bulk",
+            totals == await tallies(conn),
+            f"rows and hashes after the bulk statements {totals}",
         )
-        equal = totals == await reference_from_sql(conn)
     await conn.close()
-    return phases, equal
+    return phases
 
 
 async def run(stack: Stack, password: str) -> int:
@@ -963,13 +969,8 @@ async def run(stack: Stack, password: str) -> int:
     print("loading January's trips", flush=True)
     load_january(stack)
     trips = february()
-    plain, _ = await run_taxi(base, trips, triggers=False)
-    outbox, equal = await run_taxi(base, trips, triggers=True)
-    record(
-        "taxi/reference",
-        bool(equal),
-        "count and fare per hour and payment type, outbox vs PostgreSQL",
-    )
+    plain = await run_taxi(base, trips, triggers=False)
+    outbox = await run_taxi(base, trips, triggers=True)
     print(tabulate.tabulate(plain + outbox, headers="keys"))
     print(
         tabulate.tabulate(
@@ -983,9 +984,8 @@ async def run(stack: Stack, password: str) -> int:
 
 def main() -> int:
     password = secrets.token_hex(16)
-    # Sized as a small server would be; everything else stays default,
-    # checkpoints and autovacuum included, as a production server runs.
-    # wal_keep_size only keeps each phase's WAL until it is read back.
+    # Sized as a small server would be, the rest as a server runs by
+    # default. wal_keep_size keeps each phase's WAL until it is read back.
     settings = {"shared_buffers": "2GB", "wal_keep_size": "8GB"}
     services = {
         POSTGRES: postgres_service(POSTGRES_IMAGE, password, settings, shm_size="1g")
