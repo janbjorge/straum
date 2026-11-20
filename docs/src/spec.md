@@ -1,10 +1,10 @@
 # Spec
 
 A spec is a file of `CREATE VIEW` statements, one per table you
-aggregate, in a small subset of PostgreSQL's syntax. Its one item of
-Straum's own is `buckets(...)`, the view's time, which PostgreSQL
-writes as `date_bin` ([Time](#time)); written so, PostgreSQL gives the
-same rows for each view. Nothing in the spec runs in PostgreSQL:
+aggregate, in a small subset of PostgreSQL's syntax. The one item of
+Straum's own is `buckets(...)`, the view's time ([Time](#time)).
+Written as `date_bin` instead, each view gives the same rows in
+PostgreSQL. Nothing in the spec runs in PostgreSQL:
 Straum never creates the view, and loads it by copying only the
 columns it reads.
 
@@ -182,7 +182,8 @@ date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
 `date_bin` in a spec is refused, naming the `buckets` item to write.
 
 An ask over a long range reads its middle from the widest buckets that
-fit and its ends from narrower ones: far fewer cells, the same answer
+fit and its ends from narrower ones, so it reads far fewer cells and
+gets the same answer
 ([How Straum works](how-it-works.md#answering-an-ask)). A wider width
 also lets an ask answer [a row per day or
 week](asks.md#rows-a-day-or-a-week-apart), one stored bucket a row.
@@ -219,7 +220,7 @@ A join points from a column of the fact, or of a dim already joined,
 to the key of a dim. The dim columns the view selects, here
 `a.region AS region`, are keys read as the dim is now: an account
 moved from `eu` to `us` moves all its events to `us` in the next
-answer, as PostgreSQL's view would, and nothing stops
+answer, as PostgreSQL's view would, and Straum keeps running
 ([Dims](how-it-works.md#dims)). The join itself has no value: asks
 group and filter by `region` or `account_id`, never by `a`.
 
