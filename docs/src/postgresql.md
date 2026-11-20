@@ -35,11 +35,12 @@ both.
 
 ## 1. Run the setup SQL
 
-`straum plan FILE --wal logical` or `--wal physical` prints the setup.
-The role is the user of the data source name (DSN) when one is set
-([Connect](#2-connect)), else `straum`, or `--role NAME`. Its password
-goes in as a SCRAM-SHA-256 verifier, so neither the SQL nor the
-server's log holds it. For `usage` with logical decoding:
+`straum plan` prints the SQL. Run it once, as an owner of the tables;
+its comments mark the lines a superuser runs. For `usage`:
+
+```sh
+straum plan usage.sql --wal logical
+```
 
 ```sql
 -- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
@@ -47,7 +48,8 @@ server's log holds it. For `usage` with logical decoding:
 ALTER SYSTEM SET wal_level = logical;
 -- A superuser creates the role Straum connects as.
 -- REPLICATION is a privilege of that role, not another user.
-CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
+CREATE ROLE "straum" LOGIN REPLICATION;
+-- Then give "straum" a password: \password "straum"
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
 -- If a policy of row-level security hides rows of a table, a superuser runs:
@@ -59,17 +61,16 @@ ALTER TABLE "public"."events" REPLICA IDENTITY FULL;
 ALTER TABLE "public"."accounts" REPLICA IDENTITY FULL;
 ```
 
-`--publication NAME` picks another name; give `straum run` the same
-one. Straum never asks for `FOR ALL TABLES`, which needs a superuser.
-
-With `--wal physical`, the `ALTER SYSTEM`, the publication and
-`REPLICA IDENTITY` go, since the pages hold the old row. One line
-comes in:
+With `--wal physical`, the `ALTER SYSTEM`, publication and `REPLICA
+IDENTITY` lines go, and one comes in:
 
 ```sql
 -- Lets Straum start without waiting for the next checkpoint; a superuser grants it.
 GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO "straum";
 ```
+
+[`straum plan`](cli.md#straum-plan) lists its flags, such as `--role`
+and `--publication`.
 
 ### Managed services
 
@@ -113,8 +114,8 @@ stream](how-it-works.md#the-physical-stream) says why.
 
 ## 2. Connect
 
-Straum reads its DSN from a file named by `--dsn-file`, else from
-`STRAUM_DSN`, never from the command line:
+Straum reads its data source name (DSN) from a file named by
+`--dsn-file`, else from `STRAUM_DSN`, never from the command line:
 
 ```text
 postgres://straum:PASSWORD@db.example.com:5432/app
