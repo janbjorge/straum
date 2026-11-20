@@ -170,3 +170,7 @@ change.
   first uses it.
 - Use `git --no-pager`. Don't read `bench/data/` or `target/`.
 - Wrap markdown at about 78 columns. No em dashes.
+- Docs don't explain tools or syntax a developer knows (shell, SQL,
+  HTTP, Compose). A domain acronym is spelled out at its first use on
+  each page: "write-ahead log (WAL)". Common ones (SQL, HTTP, JSON,
+  URL, TLS) are not.
