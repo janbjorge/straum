@@ -391,6 +391,7 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
         assert!(Instant::now() < deadline, "the setting never came");
         thread::sleep(Duration::from_millis(20));
     }
+    checkpointer_reads_the_setting(&mut db);
     let committing = thread::spawn(move || held.execute("COMMIT").unwrap());
     while db
         .rows("SELECT 1 FROM pg_stat_activity WHERE wait_event = 'SyncRep'")
@@ -520,6 +521,7 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
         assert!(Instant::now() < deadline, "the setting never came");
         thread::sleep(Duration::from_millis(20));
     }
+    checkpointer_reads_the_setting(&mut db);
     let alter = thread::spawn(move || {
         altering.run("ALTER TABLE $S.trips ADD late text DEFAULT 'late'");
     });
@@ -588,6 +590,17 @@ fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
     let layouts = read_layouts_seeing(&mut connection, &checked, xid, wait).unwrap();
     let columns = &layouts.tables[0].relation.columns;
     assert_eq!(columns.last().unwrap().name, "later");
+}
+
+/// Returns once the checkpointer has read the configuration reloaded
+/// before: only then does a commit wait for a synchronous standby
+/// (`SyncRepWaitForLSN` in `syncrep.c`), whatever a session's `SHOW`
+/// says. A checkpoint requested after the reload starts only once the
+/// checkpointer has read it; the second rules out joining one that was
+/// already starting.
+fn checkpointer_reads_the_setting(db: &mut Db) {
+    db.run("CHECKPOINT");
+    db.run("CHECKPOINT");
 }
 
 /// Waits until `query` returns a row.
