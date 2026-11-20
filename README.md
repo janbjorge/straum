@@ -37,15 +37,14 @@ PostgreSQL.
 ## Try it
 
 One command starts PostgreSQL, loads a month of taxi trips, starts
-Straum and opens its shell. Needs Docker and bash or zsh.
+Straum and opens its shell
+([quick start](https://janbjorge.github.io/straum/quick-start.html)).
+Needs Docker and bash or zsh.
 
 ```bash
 docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/quick-start.yaml) \
   run --rm shell
 ```
-
-The [quick start](https://janbjorge.github.io/straum/quick-start.html)
-walks through it.
 
 ## What you write
 
@@ -111,11 +110,9 @@ physical` reads the write-ahead log (WAL) a server you run already
 writes; RDS, Aurora and Cloud SQL do not hand out that stream
 ([setup](https://janbjorge.github.io/straum/postgresql.html)).
 
-Straum keeps nothing on disk. Every start loads the tables again, and a
-crash leaves no slot behind holding WAL.
-
-Straum is not a SQL engine, a replica or a cache. It answers only what
-its spec declares.
+Straum keeps nothing on disk: every start loads the tables again, and a
+crash leaves no slot behind holding WAL. It is not a SQL engine, a
+replica or a cache, and answers only what its spec declares.
 
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
