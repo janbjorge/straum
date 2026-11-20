@@ -74,7 +74,8 @@ and `--publication`.
 
 ### Managed services
 
-For logical decoding on 17 and 18, set the provider's parameter
+On a service that doesn't give out the physical stream, logical
+decoding is the only one. On 17 and 18, set the provider's parameter
 instead of `ALTER SYSTEM`, then restart there:
 
 | Service | Setting |
@@ -82,9 +83,7 @@ instead of `ALTER SYSTEM`, then restart there:
 | Amazon RDS and Aurora | [`rds.logical_replication = 1`](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.FeatureSupport.LogicalReplication.html) |
 | Google Cloud SQL | [`cloudsql.logical_decoding = on`](https://docs.cloud.google.com/sql/docs/postgres/replication/configure-logical-replication) |
 | Google AlloyDB | [`alloydb.logical_decoding = on`](https://docs.cloud.google.com/alloydb/docs/reference/database-flags) |
-| Azure Database for PostgreSQL | [`wal_level = logical`](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-logical) |
-| Neon | [Enable logical replication](https://neon.com/docs/guides/logical-replication-neon); it can't be turned off again |
-| Crunchy Bridge | [Logical replication is enabled by default](https://docs.crunchybridge.com/how-to/logical-replication) |
+| Neon | [Enable logical replication](https://neon.com/docs/guides/logical-replication-neon) |
 
 Some of those grant replication through a role of their own, such as
 [`rds_replication`](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.FeatureSupport.LogicalReplication.html)
