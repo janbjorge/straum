@@ -157,41 +157,38 @@ their own. They leave the type and values as they were.
 
 ## The physical stream
 
-`--wal physical` skips logical decoding (architecture decision record
-ADR-0008). A temporary physical slot streams the WAL from the last
-checkpoint's redo point, and Straum turns it into the messages the
-logical stream sends, so one decoder serves both.
+Without logical decoding, the WAL holds pages, not rows. A record says
+which bytes changed in which slot of which page, and only the page
+holds the rest of the row. So `--wal physical` (architecture decision
+record ADR-0008) keeps the pages itself. A temporary physical slot
+streams the WAL from the last checkpoint's redo point. The first change
+to a page after a checkpoint logs a full image of it, which gives
+Straum the page's rows, and each later record on that page applies to
+Straum's copy, as PostgreSQL's own redo does.
 
-Most records name only other tables' pages, so Straum reads their block
-headers and passes them by. Each record it does read, it checks against
-its CRC-32C checksum. The first change to a page after a checkpoint
-carries a full image of that page. From
-there Straum keeps the rows of each spec-table page and applies the inserts,
-updates, deletes, pruning and vacuuming that follow, as PostgreSQL's own redo
-does. A delete names only a slot on the page, and an update may log only the
-bytes that changed, because the page holds the rest.
+![Straum keeps the pages it reads, so a record becomes a row](diagrams/physical.svg)
 
-Changes wait per transaction until its commit record, then go in WAL order.
-An abort drops them. Row bytes become the same values the load reads, and
-the old row of an update or delete is whole, as under `REPLICA IDENTITY FULL`.
+*A record names a page and the bytes that changed. Straum's copy of the
+page holds the rest of the row.*
 
-The load and the stream meet here. Straum waits until every transaction open
-at start has ended, takes the load's snapshot, drops the commits that
-snapshot saw, and streams the rest. PostgreSQL logs a commit before snapshots
-see it, so Straum takes the snapshot again until every commit it read is in
-the load. While the load runs, the stream keeps reading until 64 commits or
-200,000 changes wait for the writer, then holds its place and answers the
-server.
+Straum passes records of other tables by from their headers, and checks
+each record it reads against its CRC-32C checksum. A transaction's
+changes wait for its commit record, then go to the writer as the same
+messages the logical stream sends, so one decoder serves both. An abort
+drops them.
 
-Pages are held for about one checkpoint cycle: each is dropped at the next
-checkpoint record whose redo point is past its last change, since PostgreSQL
-logs it whole the next time. Straum stops once the pages and the changes
-waiting for their commit pass `--max-page-memory`.
+The load meets the stream by transaction, not by WAL position. Straum
+waits until every transaction open at start has ended, takes the
+load's snapshot, and drops the commits that snapshot saw. PostgreSQL
+logs a commit before snapshots see it, so Straum takes the snapshot
+again until every commit it has read is in the load.
 
-A commit that changes a table's catalog entry makes Straum read the table's
-columns again, in a snapshot that sees the commit. It waits up to 10 s, then
-stops. A table that is truncated or rewritten, `VACUUM FULL` and `CLUSTER`
-included, stops Straum, since its pages went with the old file.
+Straum stops once its pages and the changes waiting for a commit pass
+`--max-page-memory`. A commit that changes a spec table's catalog entry
+makes Straum read the table's columns again, in a snapshot that sees
+the commit; after 10 s without one it stops. A truncate or a rewrite,
+`VACUUM FULL` and `CLUSTER` included, stops Straum, since the pages
+went with the old file.
 
 ## Answering an ask
 
