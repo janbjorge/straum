@@ -29,10 +29,12 @@ pub(crate) struct Decoder {
     transaction: Transaction,
 }
 
-/// The transaction so far, held until its Commit; `limit` bounds it,
-/// since every change here is applied under the write lock.
+/// The transaction so far, held until its Commit; `limit` bounds its
+/// rows, since every change here is applied under the write lock.
 struct Transaction {
     changes: Vec<Change>,
+    /// Rows of the spec's tables changed so far, each once.
+    rows: usize,
     limit: usize,
     /// The transaction being read, by the LSN of its commit record.
     lsn: Option<Lsn>,
@@ -54,13 +56,14 @@ struct TableIndex(usize);
 
 impl Decoder {
     /// `tables` are the spec's tables, dims and facts; `limit` is the
-    /// most changes to them one transaction may hold.
+    /// most rows of them one transaction may change.
     pub(crate) fn new(tables: Vec<Checked>, limit: usize) -> Decoder {
         Decoder {
             tables,
             relations: FastMap::default(),
             transaction: Transaction {
                 changes: Vec::new(),
+                rows: 0,
                 limit,
                 lsn: None,
             },
@@ -76,6 +79,7 @@ impl Decoder {
             }
             Message::Commit { end_lsn, committed } => {
                 self.transaction.lsn = None;
+                self.transaction.rows = 0;
                 let changes = mem::take(&mut self.transaction.changes);
                 return Ok(Some(Commit {
                     lsn: Lsn(*end_lsn),
@@ -95,13 +99,20 @@ impl Decoder {
         };
         for &relation in relations {
             // A relation outside the spec holds none of its tables.
-            for mapping in self.relations.get(&relation).into_iter().flatten() {
+            let Some(mappings) = self.relations.get(&relation) else {
+                continue;
+            };
+            if mappings.is_empty() {
+                continue;
+            }
+            self.transaction.count_row()?;
+            for mapping in mappings {
                 let table = &self.tables[mapping.table.0];
                 let change = match mapping.change(table, message)? {
                     Some(change) => change,
                     None => unfit(table, Drift::Altered),
                 };
-                self.transaction.hold(change)?;
+                self.transaction.changes.push(change);
             }
         }
         Ok(None)
@@ -171,16 +182,17 @@ impl Decoder {
 }
 
 impl Transaction {
-    /// Holds a change for the commit, or stops at the limit. The count is per
-    /// transaction, not per table: the lock is held for all of it at once.
-    fn hold(&mut self, change: Change) -> Result<(), Error> {
-        if self.changes.len() >= self.limit {
+    /// Counts one more row changed, or stops at the limit. The count is
+    /// per transaction, not per table: the lock is held for all of it at
+    /// once. A row counts once, however many tables of the spec read it.
+    fn count_row(&mut self) -> Result<(), Error> {
+        if self.rows >= self.limit {
             return Err(Error::Transaction {
                 lsn: self.lsn.unwrap_or(Lsn(0)),
                 limit: self.limit,
             });
         }
-        self.changes.push(change);
+        self.rows += 1;
         Ok(())
     }
 }
@@ -334,7 +346,7 @@ mod tests {
     const TEXT: u32 = 25;
     const UUID: u32 = 2950;
     const FLOAT8: u32 = 701;
-    /// Changes a transaction may hold in these tests; the longest feeds ten.
+    /// Rows a transaction may change in these tests.
     const LIMIT: usize = 16;
 
     fn id(name: &str) -> Identifier {
@@ -721,20 +733,25 @@ mod tests {
         }
     }
 
-    /// The limit counts a transaction's changes to every fact together: each
-    /// insert here is a change to both facts.
+    /// The limit counts a transaction's rows, each once however many
+    /// facts read its table: each insert here is a change to both facts.
     #[test]
     fn a_transaction_past_the_cap_stops_the_stream() {
-        // LIMIT / 2 inserts make LIMIT changes: fine, twice over.
+        // LIMIT inserts are LIMIT rows: fine, twice over.
         let mut decoder = zones_decoder();
         for _ in 0..2 {
-            let changes = feed(&mut decoder, zones_and_inserts(LIMIT / 2)).unwrap();
-            assert_eq!(changes.len(), LIMIT);
+            let changes = feed(&mut decoder, zones_and_inserts(LIMIT)).unwrap();
+            assert_eq!(changes.len(), 2 * LIMIT);
         }
-        // One more insert is one change past the limit, in the transaction
+        // One more insert is one row past the limit, in the transaction
         // that commits at 9.
         let mut decoder = zones_decoder();
-        let error = feed(&mut decoder, zones_and_inserts(LIMIT / 2 + 1)).unwrap_err();
+        let error = feed(&mut decoder, zones_and_inserts(LIMIT + 1)).unwrap_err();
+        assert_past_the_limit(&error);
+        assert!(decoder.in_transaction());
+    }
+
+    fn assert_past_the_limit(error: &Error) {
         assert!(
             matches!(
                 error,
@@ -745,7 +762,66 @@ mod tests {
             ),
             "{error:?}"
         );
-        assert!(decoder.in_transaction());
+    }
+
+    /// `pg_class.oid` of `public.boroughs`.
+    const BOROUGHS_OID: u32 = 8;
+    /// `pg_class.oid` of `public.other`, a table outside the spec.
+    const OTHER_OID: u32 = 9;
+
+    /// `zones_decoder`, and the dim `boroughs` reading `public.boroughs`.
+    fn zones_and_boroughs_decoder() -> Decoder {
+        let mut decoder = zones_decoder();
+        decoder.tables.push(Checked {
+            oid: BOROUGHS_OID,
+            ..Checked::public("boroughs", "boroughs", &["id"], vec![ColumnType::Int])
+        });
+        decoder
+    }
+
+    /// A relation `public.<name>` of one `int4` column, `id`.
+    fn one_column(id: u32, name: &str) -> Message<'static> {
+        let mut message = relation(id, &[("id", INT4)]);
+        if let Message::Relation(relation) = &mut message {
+            relation.name = name.into();
+        }
+        message
+    }
+
+    /// `zones` inserts into `public.zones`, `boroughs` into
+    /// `public.boroughs` and LIMIT into `public.other`, with their
+    /// relations.
+    fn inserts_into_three_tables(zones: usize, boroughs: usize) -> Vec<Message<'static>> {
+        let mut messages = zones_and_inserts(zones);
+        messages.push(one_column(BOROUGHS_OID, "boroughs"));
+        messages.push(one_column(OTHER_OID, "other"));
+        for _ in 0..boroughs {
+            messages.push(Message::Insert {
+                relation: BOROUGHS_OID,
+                new: vec![Field::Text("1")],
+            });
+        }
+        for _ in 0..LIMIT {
+            messages.push(Message::Insert {
+                relation: OTHER_OID,
+                new: vec![Field::Text("1")],
+            });
+        }
+        messages
+    }
+
+    /// The count is per transaction, summed over every table of the spec
+    /// it changes; a row of a table outside the spec counts nothing.
+    #[test]
+    fn the_cap_sums_the_rows_of_every_table() {
+        let zones = LIMIT / 2;
+        let boroughs = LIMIT - zones;
+        let mut decoder = zones_and_boroughs_decoder();
+        let changes = feed(&mut decoder, inserts_into_three_tables(zones, boroughs)).unwrap();
+        assert_eq!(changes.len(), 2 * zones + boroughs);
+        let mut decoder = zones_and_boroughs_decoder();
+        let error = feed(&mut decoder, inserts_into_three_tables(zones, boroughs + 1));
+        assert_past_the_limit(&error.unwrap_err());
     }
 
     #[test]

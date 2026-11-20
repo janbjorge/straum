@@ -300,7 +300,7 @@ mod tests {
     use crate::wal::test_support::{allocations, decode};
     use crate::wal::tuple::{Attribute, Kind};
     use crate::wal::xact::tests::{
-        enum_commit, invalidating_commit, running_main, statistic_commit,
+        commit_with_subxacts, enum_commit, invalidating_commit, running_main, statistic_commit,
     };
     use crate::wal::xact::{STANDBY_RUNNING_XACTS, XACT_COMMIT, XACT_HAS_INFO};
     use crate::wal::{
@@ -339,13 +339,17 @@ mod tests {
         }
     }
 
-    fn pipeline(max_bytes: usize) -> Pipeline {
-        let checked = Checked {
+    /// A fact named `name` reading `public.t`.
+    fn reading_t(name: &str) -> Checked {
+        Checked {
             oid: TABLE_OID,
-            ..Checked::public("t", "t", &["id"], vec![ColumnType::Int])
-        };
+            ..Checked::public(name, "t", &["id"], vec![ColumnType::Int])
+        }
+    }
+
+    fn pipeline(max_bytes: usize) -> Pipeline {
         Pipeline::new(
-            vec![checked],
+            vec![reading_t("t")],
             Layouts {
                 tables: vec![table()],
                 labels: HashMap::new(),
@@ -632,8 +636,8 @@ mod tests {
         assert_eq!(made, 0, "allocations for another table's rows");
     }
 
-    /// A transaction past the limit, and rows past the bytes allowed, stop
-    /// the stream.
+    /// A transaction past the limit of 2 rows, and rows past the bytes
+    /// allowed, stop the stream.
     #[test]
     fn stops_at_its_limits() {
         let mut wal = Wal {
@@ -661,6 +665,33 @@ mod tests {
         let mut small = pipeline(100);
         let error = small.record(&wal.insert(200, 1), no_layouts).unwrap_err();
         assert!(matches!(error, Error::Memory { limit: 100, .. }), "{error}");
+
+        // A row counts once however many facts read it; a transaction's
+        // rows count together over savepoints, though no xid has 3.
+        let mut twice = pipeline(1 << 20);
+        twice.decoder = Decoder::new(vec![reading_t("t"), reading_t("u")], 2);
+        see_all(&mut twice, "1:1:").unwrap();
+        let records = [
+            wal.running(300, &[]),
+            wal.insert(300, 1),
+            wal.insert(301, 2),
+            commit_after_savepoints(&mut wal, 300, &[301]),
+        ];
+        assert_eq!(read_all(&mut twice, &records).unwrap()[0].changes.len(), 4);
+        let records = [
+            wal.insert(302, 3),
+            wal.insert(303, 4),
+            wal.insert(304, 5),
+            commit_after_savepoints(&mut wal, 302, &[303, 304]),
+        ];
+        assert_too_big(read_all(&mut twice, &records));
+    }
+
+    /// The commit of `xid` and its released savepoints' `subxacts`.
+    fn commit_after_savepoints(wal: &mut Wal, xid: u32, subxacts: &[u32]) -> Record {
+        let main = commit_with_subxacts(COMMIT_TIME, subxacts);
+        let info = XACT_COMMIT | XACT_HAS_INFO;
+        wal.record(RESOURCE_MANAGER_TRANSACTION, info, xid, main, Vec::new())
     }
 
     /// A commit that invalidates a table reads its layout again, once.

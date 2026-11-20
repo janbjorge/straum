@@ -82,7 +82,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [data source name (DSN)](postgresql.md#2-connect). |
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | `4Gi` | WAL retained for the slot before Straum stops. The [watchdog](postgresql.md#what-straum-costs-the-server) checks it every second, during loads too. |
-| `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
+| `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. A row counts once, however many views and dims read its table ([Large transactions](deploy.md#large-transactions)). |
 | `--max-page-memory BYTES` | `1Gi` | Only with `--wal physical`, else a command line error: the rows Straum may hold from the WAL, pages and open transactions' changes, before it stops. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. |
 
 It logs to stderr, each line starting `straum: `: the address it

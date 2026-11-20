@@ -340,6 +340,16 @@ pub(crate) mod tests {
         main
     }
 
+    /// The main data of a commit at `time` whose only part is the list of
+    /// its subtransactions, `subxacts`.
+    pub(crate) fn commit_with_subxacts(time: i64, subxacts: &[u32]) -> Vec<u8> {
+        let mut main = time.to_le_bytes().to_vec();
+        main.extend(HAS_SUBXACTS.to_le_bytes());
+        main.extend(u32::try_from(subxacts.len()).unwrap().to_le_bytes());
+        main.extend(words(subxacts));
+        main
+    }
+
     /// The main data of a commit at `time` whose only part is one catcache
     /// invalidation of `pg_enum`, an enum of `database` changed.
     pub(crate) fn enum_commit(time: i64, database: u32) -> Vec<u8> {

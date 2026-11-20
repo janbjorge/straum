@@ -58,7 +58,9 @@ pub(crate) struct Transactions {
     held: FastMap<TransactionId, Held>,
     /// The held changes' footprints, summed.
     bytes: usize,
-    /// The most changes one xid keeps; past it, only that it had more.
+    /// The most changes, rows, one xid keeps; past it, only that it had
+    /// more. A savepoint's xid is known as the top one's only at the
+    /// commit, so the decoder counts the whole transaction's rows then.
     limit: usize,
     start: Start,
     /// The xids of commits dropped as not whole, until the load's

@@ -100,6 +100,16 @@ straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-reta
 `straum status` says which state it is in and why
 ([Command line](cli.md#straum-status)).
 
+### Large transactions
+
+A transaction that changes more rows of the spec's tables than
+`--max-transaction-rows` ([straum run](cli.md#straum-run)) stops
+Straum, and the next start loads those rows through the bulk `COPY`.
+Every replica reads the same transaction, so every one stops and loads
+again at once. Batch a backfill or bulk update into transactions under
+the limit, or raise the limit and pay what
+[Transactions](performance.md#transactions) measures.
+
 ## Kubernetes
 
 The chart is

@@ -1,6 +1,6 @@
 # ADR-0009: A change that can't apply stops Straum
 
-Status: Accepted 2026-11-10; revised 2026-11-19
+Status: Accepted 2026-11-10; revised 2026-11-20
 
 ## Context
 
@@ -23,8 +23,11 @@ doubling to 60 s, was dropped on 2026-11-17: each failure left state to
 reset by hand, and every supervisor already restarts with a backoff of
 its own. A writer whose step failed takes no more steps, and `/status`
 dropped the starts, failures and last failure it kept across starts.
-`--max-transaction-rows` (100000) caps the changes a transaction may
-hold, a default measured by `bench/taxi.py transactions`. Past
+`--max-transaction-rows` (100000) caps the rows of the spec's tables
+a transaction may change, a default measured by `bench/taxi.py
+transactions`. A row counts once, however many views and dims read its
+table; counting a change per view stopped a spec with two views over
+one table at half the rows the flag names. Past
 `--max-retained-wal` (4Gi) Straum stops too, since Azure fixes
 `max_slot_wal_keep_size` at `-1`. A value Straum can't read (`NaN`,
 an overflowing numeric, non-UTF-8 text) fails the load naming table
