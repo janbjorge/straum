@@ -1,6 +1,6 @@
 # Quick start
 
-Does Straum work? One command runs it and PostgreSQL 18 in Docker on
+To see Straum work, one command runs it and PostgreSQL 18 in Docker on
 one month of New York taxi trips: the Taxi and Limousine Commission
 (TLC) yellow trips for January 2024, 2,964,624 of them, and the 265
 taxi zones. It ends in Straum's shell, where you ask, change the data
