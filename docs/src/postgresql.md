@@ -265,9 +265,8 @@ Each load's snapshot holds back vacuum for the whole database and
 makes `ALTER TABLE` on its tables wait. Straum ends it right after the
 last table loads.
 
-Nothing stays after Straum is gone. The slot is temporary, so
-PostgreSQL drops it when the connection closes, crashes and deleted
-pods included. It does not move to a standby, so after a failover the
-next start loads from the new primary.
+The slot is temporary, so PostgreSQL drops it when the connection
+closes, crashes and deleted pods included. It does not move to a
+standby, so after a failover the next start loads from the new primary.
 
 Next: [Deploying Straum](deploy.md), to run it next to your apps.
