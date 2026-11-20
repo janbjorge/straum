@@ -30,23 +30,21 @@ A byte count may end in `Ki`, `Mi`, `Gi` or `Ti`, powers of 1024.
 
 ## Reaching a running Straum
 
-`status`, `views`, `ask` and `shell` talk to a running Straum. Both
-flags below work on all four.
+`status`, `views`, `ask` and `shell` take these flags.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--url URL` | `STRAUM_URL`, else `http://127.0.0.1:8080` | Where Straum serves HTTP, as `http://HOST:PORT`. An empty `STRAUM_URL` counts as unset. |
 | `--timeout SECONDS` | `10` | How long each request may take, from 1 to 86400. |
 
-The URL is where Straum listens, reached directly: plain HTTP, no TLS,
-and no proxy that rewrites the reply into chunks, which the client
-refuses. When nothing answers there, the error says so and ends with
-`try: --url URL, or set STRAUM_URL`.
+The URL reaches Straum directly: plain HTTP, no TLS, and no proxy that
+rewrites the reply into chunks, which the client refuses. When nothing
+answers, the error ends with `try: --url URL, or set STRAUM_URL`.
 
-Connecting, sending and reading the reply share one `--timeout` wait.
-A byte that arrives inside the wait does not start it again. The shell reads
-the views before each prompt, so each prompt may wait that long on a
-Straum that has stopped answering.
+Connecting, sending and reading share one `--timeout` wait; a byte
+that arrives does not restart it. The shell reads the views before
+each prompt, so each prompt may wait that long on a Straum that has
+stopped answering.
 
 ## Exit status
 
@@ -57,16 +55,15 @@ Straum that has stopped answering.
 | 2 | The command line is wrong; `straum` alone prints the help and exits with 2 too. |
 | 3 | Straum is not ready yet. |
 
-3 comes from `status` while `/readyz` answers 503: Straum is loading,
-or further behind PostgreSQL than `--max-lag`. It comes from `views`
-and `ask` while Straum is loading; a Straum that lags still answers
-asks. A script waits on 3 and asks again; the other failures need a
-change first.
+`status` exits with 3 while `/readyz` answers 503: Straum is loading,
+or further behind PostgreSQL than `--max-lag`. `views` and `ask` exit
+with 3 only while it loads; a Straum that lags still answers. A script
+waits on 3 and tries again; the other failures need a change first.
 
-On a pipe, `straum shell` goes on past a failed command, including one
-that met a Straum not ready, and exits with 1 if any failed. `straum run` exits with 1 on any
-failure to load or follow, for whatever runs it to start it again
-([States](deploy.md#states)).
+On a pipe, `straum shell` goes on past a failed command, one that met
+a Straum not ready included, and exits with 1 if any failed. `straum
+run` exits with 1 on any failure to load or follow, for whatever runs
+it to start it again ([States](deploy.md#states)).
 
 ## straum run
 
@@ -88,16 +85,16 @@ changes and answers [asks](asks.md) over HTTP.
 | `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
 | `--max-page-memory BYTES` | `1Gi` | Only with `--wal physical`, else a command line error: the rows Straum may hold from the WAL, pages and open transactions' changes, before it stops. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. |
 
-It logs to stderr, each line starting `straum: `. A start logs the
-address it listens on, the stream it opened, each table as it finishes
-loading, with how long it took, and then that it streams. A failure
-logs what went wrong, a line per problem, and exits with 1. A failed
-connection names the host and port it tried, as does a server that
-sends nothing for 10 s while the connection starts.
+It logs to stderr, each line starting `straum: `: the address it
+listens on, the stream it opened, each table as it finishes loading
+with how long it took, then that it streams. A failure logs a line per
+problem and exits with 1. A failed connection names the host and port
+it tried, as does a server that sends nothing for 10 s while the
+connection starts.
 
-SIGTERM or SIGINT stops it. It stops accepting, finishes the asks in
-flight for at most 10 seconds, and exits; PostgreSQL drops the slot as
-the connection closes. A second signal exits at once.
+On SIGTERM or SIGINT it stops accepting, finishes the asks in flight
+for at most 10 seconds and exits; PostgreSQL drops the slot as the
+connection closes. A second signal exits at once.
 
 ## straum plan
 
@@ -108,8 +105,8 @@ straum plan FILE... --tables
 ```
 
 Prints the [setup SQL](postgresql.md#1-run-the-setup-sql) for the spec
-in `FILE`, or what is wrong with the spec and exits with 1. `--copy`
-and `--tables` take several specs. A table two of them read comes once,
+in `FILE`, or what is wrong with it and exits with 1. `--copy` and
+`--tables` take several specs; a table two of them read comes once,
 with the columns both read.
 
 | Flag | Default | Meaning |
@@ -127,7 +124,7 @@ with the columns both read.
 ### Copying the tables
 
 `--copy DIR` writes two psql scripts into `DIR`, made if missing, and
-prints their paths and the psql commands that run them. Straum reads no
+prints their paths and the commands that run them. Straum reads no
 database; psql connects, with any sign-in libpq takes.
 
 ```sh
@@ -136,10 +133,9 @@ psql "$SOURCE" -f copy/export.sql
 psql "$DESTINATION" -f copy/load.sql
 ```
 
-`export.sql` runs in one read-only repeatable-read transaction and
-writes nothing on the source.
-It needs `SELECT` on the columns the specs read, and nothing on their
-sequences.
+`export.sql` runs in one read-only repeatable-read transaction, writes
+nothing on the source, and needs `SELECT` on the columns the specs
+read, nothing on their sequences.
 
 1. It checks every column and stops, naming each one it can't copy: a
    table or column the source lacks, one the role can't read, or a type
@@ -153,9 +149,8 @@ sequences.
 `load.sql` creates the tables and loads the CSVs in one transaction,
 then runs `ANALYZE`. Indexes, keys and defaults are left behind.
 
-Both scripts print each table as they reach it. The first error stops
-either script, and psql exits with 3. `-v dir=PATH` points them at
-another directory.
+Both print each table as they reach it. The first error stops either,
+and psql exits with 3. `-v dir=PATH` points them at another directory.
 
 ## straum status
 
@@ -174,28 +169,27 @@ lag:          0.0 s, at most 30 s
 WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
 ```
 
-- `ready`: `yes`, or `no` and why, as `/readyz` says.
-- `applied`: the last commit applied and when it committed.
-- `as of`: the same `as_of` answers carry. It keeps moving while the
-  database is quiet.
-- `lag` and `WAL retained`: against `--max-lag` and
-  `--max-retained-wal`.
+| Line | Shows |
+| --- | --- |
+| `ready` | `yes`, or `no` and why, as `/readyz` says. |
+| `applied` | The last commit applied and when it committed. |
+| `as of` | The `as_of` answers carry. It keeps moving while the database is quiet. |
+| `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
 
 A failure ends the process (architecture decision record ADR-0009), so
-the status keeps no count of starts or failures: whatever runs Straum
-counts its restarts, and the log of the run that stopped says why.
+the status counts no starts or failures: whatever runs Straum counts
+its restarts, and the log of the run that stopped says why.
 
-It exits with 3 while `ready` is no, as `/readyz` answers 503, so a
-script can wait for Straum:
+It exits with 3 while `ready` is no, so a script can wait for Straum:
 
 ```sh
 until straum status > /dev/null; do sleep 1; done
 ```
 
-`--json` prints the same facts as one JSON object, null where unknown:
-the body `GET /status` sends with `Accept: application/json`
-([endpoints](asks.md#endpoints)). The layout of the lines may change,
-so a script reads the JSON:
+`--json` prints the same facts as one JSON object, null where unknown,
+as `GET /status` sends with `Accept: application/json`
+([endpoints](asks.md#endpoints)). The lines' layout may change, so a
+script reads the JSON:
 
 ```sh
 straum status --json | jq -e .ready
@@ -223,24 +217,21 @@ dim public.taxi_zones
   asked as: trips.borough
 ```
 
-- `buckets`: the bucket widths the view keeps.
-- `holds`: the [cells](how-it-works.md#cells) at the narrowest width,
-  and the bound cells of a view that keeps them. Then the range of its
-  buckets, which an ask without bounds reads. A few trips in the month
-  carry a wrong year, hence the range from 2003.
-- `keys`: every name an ask may group or filter by, each with the type
-  a parameter for it must have.
-- `measures`: the names an ask may select after the keys.
-- `asked as`: the keys of the views that read a dim's columns. An ask
-  names a view, never a dim, so it reads the dim through these.
+| Line | Shows |
+| --- | --- |
+| `buckets` | The bucket widths the view keeps. |
+| `holds` | The [cells](how-it-works.md#cells) at the narrowest width, and the bound cells of a view that keeps them; then the range of its buckets, which an ask without bounds reads. A few trips in the month carry a wrong year, hence 2003. |
+| `keys` | Every name an ask may group or filter by, with the type a parameter for it must have. |
+| `measures` | The names an ask may select after the keys. |
+| `asked as` | The keys of the views that read a dim's columns. An ask names a view, never a dim, so it reads the dim through these. |
 
 Until every table is loaded it prints `not ready: ` and why, and exits
 with 3.
 
 `--json` prints each view's keys with their types, the name of its
-time, its measures and the range of buckets it holds: the body `GET
-/views` sends with `Accept: application/json`. It leaves out the cells
-and the dims.
+time, its measures and the range of buckets it holds, as `GET /views`
+sends with `Accept: application/json`. It leaves out the cells and the
+dims.
 
 ## straum ask
 
@@ -249,10 +240,9 @@ straum ask [--url URL] [--timeout SECONDS] [--json] QUERY [PARAMETER...]
 ```
 
 Sends `QUERY` to the Straum at `--url` and prints the answer as a
-table. The words after the query are the values of `$1`, `$2` and on.
-Flags go before the query; every word after it is a parameter, `-h`
-and negative numbers included. A query that starts with `-` follows a
-`--`.
+table. Flags go before the query. Every word after it is a parameter,
+the value of `$1`, `$2` and on, `-h` and negative numbers included. A
+query that starts with `-` follows a `--`.
 
 ```text
 $ straum ask 'SELECT borough, trips, fare, avg_fare
@@ -271,17 +261,16 @@ Unknown       |   527 |    9738.86 |  18.47981
 8 rows, as of 2026-11-13T07:52:57.7760555Z
 ```
 
-The table holds what the [JSON answer](asks.md#the-answer) holds:
-values print the same, text without its quotes, a null as `null`. In
-text, a backslash and each control character print as JSON writes them,
-`\\`, `\n` or `\u001b`, so data can't break a line of the table or
-reach the terminal as an escape sequence. The text `null` prints as
-`\null`, so it differs from a null.
+The table holds what the [JSON answer](asks.md#the-answer) holds, text
+without its quotes and a null as `null`. In text, a backslash and each
+control character print as JSON writes them, `\\`, `\n` or `\u001b`, so
+data can't break a table line or reach the terminal as an escape
+sequence. The text `null` prints as `\null`.
 
-`--json` prints that JSON answer itself, for a script. Errors go to
-stderr either way: a line naming the URL and the reply's status, then
-the reply as Straum sent it, `{"errors": [...]}` with `--json`.
-stdout stays empty.
+`--json` prints the JSON answer itself. Errors go to stderr either
+way, and stdout stays empty: a line naming the URL and the reply's
+status, then the reply as Straum sent it, `{"errors": [...]}` with
+`--json`.
 
 A parameter's type is read from how it is written:
 
@@ -338,11 +327,12 @@ Time: 1.728 ms (in Straum: parse 0.370, answer 0.208, text 0.133, total 0.763)
 ### Entering a command
 
 A command that starts with `\` is one line and runs at Enter. An ask
-may take several lines, so a query pasted as it was written works. It
-ends at the line that holds its semicolon, so its parameters go on that
-line. Without a semicolon, Enter starts another line of the ask, and a
-blank line sends it with no parameters. The semicolon is the shell's:
-it never reaches Straum, which refuses one at the end of an ask.
+may take several lines, so a pasted query works. It ends at the line
+holding its semicolon, so its parameters go on that line. Without
+one, Enter starts another line, and a blank line sends the ask with no
+parameters. The semicolon is the
+shell's: it never reaches Straum, which refuses one at the end of an
+ask.
 
 ```text
 straum> SELECT payment_type, trips
@@ -356,68 +346,64 @@ runs, Ctrl-C ends the shell; the commands entered are still kept.
 
 ### Paging with \rows
 
-`\rows` pages through a view: rows count from 0, and a negative
-`START` counts back from the end. `\rows trips 1000 50` prints rows 1000
-to 1049, `\rows trips -20` the last 20. A `START` past either end is
-held at it. The last line says how many rows the view has and, past
-the first, from which row they print.
-
-`\rows` reads every cell of the view, whichever rows it prints, so on a
-large view it takes as long as an ask over all its buckets.
+Rows count from 0, and a negative `START` counts back from the end:
+`\rows trips 1000 50` prints rows 1000 to 1049, `\rows trips -20` the
+last 20. A `START` past either end is held at it. The last line says
+how many rows the view has and, past the first, from which row they
+print. `\rows` reads every cell of the view whichever rows it prints,
+so on a large view it takes as long as an ask over all its buckets.
 
 ### Timing
 
-At a terminal an ask and `\rows` end in a line that says how long they
-took, in milliseconds. `Time` is the whole request as the shell
-measured it, from connecting to the last byte of the reply. In the
-parentheses is the reply's [`Server-Timing`](asks.md#the-answer)
-header, the time in Straum: reading the ask, answering it, writing the
-table, and `total` for all of it. `\rows` sends no ask to read, so its
-`parse` is 0. A command that fails is not timed.
+At a terminal an ask and `\rows` end in a line of milliseconds. `Time`
+is the whole request as the shell measured it, from connecting to the
+reply's last byte. The parentheses hold the reply's
+[`Server-Timing`](asks.md#the-answer) header, the time in Straum:
+reading the ask, answering it, writing the table, and `total`. `\rows`
+sends no ask to read, so its `parse` is 0. A failed command is not
+timed.
 
 ### Completion and history
 
 At a terminal, Tab completes by where the cursor is:
 
-- after `SELECT`: keys and measures;
-- after `FROM`, `\d` or `\rows`: views;
-- after `WHERE` or `AND`: a whole condition with the next free
-  parameter;
-- after `HAVING`: a selected measure, then a comparison;
-- past the semicolon: the start or end of the buckets held.
+| After | Completes |
+| --- | --- |
+| `SELECT` | Keys and measures. |
+| `FROM`, `\d`, `\rows` | Views. |
+| `WHERE`, `AND` | A whole condition with the next free parameter. |
+| `HAVING` | A selected measure, then a comparison. |
+| The semicolon | The start or end of the buckets held. |
 
 Tab and the dimmed hint read every line of the ask up to the cursor,
-so `FROM` on one line still offers views at the start of the next.
-Completion offers what is likely next; Straum still checks the ask. A
-completed word ends in a space. Where the candidates differ, the first
-Tab lists them.
+so `FROM` on one line still offers views on the next. Completion
+offers what is likely next; Straum still checks the ask. A completed
+word ends in a space. Where the candidates differ, the first Tab lists
+them.
 
-The commands entered are kept, each as it is entered, in
+Each command is kept as it is entered, in
 `$XDG_STATE_HOME/straum/history` when that variable holds an absolute
 path, else in `~/.local/state/straum/history`. Without a home
-directory, as in the image, they are not kept. The last command entered
-that starts as the one being typed shows dimmed past the cursor, and
-the right arrow takes it; with none, a dimmed hint says what the next
-parameter is. Ctrl-R searches the commands entered. `NO_COLOR` turns
-off the dimming.
+directory, as in the image, none is kept. The last command that starts
+as the one being typed shows dimmed past the cursor, and the right
+arrow takes it; with none, a dimmed hint names the next parameter.
+Ctrl-R searches the history. `NO_COLOR` turns off the dimming.
 
 ### On a pipe
 
-With its input or its output anywhere but a terminal, the shell prints
-no prompt, completes nothing and times nothing. A script can drive it
-and gets the same output each run:
+With its input or output anywhere but a terminal, the shell prints no
+prompt, completes nothing and times nothing, so a script gets the same
+output each run:
 
 ```sh
 printf '%s\n' '\d' '\rows trips' | straum shell
 ```
 
-An ask takes lines there as at a terminal, and the end of input ends
-one too. A file of asks written over several lines, with a blank line
-or a semicolon after each, reads as it would when typed.
-
-Answers go to stdout. A command that fails says why on stderr and the
-next is read, as in psql. If any failed, the shell exits with 1 after
-the last, saying how many commands failed.
+An ask takes lines as at a terminal, and the end of input ends one
+too, so a file of asks with a blank line or a semicolon after each
+reads as typed. Answers go to stdout. A failed command says why on
+stderr and the next is read, as in psql. If any failed, the shell
+exits with 1 after the last, saying how many.
 
 ## straum version
 
