@@ -3,7 +3,7 @@
 //! major in `fixtures/`. A test applies the records to a [`Heap`] and
 //! checks the rows it holds are the ones selected, so a layout read at a
 //! wrong offset fails without a server. `capture_heap_fixture` in
-//! `tests/records.rs` writes them. Each file is little-endian: the
+//! `tests/heap_fixtures.rs` writes them. Each file is little-endian: the
 //! table's relation file (three `u32`), the major, the record count, each
 //! record as its LSN, end and length then its bytes, the row count, and
 //! each row as its `id` and the length and bytes of its `body`.
