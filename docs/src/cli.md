@@ -140,7 +140,7 @@ read, nothing on their sequences.
 1. It checks every column and stops, naming each one it can't copy: a
    table or column the source lacks, one the role can't read, or a type
    that is neither built in nor an enum. A table a row security policy
-   would filter stops it too, rather than lose rows.
+   would filter stops it too, since its copy would miss rows.
 2. It writes `schema.sql`: the schemas, the enums and the tables, with
    only those columns. A domain becomes its base type.
 3. It writes one CSV per table, `schema.table.csv`, with a header. A
@@ -330,9 +330,8 @@ A command that starts with `\` is one line and runs at Enter. An ask
 may take several lines, so a pasted query works. It ends at the line
 holding its semicolon, so its parameters go on that line. Without
 one, Enter starts another line, and a blank line sends the ask with no
-parameters. The semicolon is the
-shell's: it never reaches Straum, which refuses one at the end of an
-ask.
+parameters. The semicolon is the shell's: it never reaches Straum,
+which refuses one at the end of an ask.
 
 ```text
 straum> SELECT payment_type, trips
