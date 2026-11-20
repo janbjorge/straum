@@ -1,6 +1,6 @@
 # ADR-0001: Decisions are recorded by subject
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-20
 
 ## Context
 
@@ -35,5 +35,3 @@ subject splits or the detail moves to a guide page.
 - A decision's history is `git log -p` on its record.
 - Records go stale like any document, so AGENTS.md's rule holds for
   them: fixed in the same commit as the code.
-- `README.md` maps the 57 record numbers used before 2026-11-16 to the
-  records that now hold them, for old commit messages.
