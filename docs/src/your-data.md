@@ -1,11 +1,11 @@
 # Try it on your data
 
-Does Straum answer the queries you run? Write a spec, run one command,
-and Straum's shell opens on a copy of your tables in Docker. Straum
-only reads your database.
+Does Straum answer the queries you run? Write a spec and run one
+command: Straum's shell opens on a copy of your tables in Docker.
+Straum only reads your database.
 
-You need Docker with Compose, and a role that can `SELECT` the tables
-the spec reads.
+You need Docker with Compose and a role that can `SELECT` the spec's
+tables.
 
 ## 1. Write a spec
 
@@ -31,9 +31,9 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-Change the tables, keys and measures to match the `GROUP BY` your app
-runs most; [Spec](spec.md) has every rule. The file must be named
-`usage.sql`, whatever its views are called.
+Change the tables, keys and measures to the `GROUP BY` your app runs
+most ([Spec](spec.md) has every rule). Keep the file name `usage.sql`,
+whatever its views are called.
 
 ## 2. Run
 
@@ -61,7 +61,7 @@ straum>
 
 ## 3. Ask and compare
 
-Ask in the shell, or with `curl`:
+Ask in the shell or with `curl`:
 
 ```sh
 curl --json '{
@@ -70,7 +70,7 @@ curl --json '{
 }' http://127.0.0.1:8080/ask
 ```
 
-Then ask the copy in SQL, and compare:
+Then ask the copy in SQL and compare:
 
 ```sh
 docker compose -p straum-try exec postgres psql -U postgres -c "
@@ -80,20 +80,20 @@ docker compose -p straum-try exec postgres psql -U postgres -c "
    GROUP BY a.region"
 ```
 
-Write to the copy through that `psql`, ask again, and the answer
+Write to the copy through that `psql` and ask again: the answer
 follows the write. [Asks](asks.md) explains the query and the answer.
 
 ## 4. Stop
 
-`\q` leaves the shell. Straum keeps running on `127.0.0.1:8080`;
-`docker compose -p straum-try exec straum /straum shell` opens it
-again. This removes everything:
+`\q` leaves the shell; Straum keeps running on `127.0.0.1:8080`, and
+`docker compose -p straum-try exec straum /straum shell` reopens it.
+This removes everything:
 
 ```sh
 docker compose -p straum-try down --volumes
 ```
 
-To try a changed spec, run that, then step 2 again.
+To try a changed spec, run that, then step 2.
 
 ## When it fails
 
@@ -123,10 +123,9 @@ just try usage.sql --data copy
 ```
 
 [`straum plan --copy`](cli.md#straum-plan) writes the scripts into
-`copy/`, and `just try` loads `copy/` into a new PostgreSQL, starts
-Straum and opens the shell. It prints the port Straum answers on,
-which Docker picks unless `--port` names one. Leaving the shell
-removes both containers.
+`copy/`. `just try` loads `copy/` into a new PostgreSQL, starts Straum,
+opens the shell and prints Straum's port, which Docker picks unless
+`--port` names one. Leaving the shell removes both containers.
 
 `--wal physical` has Straum read the [physical write-ahead log
 (WAL)](postgresql.md#physical-wal) in place of logical decoding. `just
@@ -134,13 +133,11 @@ try --help` lists the other flags.
 
 ## On the database itself
 
-Once the answers hold:
-
-1. `straum plan usage.sql --wal logical` prints the setup SQL, or
-   `--wal physical` ([Setting up PostgreSQL](postgresql.md)). A table
-   owner runs it once.
-2. `straum run usage.sql` with the same `--wal`, and `STRAUM_DSN` or
-   libpq's `PGHOST` and the rest set, then ask.
+Once the answers hold, `straum plan usage.sql --wal logical` (or
+`--wal physical`) prints the setup SQL, which a table owner runs once
+([Setting up PostgreSQL](postgresql.md)). Then start `straum run
+usage.sql` with the same `--wal` and `STRAUM_DSN` or libpq's `PGHOST`
+and the rest set, and ask.
 
 Start with few keys: memory grows with each distinct combination of
 keys and bucket ([Cells](how-it-works.md#cells)).
