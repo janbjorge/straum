@@ -7,8 +7,7 @@ A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once,
 keeps each group as a cell in memory, and follows every commit. You
 declare what to keep as a view, in a small subset of PostgreSQL's
-`CREATE VIEW`. A file of views is a spec. This one is over an `events`
-table and the `accounts` it belongs to:
+`CREATE VIEW`. A file of views is a spec:
 
 ```sql
 CREATE VIEW usage AS
@@ -30,8 +29,7 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-An ask is a `SELECT` over that view, with every value as a parameter.
-This one asks for purchases by region on one day:
+An ask is a `SELECT` over that view, with every value as a parameter:
 
 ```sh
 curl --json '{

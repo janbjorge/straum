@@ -123,10 +123,10 @@ just try usage.sql --data copy
 ```
 
 [`straum plan --copy`](cli.md#straum-plan) writes the scripts into
-`copy/`, `psql` runs the export on your database, and `just try` loads
-`copy/` into a new PostgreSQL, starts Straum and opens the shell. It
-prints the port Straum answers on, which Docker picks unless `--port`
-names one. Leaving the shell removes both containers.
+`copy/`, and `just try` loads `copy/` into a new PostgreSQL, starts
+Straum and opens the shell. It prints the port Straum answers on,
+which Docker picks unless `--port` names one. Leaving the shell
+removes both containers.
 
 `--wal physical` has Straum read the
 [physical WAL](postgresql.md#physical-wal) in place of logical

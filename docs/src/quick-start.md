@@ -15,17 +15,13 @@ docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/strau
   run --rm shell
 ```
 
-`<(...)` is bash or zsh: it hands Compose the file and keeps the
-terminal as the shell's input. The file is not saved; it is
-`docs/compose/quick-start.yaml` in the repository, and it names the
-project `straum`, which later commands use.
+The file is `docs/compose/quick-start.yaml` in the repository. It
+names the project `straum`, which later commands use.
 
-The file starts PostgreSQL. A load service waits until it answers,
-fetches the month, loads it, runs the setup, and exits. Its container
-stays on Waiting while it fetches the month. Straum starts once that
-service has exited, and is healthy once it can answer. The shell
-service waits for that condition, `service_healthy`, then takes the
-terminal:
+The file starts PostgreSQL. A load service fetches the month, loads
+it, runs the setup, and exits. Its container stays on Waiting while it
+fetches the month. Straum starts once that service has exited, and the
+shell opens once Straum can answer:
 
 ```text
 Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
@@ -49,7 +45,7 @@ TLC's times are New York wall clock, so it reads them in that time
 zone. Money and distance are `numeric`, so sums are exact. Straum's
 own load takes about a second.
 
-`\q` leaves the shell and removes its container. Straum keeps running.
+`\q` leaves the shell. Straum keeps running.
 This opens the shell again, inside the Straum container, at
 `http://127.0.0.1:8080`:
 
@@ -172,8 +168,7 @@ an ask may use, `\d trips` prints the view's `CREATE VIEW`, and
 [Command line](cli.md#straum-shell) has the shell and the
 `straum status`, `straum views` and `straum ask` commands beside it.
 
-Leave the shell with `\q`, then remove the containers, their data and
-the network:
+Leave the shell with `\q`, then remove everything:
 
 ```sh
 docker compose -p straum down --volumes
