@@ -6,12 +6,13 @@ is not a superuser; a superuser runs a few lines of the setup once.
 
 `--wal` picks the stream, and `straum run` and `straum plan` both
 need it. Logical decoding reads changes through a publication. The
-physical write-ahead log (WAL) reads the WAL the server writes anyway
-and leaves `wal_level` alone.
+physical write-ahead log (WAL) reads the WAL a server writes at
+`wal_level = replica`, the default, so only a server at `minimal`
+needs a restart for it.
 
 | | `--wal logical` | `--wal physical` |
 | --- | --- | --- |
-| Server | `wal_level = logical` on 17 and 18, which takes a restart. From 19, `replica` is enough | `wal_level = replica` and `full_page_writes = on`, both defaults. No restart |
+| Server | `wal_level = logical` on 17 and 18, which takes a restart. From 19, `replica` is enough | `wal_level` of `replica`, the default, or `logical`, which takes a restart from `minimal`. `full_page_writes = on`, the default |
 | Setup SQL | A role, `SELECT`, a publication and `REPLICA IDENTITY FULL` | A role, `SELECT` and one `GRANT EXECUTE` |
 | Where | Any server, managed ones included | Not RDS, Aurora or Cloud SQL, which don't hand out the physical stream |
 
