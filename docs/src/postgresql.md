@@ -1,9 +1,8 @@
 # Setting up PostgreSQL
 
 Straum needs PostgreSQL 17 or newer, self-hosted or managed, and no
-extension. Its tests run on 17, 18 and the 19 release candidate. It
-connects as a role that is not a superuser; a superuser runs a few
-lines of the setup once.
+extension. Its tests run on 17, 18 and 19. It connects as a role that
+is not a superuser; a superuser runs a few lines of the setup once.
 
 `--wal` picks the stream, and `straum run` and `straum plan` both
 need it. Logical decoding reads changes through a publication. The
