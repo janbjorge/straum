@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="426" viewBox="0 0 720 426" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="448" viewBox="0 0 720 448" role="img" aria-labelledby="t d">
   <title id="t">What the store holds</title>
-  <desc id="d">The store, one per process, holds one keyed rollup per fact, a bound rollup for some facts and one projection per dim. A rollup holds one level per width and codes per key column; a projection holds codes per attribute. A level holds buckets; a bucket holds cells, which hold one state per input column: Count, Sum, Extent, Distinct or Bools.</desc>
+  <desc id="d">The Store, one per process, holds a Rollup per fact, a Bound for a fact whose joins all read fact columns, and a Projection per dim. A Bound holds a Rollup of its own, keyed by dim values. A Rollup holds a Level per width, narrowest first, and Codes per key column; a Projection holds Codes per dim column. A Level maps each bucket start to its Cells, None for rows with no time. Cells hold the key codes, row counts, an Index and a State per input, columnar.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -86,49 +86,51 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="719" height="425" rx="10"/>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="447" rx="10"/>
   <text x="24" y="38" class="title">What the store holds</text>
   <text x="24" y="62" class="s muted">An arrow points at what a thing holds; each box says how many.</text>
-  <rect class="box2" x="24" y="84" width="120" height="80" rx="8"/>
+  <rect class="box2" x="24" y="84" width="148" height="80" rx="8"/>
   <text x="38" y="109" class="h">Store</text>
-  <text x="38" y="130" class="s ink2">one per</text>
-  <text x="38" y="149" class="s ink2">process</text>
-  <rect class="box" x="180" y="84" width="170" height="80" rx="8"/>
-  <text x="194" y="109" class="h">Rollup, keyed</text>
-  <text x="194" y="130" class="s ink2">one per fact</text>
-  <rect class="box" x="180" y="194" width="170" height="80" rx="8"/>
-  <text x="194" y="219" class="h">Rollup, bound</text>
-  <text x="194" y="240" class="s ink2">0 or 1 per fact</text>
-  <rect class="box" x="180" y="304" width="170" height="80" rx="8"/>
-  <text x="194" y="329" class="h">Projection</text>
-  <text x="194" y="350" class="s ink2">one per dim</text>
-  <rect class="box" x="386" y="84" width="140" height="80" rx="8"/>
-  <text x="400" y="109" class="h">Level</text>
-  <text x="400" y="130" class="s ink2">one per width</text>
-  <rect class="box" x="386" y="224" width="140" height="80" rx="8"/>
-  <text x="400" y="249" class="h">Codes</text>
-  <text x="400" y="270" class="s ink2">per key column</text>
-  <text x="400" y="289" class="s ink2">or attribute</text>
-  <rect class="box" x="562" y="84" width="134" height="80" rx="8"/>
-  <text x="576" y="109" class="h">Bucket</text>
-  <text x="576" y="130" class="s ink2">many per level</text>
-  <rect class="box" x="562" y="194" width="134" height="80" rx="8"/>
-  <text x="576" y="219" class="h">Cells</text>
-  <text x="576" y="240" class="s ink2">one per bucket</text>
-  <rect class="box" x="562" y="304" width="134" height="98" rx="8"/>
-  <text x="576" y="329" class="h">State</text>
-  <text x="576" y="350" class="s ink2">one per input</text>
-  <text x="576" y="369" class="s ink2">column: Count,</text>
-  <text x="576" y="388" class="s ink2">Sum, …</text>
-  <path class="a" d="M144 124 H176" marker-end="url(#m)"/>
-  <path class="a" d="M162 124 V344"/>
-  <path class="a" d="M162 234 H176" marker-end="url(#m)"/>
-  <path class="a" d="M162 344 H176" marker-end="url(#m)"/>
-  <path class="a" d="M350 124 H382" marker-end="url(#m)"/>
-  <path class="a" d="M350 150 H368 V194 H456 V220" marker-end="url(#m)"/>
-  <path class="a" d="M350 254 H382" marker-end="url(#m)"/>
-  <path class="a" d="M350 344 H368 V284 H382" marker-end="url(#m)"/>
-  <path class="a" d="M526 124 H558" marker-end="url(#m)"/>
-  <path class="a" d="M629 164 V190" marker-end="url(#m)"/>
-  <path class="a" d="M629 274 V300" marker-end="url(#m)"/>
+  <text x="38" y="130" class="s ink2">one per process</text>
+  <rect class="box" x="196" y="84" width="160" height="80" rx="8"/>
+  <text x="210" y="109" class="h">Rollup</text>
+  <text x="210" y="130" class="s ink2">one per fact, and</text>
+  <text x="210" y="149" class="s ink2">one in each Bound</text>
+  <rect class="box" x="196" y="194" width="160" height="80" rx="8"/>
+  <text x="210" y="219" class="h">Bound</text>
+  <text x="210" y="240" class="s ink2">0 or 1 per fact:</text>
+  <text x="210" y="259" class="s ink2">cells by dim value</text>
+  <rect class="box" x="196" y="304" width="160" height="80" rx="8"/>
+  <text x="210" y="329" class="h">Projection</text>
+  <text x="210" y="350" class="s ink2">one per dim: its</text>
+  <text x="210" y="369" class="s ink2">key to dim codes</text>
+  <rect class="box" x="380" y="84" width="152" height="80" rx="8"/>
+  <text x="394" y="109" class="h">Level</text>
+  <text x="394" y="130" class="s ink2">one per width,</text>
+  <text x="394" y="149" class="s ink2">narrowest first</text>
+  <rect class="box" x="380" y="304" width="152" height="80" rx="8"/>
+  <text x="394" y="329" class="h">Codes</text>
+  <text x="394" y="350" class="s ink2">one per key or</text>
+  <text x="394" y="369" class="s ink2">dim column</text>
+  <rect class="box" x="556" y="84" width="140" height="80" rx="8"/>
+  <text x="570" y="109" class="h">Cells</text>
+  <text x="570" y="130" class="s ink2">one per bucket:</text>
+  <text x="570" y="149" class="s ink2">keys, rows, Index</text>
+  <rect class="box" x="556" y="194" width="140" height="80" rx="8"/>
+  <text x="570" y="219" class="h">State</text>
+  <text x="570" y="240" class="s ink2">one per input:</text>
+  <text x="570" y="259" class="s ink2">Count, Sum, …</text>
+  <path class="a" d="M172 124 H192" marker-end="url(#m)"/>
+  <path class="a" d="M184 124 V344"/>
+  <path class="a" d="M184 234 H192" marker-end="url(#m)"/>
+  <path class="a" d="M184 344 H192" marker-end="url(#m)"/>
+  <path class="a" d="M276 194 V168" marker-end="url(#m)"/>
+  <text x="284" y="184" class="s muted halo">its own</text>
+  <path class="a" d="M356 112 H376" marker-end="url(#m)"/>
+  <path class="a" d="M356 142 H368 V328 H376" marker-end="url(#m)"/>
+  <path class="a" d="M356 360 H376" marker-end="url(#m)"/>
+  <path class="a" d="M532 124 H552" marker-end="url(#m)"/>
+  <path class="a" d="M626 164 V190" marker-end="url(#m)"/>
+  <text x="24" y="408" class="s ink2">A level maps each bucket start to its cells, None for rows with no time.</text>
+  <text x="24" y="429" class="s ink2">Cells are columnar: keys, row counts and each state side by side.</text>
 </svg>

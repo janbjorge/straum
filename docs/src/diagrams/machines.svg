@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="214" viewBox="0 0 720 214" role="img" aria-labelledby="t d">
   <title id="t">The source's state machine</title>
-  <desc id="d">The source: Closed to Loading on open, Loading to Streaming on the first next_commit, back to Closed on the next open, which closes it first.</desc>
+  <desc id="d">The source: Closed to Loading on open, Loading to Streaming on the first next_commit, back to Closed on the next open, which closes it first, or when a load or next_commit fails.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -102,5 +102,5 @@
   <text x="465" y="137" class="s muted halo" text-anchor="middle">the first</text>
   <path class="a" d="M610 142 V166 H94 V146" marker-end="url(#m)"/>
   <path class="a" d="M320 142 V166"/>
-  <text x="352" y="186" class="s ink2 halo" text-anchor="middle">open again: it closes the stream first</text>
+  <text x="352" y="186" class="s ink2 halo" text-anchor="middle">a failed load or next_commit, or open again</text>
 </svg>

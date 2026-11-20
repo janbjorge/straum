@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="476" viewBox="0 0 720 476" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="496" viewBox="0 0 720 496" role="img" aria-labelledby="t d">
   <title id="t">Crates depend inward only</title>
-  <desc id="d">Six crates. The straum binary depends on the three adapters: straum-notation, straum-pg and straum-http, and on straum-app. straum-pg and straum-http depend on straum-app, which holds the use cases and the port Source. Every crate depends on straum-domain, which has no I/O and no dependencies.</desc>
+  <desc id="d">Six crates. The straum binary depends on straum-pg, straum-http, straum-app and straum-notation. straum-pg and straum-http depend on straum-app, which holds the use cases and the one port, Source. straum-notation reads Straum SQL and depends only on straum-domain. Every crate depends on straum-domain, which has no I/O and no dependencies.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -86,34 +86,36 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="719" height="475" rx="10"/>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="495" rx="10"/>
   <text x="24" y="38" class="title">Crates depend inward only</text>
-  <text x="24" y="62" class="s muted">An arrow is “depends on”. The binary also uses straum-app.</text>
-  <rect class="box" x="250" y="84" width="220" height="60" rx="8"/>
+  <text x="24" y="62" class="s muted">An arrow is “depends on”. Every crate also depends on straum-domain.</text>
+  <rect class="box" x="250" y="84" width="220" height="80" rx="8"/>
   <text x="264" y="109" class="h mono">straum</text>
-  <text x="264" y="130" class="s ink2">the binary</text>
-  <rect class="box" x="24" y="196" width="204" height="80" rx="8"/>
-  <text x="38" y="221" class="h mono">straum-notation</text>
-  <text x="38" y="242" class="s ink2">Straum SQL into</text>
-  <text x="38" y="261" class="s ink2">Spec and Ask</text>
-  <rect class="box" x="258" y="196" width="204" height="80" rx="8"/>
-  <text x="272" y="221" class="h mono">straum-pg</text>
-  <text x="272" y="242" class="s ink2">the Source adapter:</text>
-  <text x="272" y="261" class="s ink2">slot, COPY, pgoutput</text>
-  <rect class="box" x="492" y="196" width="204" height="80" rx="8"/>
-  <text x="506" y="221" class="h mono">straum-http</text>
-  <text x="506" y="242" class="s ink2">the HTTP endpoints,</text>
-  <text x="506" y="261" class="s ink2">the only tokio</text>
-  <rect class="accbox" x="258" y="312" width="204" height="80" rx="8"/>
-  <text x="272" y="337" class="h mono acc">straum-app</text>
-  <text x="272" y="358" class="s ink2">use cases, Writer</text>
-  <text x="272" y="377" class="s ink2">port: Source</text>
-  <rect class="box2" x="24" y="412" width="672" height="44" rx="8"/>
-  <text x="38" y="440" class="h mono" text-anchor="start">straum-domain</text>
-  <text x="184" y="440" class="s ink2" text-anchor="start">every crate uses it; no I/O, no dependencies</text>
-  <path class="a" d="M300 144 L130 192" marker-end="url(#m)"/>
-  <path class="a" d="M360 144 L360 192" marker-end="url(#m)"/>
-  <path class="a" d="M420 144 L590 192" marker-end="url(#m)"/>
-  <path class="a" d="M360 276 L360 308" marker-end="url(#m)"/>
-  <path class="a" d="M594 276 V352 H466" marker-end="url(#m)"/>
+  <text x="264" y="130" class="s ink2">the binary: wires the</text>
+  <text x="264" y="149" class="s ink2">crates, runs the shell</text>
+  <rect class="box" x="24" y="204" width="222" height="80" rx="8"/>
+  <text x="38" y="229" class="h mono">straum-pg</text>
+  <text x="38" y="250" class="s ink2">PostgreSQL behind Source:</text>
+  <text x="38" y="269" class="s ink2">COPY, both WAL streams</text>
+  <rect class="box" x="270" y="204" width="198" height="80" rx="8"/>
+  <text x="284" y="229" class="h mono">straum-http</text>
+  <text x="284" y="250" class="s ink2">asks and status over</text>
+  <text x="284" y="269" class="s ink2">HTTP; the only tokio</text>
+  <rect class="accbox" x="24" y="324" width="444" height="80" rx="8"/>
+  <text x="38" y="349" class="h mono acc">straum-app</text>
+  <text x="38" y="370" class="s ink2">the use cases: App answers asks, Writer follows</text>
+  <text x="38" y="389" class="s ink2">the stream; the one port, Source</text>
+  <rect class="box" x="492" y="324" width="204" height="80" rx="8"/>
+  <text x="506" y="349" class="h mono">straum-notation</text>
+  <text x="506" y="370" class="s ink2">Straum SQL into</text>
+  <text x="506" y="389" class="s ink2">Spec and Ask</text>
+  <rect class="box2" x="24" y="428" width="672" height="44" rx="8"/>
+  <text x="38" y="456" class="h mono">straum-domain</text>
+  <text x="184" y="456" class="s ink2">what a view is and how its cells add up; no I/O, no dependencies</text>
+  <path class="a" d="M290 164 L150 200" marker-end="url(#m)"/>
+  <path class="a" d="M380 164 V200" marker-end="url(#m)"/>
+  <path class="a" d="M258 164 V320" marker-end="url(#m)"/>
+  <path class="a" d="M450 164 L594 320" marker-end="url(#m)"/>
+  <path class="a" d="M135 284 V320" marker-end="url(#m)"/>
+  <path class="a" d="M380 284 V320" marker-end="url(#m)"/>
 </svg>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="410" viewBox="0 0 720 410" role="img" aria-labelledby="t d">
   <title id="t">The running system</title>
-  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Spec, the Limits, a State behind an RwLock and a Progress behind a Mutex of its own, which clones share. State holds the Store. Progress holds a Following while every table is loaded, with the applied LSN, Lag and last WAL reading.</desc>
+  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Spec, the Limits, a State behind an RwLock and a Progress behind a Mutex of its own, which clones share. State holds the Store and the LSN it is applied up to. Progress holds a Following while every table is loaded, with the applied LSN and its commit time, the Lag and the last WAL reading.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -111,8 +111,8 @@
   <text x="264" y="259" class="mono ink2">--max-retained-wal</text>
   <rect class="box" x="470" y="84" width="226" height="80" rx="8"/>
   <text x="484" y="109" class="h">State</text>
-  <text x="484" y="130" class="s ink2">one, behind the</text>
-  <text x="484" y="149" class="s ink2">read-write lock</text>
+  <text x="484" y="130" class="s ink2">one, behind the read-write</text>
+  <text x="484" y="149" class="s ink2">lock, with the applied LSN</text>
   <rect class="box" x="500" y="184" width="196" height="60" rx="8"/>
   <text x="514" y="209" class="h">Store</text>
   <text x="514" y="230" class="s ink2">one</text>
@@ -122,8 +122,8 @@
   <text x="264" y="369" class="s ink2">mutex of its own</text>
   <rect class="box" x="500" y="304" width="196" height="80" rx="8"/>
   <text x="514" y="329" class="h">Following</text>
-  <text x="514" y="350" class="s ink2">0 or 1: applied LSN,</text>
-  <text x="514" y="369" class="s ink2">Lag, WAL reading</text>
+  <text x="514" y="350" class="s ink2">0 or 1: applied LSN and</text>
+  <text x="514" y="369" class="s ink2">its time, Lag, WAL reading</text>
   <path class="a" d="M184 124 H216" marker-end="url(#m)"/>
   <path class="a" d="M436 124 H466" marker-end="url(#m)"/>
   <path class="a" d="M104 164 V190" marker-end="url(#m)"/>
