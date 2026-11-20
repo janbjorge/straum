@@ -118,6 +118,11 @@ wal-bench:
 demo:
     bench/demo.py
 
+# The trigger outbox of ADR-0018 on the taxi trips: its checks, then its cost
+[group('taxi')]
+outbox:
+    bench/outbox.py
+
 # Straum on a copy from straum plan --copy: SPEC --data DIR, then straum shell
 [group('try')]
 [no-cd]
