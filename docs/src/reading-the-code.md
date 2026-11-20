@@ -1,14 +1,14 @@
 # Reading the code
 
-This page is for a reader who knows programming but not Rust. It gives
-the order to read the crates in, then the Rust the code uses, each
-with an example in Straum's own words. [Design](design.md) is the
-model behind the code; the [glossary](glossary.md) names each thing.
+For a reader who knows programming but not Rust: the order to read the
+crates in, then the Rust the code uses, each with an example from
+Straum. [Design](design.md) is the model behind the code; the
+[glossary](glossary.md) names each thing.
 
 ## Where to start
 
-Read the crates from the inside out. Each one only uses the ones
-before it.
+Read the crates from the inside out; each uses only the ones before
+it.
 
 1. `straum-domain`: what a view is and how its cells add up. No I/O.
    Start with `spec.rs` (the parsed views) and `ask.rs` (what an ask
@@ -38,8 +38,8 @@ before it.
    `host.rs` has checked its `Host` header.
 6. `straum`: the binary. `main.rs` starts it all.
 
-Every file opens with a few lines saying what it holds. Read those
-first; they tell you whether you need the rest.
+Every file opens with a few lines saying what it holds; they tell you
+whether you need the rest.
 
 ## The Rust you'll meet
 
@@ -64,16 +64,14 @@ in its `Display`.
 
 **`?`: return the error.** `self.remove_row(table, old)?;` means: if
 that returned `Err`, return the same error from here; otherwise carry
-on with the value. It lets most functions read as a straight line of
-steps.
+on with the value.
 
 **Errors kept in a list: `Reported`.** The Straum SQL walker in
-`straum-notation` reports the errors in a spec at once, the first 50
-and a count of the rest, so it pushes each one onto a list instead of
-returning it. A walk that failed returns `Err(Reported)`, an empty
-marker saying the error is already on the list, and the caller stops
-there without adding its own. A plain `Option` stays for "there is
-none", which is no error.
+`straum-notation` reports a spec's errors at once, the first 50 and a
+count of the rest, so it pushes each onto a list instead of returning
+it. A failed walk returns `Err(Reported)`, an empty marker saying the
+error is on the list, and the caller stops without adding its own. A
+plain `Option` stays for "there is none", which is no error.
 
 **`let ... else`: stop early.**
 
@@ -117,11 +115,11 @@ and applies it once it has read the column.
 
 **Named index types.** `struct FactIndex(usize);` is a struct with
 one unnamed field, read as `fact.0`. It costs nothing at run time and
-makes a signature say what a number points at: `fn bind(&mut self,
-fact: FactIndex, ..)` takes a position among the facts, and the
-compiler refuses a `DimIndex` there. `PartIndex`, `AttributeIndex`
-and `InputIndex` do the same for a part of the rollup key, a dim's
-attribute and a cell state.
+says what a number points at: `fn bind(&mut self, fact: FactIndex,
+..)` takes a position among the facts, and the compiler refuses a
+`DimIndex` there. `PartIndex`, `AttributeIndex` and `InputIndex` do
+the same for a part of the rollup key, a dim's attribute and a cell
+state.
 
 **Iterators.** `for row in rows` walks anything that is an
 `Iterator`: a type with a `next` function that hands out one item at
@@ -173,14 +171,14 @@ nothing is copied out of it.
 **Closures: `|value| ...`.** A function without a name, written where
 it is used, which may use the names around it. Straum writes one only
 where code is handed over to run later, or where a benchmark measured
-a loop slower. `thread::spawn(move || run_writer(writer))` runs
+a loop slower; elsewhere a `for` loop or a named function does the
+work. `thread::spawn(move || run_writer(writer))` runs
 `run_writer` on a new thread, and `move` hands the closure the values
 it uses. `load::copy` takes one as `each: impl FnMut(&[Datum])`, "any
 function of a batch", and calls it on every batch as it comes, so a
 table never sits in memory whole. `Counts::each` hands each count to
 one because a loop calling `Counts::get` per cell measured half again
-slower (`an_ask_stays_within_its_time_per_cell`). Everywhere else a
-`for` loop or a named function does the work.
+slower (`an_ask_stays_within_its_time_per_cell`).
 
 **Threads: `Arc` and `RwLock`.** `App` keeps its state in
 `Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP
@@ -199,10 +197,10 @@ named and the ones under it, nothing at all only inside the file.
 written in place or in a `tests.rs` beside the file; `tests/` beside
 `src/` holds the tests that use the crate from outside.
 
-**Type aliases.** `type TransactionId = u32;` gives `u32` a second name,
-so `xid: TransactionId` says what the number is. The two are the same
-type, so the compiler doesn't stop a slot number going where an
-transaction id (xid) should; the name only tells the reader.
+**Type aliases.** `type TransactionId = u32;` gives `u32` a second
+name, so `xid: TransactionId` says what the number is. The two are
+the same type, so the compiler doesn't stop a slot number going where
+a transaction id (xid) should; the name only tells the reader.
 
 **Reading bytes.** The WAL code reads PostgreSQL's structs from raw
 bytes. A field's place is a named constant, often a range:
@@ -221,9 +219,9 @@ share without copying: a row on a page and the change that names it.
 when they had to be changed, such as decompressed, owned
 (`Cow::Owned`).
 
-**Dense code.** Where a loop would be slower in a way a benchmark
-measured, the code keeps a denser form and a comment names the
-benchmark. Everywhere else it is a plain `for` loop. `#[inline]` above
-a function is such a case: it asks the compiler to copy the function
-into each caller. Four functions an ask calls per cell need it
-(`Lookup::code` in `store/lookup.rs` names the benchmark).
+**Dense code.** Where a benchmark measured a loop slower, the code
+keeps a denser form and a comment names the benchmark; elsewhere it is
+a plain `for` loop. `#[inline]` above a function is such a case: it
+asks the compiler to copy the function into each caller. Four
+functions an ask calls per cell need it (`Lookup::code` in
+`store/lookup.rs` names the benchmark).
