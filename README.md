@@ -1,7 +1,7 @@
 # Straum
 
-**Exact answers to your dashboard's `GROUP BY` in microseconds, current
-to the last commit.**
+**Live, exact aggregates over PostgreSQL in microseconds: a
+materialized view that is never stale.**
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-user%20guide-blue)](https://janbjorge.github.io/straum/)
