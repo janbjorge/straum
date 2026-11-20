@@ -524,6 +524,29 @@ fn a_percentile_holds_what_a_max_holds() {
     );
 }
 
+/// A count of distinct values reads the values a percentile on its
+/// column keeps: beside one, it holds no byte more but its name in the
+/// spec. A second set of values would be over 100 KiB here. On another
+/// column it keeps its own, an entry of 32 bytes a cell at least.
+#[test]
+fn a_distinct_holds_what_a_percentile_holds() {
+    const CELLS: isize = 2_000;
+    let alone = held_by(|| vec![tip_median()]);
+    let beside = held_by(|| vec![tip_median(), tip_distinct()]);
+    let elsewhere = held_by(|| {
+        vec![
+            tip_median(),
+            measure("fare_distinct", Aggregate::CountDistinct(id("fare"))),
+        ]
+    });
+    eprintln!("median {alone} bytes, with a distinct tip {beside}, a distinct fare {elsewhere}");
+    assert!(beside - alone < 256, "{beside} bytes against {alone}");
+    assert!(
+        elsewhere - alone >= 32 * CELLS,
+        "{elsewhere} bytes against {alone}"
+    );
+}
+
 /// The heap an ask of the median by `by` over hours `from..to` reaches
 /// at its most, the answer dropped.
 fn peak(store: &Store, by: &[&str], from: i64, to: i64) -> isize {

@@ -100,7 +100,8 @@ values need: `max(fare_amount)` per hour and dropoff zone keeps
 14,943,826 fares of the [taxi trips](performance.md) in 76 MiB, 5.3
 bytes a fare. A
 `count(DISTINCT c)` of numbers keeps them the same way, in fewer bytes
-than a `max`. One of `text`, `uuid`, `date` or `boolean` keeps a hash
+than a `max`, and beside a `min`, `max`, percentile or mode on its
+column it reads their counts and costs nothing more. One of `text`, `uuid`, `date` or `boolean` keeps a hash
 map per cell, over 15 times as many bytes in a test of 40 values a
 cell. Either holds every distinct value.
 

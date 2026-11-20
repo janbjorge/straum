@@ -183,12 +183,14 @@ fn coded(columns: &[Identifier], parts: &[KeyPart<'_>]) -> Vec<Coded> {
     coded
 }
 
-/// `inputs` without a `Sum` whose column has a `Spread`: the spread keeps
-/// the sum and count too, so sum and avg read it instead.
+/// `inputs` without one another input on its column serves: a `Sum`
+/// beside a `Spread`, which keeps the sum and count too, and a `Distinct`
+/// beside an `Extent`, which keeps the same count per number.
 fn shared(inputs: &[Input]) -> Vec<Input> {
     let mut kept = Vec::with_capacity(inputs.len());
     for &input in inputs {
-        if input.kind == StateKind::Sum && inputs.contains(&spread_beside(input)) {
+        let serving = serving(input);
+        if serving != input && inputs.contains(&serving) {
             continue;
         }
         kept.push(input);
@@ -196,15 +198,20 @@ fn shared(inputs: &[Input]) -> Vec<Input> {
     kept
 }
 
-/// The `Spread` input that serves a `Sum` input's column as well; for any
-/// other kind, the input itself.
-fn spread_beside(input: Input) -> Input {
-    match input.kind {
-        StateKind::Sum => Input {
-            kind: StateKind::Spread,
-            column: input.column,
-        },
-        _ => input,
+/// The input that serves `input`'s column as well: a `Spread` for a
+/// `Sum`, an `Extent` for a `Distinct`; for any other kind, the input
+/// itself.
+// An `Extent` reads numbers only, so beside one a `Distinct` never needs
+// the map that holds values of other kinds.
+fn serving(input: Input) -> Input {
+    let kind = match input.kind {
+        StateKind::Sum => StateKind::Spread,
+        StateKind::Distinct => StateKind::Extent,
+        _ => return input,
+    };
+    Input {
+        kind,
+        column: input.column,
     }
 }
 
@@ -548,7 +555,7 @@ impl Rollup {
         let column = self.column(aggregate.input()?)?;
         let wanted = Input { kind, column };
         for (position, input) in self.inputs.iter().enumerate() {
-            if *input == wanted || *input == spread_beside(wanted) {
+            if *input == wanted || *input == serving(wanted) {
                 return Some(InputIndex(position));
             }
         }

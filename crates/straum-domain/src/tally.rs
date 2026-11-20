@@ -60,6 +60,12 @@ impl<'s> Distinct<'s> {
         }
     }
 
+    /// Meets one cell's count per number, kept by a min, max or
+    /// percentile on the column.
+    pub(crate) fn meet_numbers(&mut self, counts: &'s ValueCounts) {
+        self.numbers.meet(counts);
+    }
+
     /// The values met, a number met both as a number and as a value
     /// counted once.
     pub(crate) fn tally(&self, tallied: Tallied) -> Tally {

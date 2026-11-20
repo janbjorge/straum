@@ -163,7 +163,8 @@ width; a bucket is columnar cells with one state per input.*
   counts as a min or max does while its column holds only numbers,
   and a hash map per cell from its first value of another type
   (`DistinctCells`): the load sets the column types only after the
-  states exist.
+  states exist. Beside a min, max or percentile on its column, which
+  read numbers only, it keeps nothing and reads their counts.
 - A **Projection** maps dim key values to the codes of the dim columns
   of every row under them. `Null` is code 0 in every dim column, so no
   row and a null read alike.

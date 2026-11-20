@@ -175,10 +175,12 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
         // counts; the distance's on its own.
         new_measure("tip_mode", Aggregate::Mode(id("tip")), vec![]),
         new_measure("distance_mode", Aggregate::Mode(id("dist")), vec![]),
-        // Distinct values of numbers: the fare's beside nothing else of
-        // its kind, the tip's beside its min and max. Each count reads
-        // the tally of the sum or average under the same FILTER, and the
-        // card tips' count comes first, so the tally must hold a sum.
+        // Distinct values of numbers: the fare's beside its p07, the
+        // tip's beside its min, max and percentiles, so both read the
+        // counts those keep; the pickups' below keep their own. Each
+        // count reads the tally of the sum or average under the same
+        // FILTER, and the card tips' count comes first, so the tally
+        // must hold a sum.
         new_measure("distinct_fares", Aggregate::SumDistinct(id("fare")), vec![]),
         new_measure(
             "distinct_fare_count",

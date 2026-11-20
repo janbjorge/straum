@@ -30,7 +30,9 @@ both, answers checked equal
 | Median fare | 4,839.8 ms | 25.2 ms | 192x |
 
 One run on an Apple M2 Pro with 16 GB, on 2026-11-19. Straum held
-305 MiB; the table and its indexes take 2,475 MiB in PostgreSQL.
+305 MiB, and 202 MiB on 2026-11-20 once the distinct fares read the
+percentiles' counts; the table and its indexes take 2,475 MiB in
+PostgreSQL.
 
 ## Try it
 

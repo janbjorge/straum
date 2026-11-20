@@ -510,6 +510,13 @@ impl<'s> Partials<'s> {
                     }
                 }
             }
+            (Partials::Distinct { seen, .. }, Some(State::Extent { counts, .. })) => {
+                for (&group, counts) in groups.iter().zip(counts) {
+                    if group != 0 {
+                        seen[group as usize].meet_numbers(counts);
+                    }
+                }
+            }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. })) => {
                 for (&group, counts) in groups.iter().zip(counts) {
                     if group != 0 {
@@ -578,13 +585,16 @@ impl<'s> Partials<'s> {
             (Partials::Distinct { seen, .. }, Some(State::Distinct(cells))) if group != 0 => {
                 seen[group as usize].meet(cells, cell);
             }
+            (Partials::Distinct { seen, .. }, Some(State::Extent { counts, .. })) if group != 0 => {
+                seen[group as usize].meet_numbers(&counts[cell]);
+            }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
             {
                 values[group as usize].meet(&counts[cell]);
             }
             // Group 0 is never finished, and a value set or list costs its merge.
-            (Partials::Distinct { .. }, Some(State::Distinct(_)))
+            (Partials::Distinct { .. }, Some(State::Distinct(_) | State::Extent { .. }))
             | (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
@@ -644,6 +654,11 @@ impl<'s> Partials<'s> {
                     seen[group].meet(cells, cell);
                 }
             }
+            (Partials::Distinct { seen, .. }, Some(State::Extent { counts, .. })) if group != 0 => {
+                for cell in counts {
+                    seen[group].meet_numbers(cell);
+                }
+            }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
             {
@@ -652,7 +667,7 @@ impl<'s> Partials<'s> {
                 }
             }
             // Group 0 is never finished, and a value set or list costs its merge.
-            (Partials::Distinct { .. }, Some(State::Distinct(_)))
+            (Partials::Distinct { .. }, Some(State::Distinct(_) | State::Extent { .. }))
             | (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },

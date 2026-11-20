@@ -1,6 +1,6 @@
 # ADR-0003: Straum holds cells and nothing else
 
-Status: Accepted 2026-11-10; revised 2026-11-19
+Status: Accepted 2026-11-10; revised 2026-11-20
 
 ## Context
 
@@ -85,7 +85,10 @@ the column's scale for a variance and past its scale for a deviation.
 - A percentile adds no bytes beyond a min or max, but costs by values
   in range: milliseconds where a sum takes microseconds (ADR-0005).
 - `count(DISTINCT c)` of numbers holds less than a max on the same
-  values, where its hash map per cell held over 15 times as much; an
-  ask over several cells marks their values in a set of bits from the
-  least to the greatest, or sorts them when they lie too far apart.
+  values, where its hash map per cell held over 15 times as much, and
+  beside a min, max or percentile on its column holds nothing more: it
+  reads their counts. The benchmark's distinct fares no longer keep a
+  second count per fare beside the percentiles'. An ask over several
+  cells marks their values in a set of bits from the least to the
+  greatest, or sorts them when they lie too far apart.
   Text, uuid, date and boolean keep the map; its memory is open.

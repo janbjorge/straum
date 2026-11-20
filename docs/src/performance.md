@@ -77,8 +77,9 @@ rows' projection included. In PostgreSQL the table and its indexes take
 the fare's variance, standard deviation, mode and distinct values it
 held 190 MiB; with the first two, 205 MiB; with the mode too, 204 MiB.
 The sums of squares take about 15 MiB, and the mode reads the counts the
-percentiles keep. The distinct fares take the other 101 MiB, as
-`count(DISTINCT c)` keeps a count per value of its own.
+percentiles keep. The distinct fares took the other 101 MiB, as
+`count(DISTINCT c)` kept a count per value of its own. It reads the
+percentiles' counts since, and a run on 2026-11-20 held 202 MiB.
 
 On macOS the bench reads what Straum holds from the process's footprint,
 which counts the pages the system compressed; on a busy machine one
@@ -372,7 +373,8 @@ The benchmark's two views held 65 MiB for their 2,078,586 cells, 33
 bytes a cell, before `trips` kept its fares for the percentiles. With
 them they held 113 MiB on 2026-11-15. With the fare's variance,
 standard deviation, mode and distinct values besides, they held 305 MiB
-on 2026-11-19.
+on 2026-11-19, and 202 MiB on 2026-11-20 with the distinct values
+reading the percentiles' counts.
 
 ### The taxi month under a wide key
 
