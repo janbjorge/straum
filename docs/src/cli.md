@@ -26,8 +26,7 @@ as written, as in `straum run -- -spec.sql`. Each flag goes on the
 line at most once.
 
 A flag that takes seconds, rows or bytes takes a whole number above 0.
-A byte count may end in `Ki`, `Mi`, `Gi` or `Ti`, powers of 1024 as
-Kubernetes writes them: `4Gi` is 4294967296.
+A byte count may end in `Ki`, `Mi`, `Gi` or `Ti`, powers of 1024.
 
 ## Reaching a running Straum
 
@@ -37,7 +36,7 @@ flags below work on all four.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--url URL` | `STRAUM_URL`, else `http://127.0.0.1:8080` | Where Straum serves HTTP, as `http://HOST:PORT`. An empty `STRAUM_URL` counts as unset. |
-| `--timeout SECONDS` | `10` | How long each request may take, from 1 to 86400 (a day). |
+| `--timeout SECONDS` | `10` | How long each request may take, from 1 to 86400. |
 
 The URL is where Straum listens, reached directly: plain HTTP, no TLS,
 and no proxy that rewrites the reply into chunks, which the client
@@ -137,8 +136,8 @@ psql "$SOURCE" -f copy/export.sql
 psql "$DESTINATION" -f copy/load.sql
 ```
 
-`export.sql` runs in one read-only repeatable-read transaction, so
-every table is from the same moment, and writes nothing on the source.
+`export.sql` runs in one read-only repeatable-read transaction and
+writes nothing on the source.
 It needs `SELECT` on the columns the specs read, and nothing on their
 sequences.
 
@@ -272,8 +271,6 @@ Unknown       |   527 |    9738.86 |  18.47981
 8 rows, as of 2026-11-13T07:52:57.7760555Z
 ```
 
-Quote the query with single quotes, so `$1` reaches Straum as written.
-
 The table holds what the [JSON answer](asks.md#the-answer) holds:
 values print the same, text without its quotes, a null as `null`. In
 text, a backslash and each control character print as JSON writes them,
@@ -286,7 +283,7 @@ stderr either way: a line naming the URL and the reply's status, then
 the reply as Straum sent it, `{"errors": [...]}` with `--json`.
 stdout stays empty.
 
-A command line holds only text, so a parameter's type is read from it:
+A parameter's type is read from how it is written:
 
 | Written | Sent as |
 | --- | --- |
@@ -296,9 +293,8 @@ A command line holds only text, so a parameter's type is read from it:
 | `'7'`, `'20.5'`, `'true'` | The string inside the single quotes. |
 | Anything else | A string, such as `Queens`, `2024-01-17T05:00:00Z` or `.5`. |
 
-The shell takes single quotes for itself, so the string 7 is written
-`"'7'"`. An ask Straum can't answer prints the reply's first line and
-each error, and exits with 1:
+The string 7 is written `"'7'"`. An ask Straum can't answer prints the
+reply's first line and each error, and exits with 1:
 
 ```text
 $ straum ask 'SELECT trips FROM trips WHERE payment_type = $1
@@ -360,11 +356,11 @@ runs, Ctrl-C ends the shell; the commands entered are still kept.
 
 ### Paging with \rows
 
-`\rows` pages through a view as a Python slice does: rows count from 0,
-and a negative `START` counts back from the end. `\rows trips 1000 50`
-prints rows 1000 to 1049, `\rows trips -20` the last 20. A `START` past
-either end is held at it. The last line says how many rows the view
-has and, past the first, from which row they print.
+`\rows` pages through a view: rows count from 0, and a negative
+`START` counts back from the end. `\rows trips 1000 50` prints rows 1000
+to 1049, `\rows trips -20` the last 20. A `START` past either end is
+held at it. The last line says how many rows the view has and, past
+the first, from which row they print.
 
 `\rows` reads every cell of the view, whichever rows it prints, so on a
 large view it takes as long as an ask over all its buckets.
@@ -377,8 +373,7 @@ measured it, from connecting to the last byte of the reply. In the
 parentheses is the reply's [`Server-Timing`](asks.md#the-answer)
 header, the time in Straum: reading the ask, answering it, writing the
 table, and `total` for all of it. `\rows` sends no ask to read, so its
-`parse` is 0. What `Time` holds beyond `total` is the network and the
-shell. A command that fails is not timed.
+`parse` is 0. A command that fails is not timed.
 
 ### Completion and history
 
@@ -394,8 +389,8 @@ At a terminal, Tab completes by where the cursor is:
 Tab and the dimmed hint read every line of the ask up to the cursor,
 so `FROM` on one line still offers views at the start of the next.
 Completion offers what is likely next; Straum still checks the ask. A
-completed word ends in a space, so the next is typed straight on.
-Where the candidates differ, the first Tab lists them.
+completed word ends in a space. Where the candidates differ, the first
+Tab lists them.
 
 The commands entered are kept, each as it is entered, in
 `$XDG_STATE_HOME/straum/history` when that variable holds an absolute

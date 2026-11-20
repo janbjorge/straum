@@ -2,9 +2,7 @@
 
 This page is for writing asks: the JSON sent to `POST /ask`, the query
 language it holds, the answer, the errors and the endpoints beside it.
-An ask is a JSON object with a query and its parameters. The examples
-ask the `usage` view of [Spec](spec.md#synopsis). This one asks for
-purchases in two regions per hour, from 9:00 to 12:00 UTC:
+The examples ask the `usage` view of [Spec](spec.md#synopsis):
 
 ```sh
 curl --json '{
@@ -13,9 +11,9 @@ curl --json '{
 }' http://localhost:8080/ask
 ```
 
-The request says `Content-Type: application/json`, as `curl --json`
-sends it; an ask without it is refused with 415, so a page on another
-site can't make a browser run one ([Who can ask](deploy.md#who-can-ask)).
+An ask without `Content-Type: application/json` is refused with 415,
+so a page on another site can't make a browser run one ([Who can
+ask](deploy.md#who-can-ask)).
 
 | Field | Required | Value |
 | --- | --- | --- |
@@ -111,10 +109,6 @@ is a grid from the epoch ([Time](spec.md#time)).
 
 ## HAVING
 
-`WHERE` picks the rows by their keys; `HAVING` picks the groups by their
-measures, after Straum has added them up. This asks for the regions
-with more than 40 purchases in an hour, and their amounts:
-
 ```sql
 SELECT bucket, region, events, amount FROM usage WHERE kind = $1 AND bucket >= $2 AND bucket < $3 GROUP BY bucket, region HAVING events > $4
 ```
@@ -144,10 +138,10 @@ comparison; otherwise none.
 Every value is a parameter: a value written into the query, such as
 `region = 'eu'`, is an error, so a value can never change what the
 query says. Parameters are numbers, strings or booleans, `$1` first;
-`null` is refused, since `= NULL` matches nothing. A parameter is
-`$1`, never `$01`. Each must be used, and one can be used more than
-once, as long as the text parameters, counted at each use, come to at
-most 1 MiB, what one ask's body holds.
+`null` is refused. A parameter is `$1`, never `$01`. Each must be
+used, and one can be used more than once, as long as the text
+parameters, counted at each use, come to at most 1 MiB, what one ask's
+body holds.
 
 A number with a fraction or exponent is read exactly as written, never
 as a float: `44.27` is 4427 hundredths, and a whole one, `1.0` or
@@ -201,8 +195,7 @@ write](#seeing-your-own-write)).
 
 `rows` holds one object per group, keyed by the names in `SELECT`,
 sorted by key, nulls first. An ask without keys answers one row even
-when nothing matches, as SQL does without `GROUP BY`: counts are 0, the
-rest null.
+when nothing matches: counts are 0, the rest null.
 
 `timestamptz` buckets are their start in UTC. `timestamp` buckets are
 wall clock readings formatted with `Z`. PostgreSQL keeps times past
@@ -218,14 +211,12 @@ Measures print as the [measures table](spec.md#measures) says:
 `1875.70` for a `numeric(12, 2)` sum, and `44.273058` for an
 `avg_amount` of 18240.50 over 412 events, at four places past the
 scale with trailing zeros dropped. Each is a bare JSON number, as
-exact as Straum keeps it. A client that reads numbers as doubles, as
-JavaScript's `JSON.parse` does, rounds those past 2^53
-(9,007,199,254,740,992); read such sums with a decimal-aware parser.
+exact as Straum keeps it. A client that reads numbers as doubles
+rounds those past 2^53.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in
-milliseconds: `parse`, `answer`, `json` and `total`; what a client
-measures beyond `total` is the network and the client itself.
+milliseconds: `parse`, `answer`, `json` and `total`.
 
 ### As a table
 
@@ -306,7 +297,6 @@ sees the connection close.
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has, 503 while Straum is [loading](deploy.md#states). |
 
-Every reply carries `Cache-Control: no-store`: an answer is true as of
-its `as_of` and no later, so nothing between Straum and a client may
-keep one. A path not listed here is 404, and a listed path asked with
-another method is 405, its `Allow` header naming the method to use.
+Every reply carries `Cache-Control: no-store`. A path not listed here
+is 404, and a listed path asked with another method is 405, its `Allow`
+header naming the method to use.

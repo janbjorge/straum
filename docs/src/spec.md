@@ -57,8 +57,7 @@ fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point,
            written shortest: one digit before the point, no zero ending it
 ```
 
-Brackets hold what may be left out, `|` separates a choice, and `...`
-repeats what is before it. What the synopsis can't show:
+What the synopsis can't show:
 
 - A spec is one or more views, with `;` between them, and never empty.
   `CREATE OR REPLACE VIEW` and view options such as `WITH (...)` are
@@ -128,9 +127,9 @@ Each name goes through three layers, and each layer uses only its own:
 
 The schema is never left out, even for `public`: Straum has no search
 path, and `FROM events` is refused with `table events must be
-schema.table`. The alias is never left out either, so every column says
-which table it is from. Setup SQL and start checks print tables as
-`public.events`, the way PostgreSQL resolves them.
+schema.table`. The alias is never left out either. Setup SQL and start
+checks print tables as `public.events`, the way PostgreSQL resolves
+them.
 
 The fact table needs no primary key. On the logical stream the old
 row of an update or delete comes from `REPLICA IDENTITY FULL`, which
@@ -151,8 +150,7 @@ of the cell: an ask reads it through the join
 The `AS name` is what asks use, and it is the only way an ask reaches
 the item: it says `region`, never `a.region`. Names are
 unique within a view. `GROUP BY` lists the keys by their positions in
-`SELECT`, in order: a position is what PostgreSQL resolves without a
-lookup, where an output name it may read as an input column.
+`SELECT`, in order.
 
 A key column is an integer type, `numeric(p, s)`, `boolean`, `text`,
 `varchar`, `date` or `uuid`, or an [enum written
@@ -245,9 +243,7 @@ an account moved from `eu` to `us` moves all its events to `us` in the
 next answer, as PostgreSQL's view would, and nothing stops
 ([Dims](how-it-works.md#dims)).
 
-- `INNER JOIN` keeps a fact row only while a dim row matches it;
-  `LEFT OUTER JOIN` keeps every fact row, with null dim columns while
-  none matches. A `RIGHT` or `FULL` join would add dim rows no fact row
+- A `RIGHT` or `FULL` join would add dim rows no fact row
   points at, whose bucket is null and which no ask reads, so it answers
   as `INNER` or `LEFT OUTER`; write that.
 - An `ON` equality has the joined table's column on the left. Its right
@@ -299,12 +295,9 @@ next answer, as PostgreSQL's view would, and nothing stops
 WHERE EXISTS (SELECT 1 FROM public.accounts AS known WHERE known.id = e.account_id)
 ```
 
-`EXISTS` keeps a fact row while at least one dim row matches it, once
-however many match: here an event whose account is in `accounts`.
-`NOT EXISTS` keeps it while none does. Its
-equalities are those of `ON`. No column of the subquery's table can be
-selected, filtered on or joined through. Both follow the dim as it is
-now, like any join.
+The equalities of `EXISTS` and `NOT EXISTS` are those of `ON`. No
+column of the subquery's table can be selected, filtered on or joined
+through. Both follow the dim as it is now, like any join.
 
 ## The view's WHERE
 
@@ -312,8 +305,7 @@ now, like any join.
 WHERE e.kind IN ('purchase', 'refund') AND a.region = 'eu'
 ```
 
-`WHERE` drops rows from every answer, as the view's `WHERE` does in
-PostgreSQL. Its conditions are those of a `FILTER`, below, on columns
+The view's conditions are those of a `FILTER`, below, on columns
 the view selects as keys, so a condition on a dim column follows the
 dim. A `FILTER` that every measure repeats is refused: write it here.
 
@@ -323,9 +315,8 @@ dim. A `FILTER` that every measure repeats is refused: write it here.
 (e.device_id IS NOT NULL) AS has_device
 ```
 
-A null-ness key is a boolean, true for the rows with a `device_id`,
-grouped and filtered like a column under its name. `IS NULL` makes the
-opposite key. The column may be of any type Straum reads, a time
+A null-ness key is a boolean, grouped and filtered like a column under
+its name. The column may be of any type Straum reads, a time
 included, but not the view's time column: a row with no time is never
 answered, so the key could never be true. The view body stays what
 PostgreSQL runs, since the key's name is no column there.
@@ -336,8 +327,7 @@ PostgreSQL runs, since the key's name is no column there.
 e.kind::text AS kind
 ```
 
-Had `kind` been an enum, the view would read it so: as its label, the
-text PostgreSQL prints for it.
+Had `kind` been an enum, the view would read it so, as its label.
 
 - `::text` goes wherever the view reads the column: on a key, in a
   null-ness key, `(e.kind::text IS NULL)`, in a `FILTER` and in
@@ -375,25 +365,17 @@ text PostgreSQL prints for it.
 | `stddev_samp(c)`, `stddev_pop(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
 | `bool_and(c)`, `bool_or(c)` | `boolean` | `true` or `false` |
 
-A measure's column is one of the fact table. Nulls are skipped, as in
-SQL. Sums are exact: Straum adds integers, with
-numeric values scaled by their column's scale. `count(*)` counts rows
-and `count(c)` the rows where `c` is not null. `bool_and(c)` is true
-when every `c` that is not null is true, and `bool_or(c)` when any is;
-both are null when no `c` is
+A measure's column is one of the fact table. Sums are exact: Straum
+adds integers, with numeric values scaled by their column's scale
 ([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
 `percentile_disc(f)` is the value at rank `ceil(f * n)` of the `n`
 values that are not null, at least the first, and null when there are
 none; ascending is its one order, so `ASC` and `DESC` are not written
 ([Median and percentiles](aggregates.md#median-and-percentiles)).
 `mode()` is the value the most rows hold, the least of those tied, as
-PostgreSQL takes the first in order; null when no `c` is.
-`var_samp(c)` is the sum of the squared distances of the values from
-their mean, over `n - 1`; `var_pop(c)` the same over `n`.
-`stddev_samp(c)` and `stddev_pop(c)` are their square roots. All four
-are null when no `c` is, and the two `_samp` ones also for a single
-value. A variance is in `c`'s units squared, so its scale is twice
-`c`'s: of a `numeric(10, 2)` it prints eight places
+PostgreSQL takes the first in order; null when no `c` is. A variance is
+in `c`'s units squared, so its scale is twice `c`'s: of a
+`numeric(10, 2)` it prints eight places
 ([Variance and standard deviation](aggregates.md#variance-and-standard-deviation)).
 
 `percentile_disc` takes one fraction, as the synopsis writes it, and
@@ -403,7 +385,7 @@ hypothetical-set aggregates are refused. So are `variance` and
 `stddev`, PostgreSQL's other names for `var_samp` and `stddev_samp`:
 write those.
 
-`FILTER` makes a measure count only some rows:
+A measure may take a `FILTER`:
 
 ```sql
 count(*) FILTER (WHERE e.kind = 'purchase') AS purchases
