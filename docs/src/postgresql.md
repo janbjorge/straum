@@ -30,13 +30,9 @@ Without a DSN the role is `straum` and the SQL says how to give it a
 password. `--role NAME` picks another role
 ([flags](cli.md#straum-plan)).
 
-`REPLICATION` beside `LOGIN` is a privilege of that role, not another
-user. It lets the role follow commits.
-
 Run the SQL as an owner of the tables. A superuser runs the lines the
 comments name: creating the role, `wal_level` for logical decoding,
-and `BYPASSRLS` where a policy of row-level security hides rows. The
-setup lives in the catalog and survives restarts.
+and `BYPASSRLS` where a policy of row-level security hides rows.
 
 ### Physical WAL
 
@@ -91,8 +87,7 @@ checkpoint, and the changes of open transactions. A shorter
 
 ### Logical decoding
 
-The publication names the tables. `REPLICA IDENTITY FULL` puts the old
-row of an update or delete into the stream. Inserts cost no more.
+`REPLICA IDENTITY FULL` costs inserts nothing.
 Dims are published and get `FULL` like facts, since Straum holds and
 follows them. `--publication NAME` picks another name; give `straum
 run` the same one. Straum never asks for `FOR ALL TABLES`, which needs
@@ -116,12 +111,9 @@ ALTER TABLE "public"."events" REPLICA IDENTITY FULL;
 ALTER TABLE "public"."accounts" REPLICA IDENTITY FULL;
 ```
 
-PostgreSQL 17 and 18 refuse a logical slot while `wal_level` is
-`replica`, and changing it takes a restart. On your own server the
-`ALTER SYSTEM` line sets it; restart after. From 19, `replica` is
-enough: a logical slot turns decoding on while it exists. On a managed
-service, set the provider's parameter instead of `ALTER SYSTEM`, then
-restart there:
+From 19, `replica` is enough: a logical slot turns decoding on while
+it exists. On a managed service, set the provider's parameter instead
+of `ALTER SYSTEM`, then restart there:
 
 | Service | Setting |
 | --- | --- |
@@ -139,20 +131,18 @@ on Amazon RDS. Grant it to Straum's role.
 ## 2. Connect
 
 Straum reads its DSN from a file named by `--dsn-file`, else from
-`STRAUM_DSN`, never from the command line, where other users could see
-it:
+`STRAUM_DSN`, never from the command line:
 
 ```text
 postgres://straum:PASSWORD@db.example.com:5432/app
 ```
 
 The scheme is `postgres://` or `postgresql://`. The port defaults to
-5432 and the database to the user's name. An IPv6 address goes in
-brackets, `postgres://straum:PASSWORD@[2001:db8::1]/app`.
-Percent-encode `@`, `?` and `/` in the password as `%40`, `%3F` and
-`%2F`; a raw `?` or `/` is refused. The only parameters Straum takes
-are `sslmode` and `sslrootcert`, and it refuses any other. An error
-about a parameter never repeats its text, which could be a password's.
+5432 and the database to the user's name. Percent-encode `@`, `?` and
+`/` in the password; a raw `?` or `/` is refused. The only parameters
+Straum takes are `sslmode` and `sslrootcert`, and it refuses any
+other. An error about a parameter never repeats its text, which could
+be a password's.
 
 With neither the file nor `STRAUM_DSN`, Straum reads libpq's
 variables: `PGHOST` or `PGHOSTADDR`, `PGPORT`, `PGUSER`, `PGPASSWORD`,
@@ -169,7 +159,7 @@ this for every `sslmode` but `disable`:
 | `sslmode` | What Straum does |
 | --- | --- |
 | omitted, `require`, `verify-ca`, `verify-full` | TLS, checking the certificate and the host name |
-| `disable` | Plain TCP. Use it only on a network you trust. |
+| `disable` | Plain TCP |
 | `allow`, `prefer` | Refused, since they fall back to plain TCP |
 
 The built-in roots are Mozilla's. If your provider signs with a CA of
@@ -281,8 +271,8 @@ it was made.
 
 Nothing stays after Straum is gone. The slot is temporary, so
 PostgreSQL drops it when the connection closes, crashes and deleted
-pods included. Temporary slots do not move to a standby, so after a
-failover the next start loads from the new primary.
+pods included. A temporary slot does not move to a standby, so after
+a failover the next start loads from the new primary.
 
 Each load takes a snapshot. It holds back vacuum for the whole database
 and makes `ALTER TABLE` on its tables wait. Straum ends it right after

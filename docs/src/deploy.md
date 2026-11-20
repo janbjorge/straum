@@ -49,28 +49,24 @@ says.
 
 Straum has no authentication and no TLS. Anyone who reaches its port
 can ask, read its status and read every view's rows. So `straum run`
-listens on `127.0.0.1:8080` unless told, which only its own host
-reaches. In a container that is the container itself: give `--listen
-0.0.0.0:8080` there, as the [quick start](quick-start.md) and the chart
-do.
+listens on `127.0.0.1:8080` unless told. In a container, give
+`--listen 0.0.0.0:8080`, as the [quick start](quick-start.md) and the
+chart do.
 
 Once it listens on more than loopback, decide who reaches it in front
 of Straum: a Kubernetes NetworkPolicy that admits only the apps that
-ask, a proxy that authenticates and ends TLS, or a service mesh. Don't
-publish the port to a network you don't trust.
+ask, a proxy that authenticates and ends TLS, or a service mesh.
 
 `POST /ask` refuses a request that is not sent with `Content-Type:
-application/json` ([errors](asks.md#errors)). A browser sends a form
-or plain text to any site without asking first, but not JSON, so a page
-on another site can't make a visitor's browser run asks.
+application/json` ([errors](asks.md#errors)), so a page on another
+site can't make a visitor's browser run asks.
 
 On loopback Straum answers only a request whose `Host` is
 `localhost`, `127.0.0.1`, `[::1]` or the address it listens on, with
-its port; any other gets 421 Misdirected Request on every endpoint. A
-page whose name an attacker points at 127.0.0.1 (DNS rebinding) makes
-the browser send that name, so it can't read a Straum on a laptop. On
-any other address, `0.0.0.0` too, every `Host` is answered: whoever
-reaches the port can ask anyway, by whatever name points at it.
+its port; any other gets 421 Misdirected Request on every endpoint, so
+DNS rebinding can't read a Straum on a laptop. On any other address,
+`0.0.0.0` too, every `Host` is answered: whoever reaches the port can
+ask anyway, by whatever name points at it.
 
 ## States
 
@@ -101,9 +97,7 @@ altered under it, or too much WAL retained for its slot. The last lines
 of its log say why. The connections close with it, and PostgreSQL drops
 the temporary slot. Straum keeps no state across a failure and never
 retries inside the process. Whatever runs it starts it again, with a
-wait of its own: Kubernetes restarts the container with a backoff of
-up to five minutes, and Docker Compose restarts it unless it was
-stopped. The new process loads every table from a new slot.
+wait of its own. The new process loads every table from a new slot.
 
 ```text
 straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-retained-wal limit of 4096.0 MiB; the watchdog ended the slot's session
@@ -139,9 +133,8 @@ seconds, then takes SIGTERM and finishes the asks in flight, within
 its 30 second grace period.
 
 The chart passes `--listen 0.0.0.0:8080`, or `[::]:8080` on an
-IPv6-only cluster. With no `--listen`, Straum serves `127.0.0.1`,
-which no probe or Service reaches. Any pod that reaches the Service
-can ask ([Who can ask](#who-can-ask)). For a release named `straum`,
+IPv6-only cluster. Any pod that reaches the Service can ask
+([Who can ask](#who-can-ask)). For a release named `straum`,
 that is `http://straum:8080/ask`. The pod pins no user, so on
 Kubernetes the image's user, 65532, applies. OpenShift's
 `restricted-v2` assigns one from the project's range, and refuses one
@@ -171,9 +164,10 @@ is `spec.sql` beside the file. The DSN is the file `dsn`, passed as a
 secret, so it never sits in the environment. The spec and the DSN must
 be readable by user 65532, the image's user. Straum listens on
 `0.0.0.0:8080` inside the container, and Compose publishes it on the
-host's `127.0.0.1:8080` only ([Who can ask](#who-can-ask)). The health
-check is `straum status`. A failed check does not restart it, since a
-load or a lag must not.
+host's `127.0.0.1:8080` only ([Who can ask](#who-can-ask)). Compose
+restarts it unless it was stopped. The health check is `straum
+status`. A failed check does not restart it, since a load or a lag
+must not.
 
 ## Amazon ECS
 
