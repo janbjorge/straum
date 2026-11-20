@@ -1,15 +1,14 @@
 # How Straum works
 
-What does Straum hold, and how does it stay current? It loads each table
-once into cells, keeps them current from PostgreSQL's replication stream,
-and answers every ask from the cells alone. [Design](design.md)
-names the code behind each step.
+Straum loads each table once into cells, keeps them current from
+PostgreSQL's replication stream, and answers every ask from the cells
+alone. [Design](design.md) names the code behind each step.
 
 ## Load once, follow every commit
 
 `straum run` loads each spec table once from a snapshot, then streams
-every commit the snapshot did not see, none missed or applied twice. How
-the two meet depends on [the logical stream](#the-logical-stream) or [the
+every commit the snapshot did not see, and applies each of them exactly
+once. How the two meet depends on [the logical stream](#the-logical-stream) or [the
 physical stream](#the-physical-stream).
 
 The load is one binary `COPY` per table, grouped into cells as rows
@@ -120,9 +119,9 @@ the next start loads from a new slot: an update or delete whose old row is
 missing, a row never added, a dim row never held, a value it cannot read,
 a table whose columns now read differently, a renamed label of an enum it
 reads ([Enum columns](spec.md#enum-columns)), and a transaction above
-`--max-transaction-rows`. The row limit is deliberate: a large transaction
-would wait in memory, while the new slot's snapshot brings its rows in
-through the bulk `COPY`. The [benchmark](performance.md#transactions) sets
+`--max-transaction-rows`. Stopping keeps a large transaction from waiting
+in memory; the new slot's snapshot brings its rows in through the bulk
+`COPY` instead. The [benchmark](performance.md#transactions) sets
 the default.
 
 Straum also stops on a lost connection or WAL past `--max-retained-wal`
