@@ -223,9 +223,9 @@ answer, as PostgreSQL's view would, and nothing stops
 ([Dims](how-it-works.md#dims)). The join itself has no value: asks
 group and filter by `region` or `account_id`, never by `a`.
 
-A `RIGHT` or `FULL` join would add dim rows no fact row points at,
-whose bucket is null and which no ask reads, so it answers as `INNER`
-or `LEFT OUTER`; write that.
+A `RIGHT` or `FULL` join is refused. It would add dim rows no fact
+row points at, whose bucket is null and which no ask reads, so it
+answers as `INNER` or `LEFT OUTER`; write that.
 
 An `ON` equality has the joined table's column on the left, of the
 same type as the column it joins, column for column. Its right side
@@ -300,8 +300,9 @@ dim. A `FILTER` that every measure repeats is refused: write it here.
 A null-ness key is a boolean, grouped and filtered under its name like
 a column. Its column may be of any type Straum reads, a time included,
 but not the view's time column: a row with no time is never answered,
-so the key could never be true. The view body stays what PostgreSQL
-runs, since the key's name is no column there.
+so the key could never be true. In the view's `WHERE` or a `FILTER`,
+write `e.device_id IS NOT NULL`, not `has_device`: PostgreSQL has no
+column by the key's name.
 
 ## Enum columns
 
