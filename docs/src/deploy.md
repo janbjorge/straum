@@ -1,7 +1,7 @@
 # Deploying Straum
 
-How do you run Straum for real? As one static binary, its image, or the
-Helm chart, next to the apps that ask it: on
+Straum runs as one static binary, its image, or the Helm chart, next to
+the apps that ask it: on
 [Kubernetes](#kubernetes), with [Docker Compose](#docker-compose) or on
 [Amazon ECS](#amazon-ecs). Set up [PostgreSQL](postgresql.md) first;
 every flag is under [Command line](cli.md).
@@ -87,10 +87,9 @@ Lag is the time since Straum last caught up with a position the server
 had reached, so it can overstate the true delay by up to one second but
 never understate it.
 
-Straum fails hard. A lost connection, a missing setup, a change Straum
-can't apply, a table altered under it, or too much WAL retained for its
-slot ends the process with exit 1, and the last lines of its log say
-why. The connections close with it, and PostgreSQL drops the temporary
+A lost connection, a missing setup, a change Straum can't apply, a
+table altered under it, or too much WAL retained for its slot ends the
+process with exit 1, and the last lines of its log say why. The connections close with it, and PostgreSQL drops the temporary
 slot. Straum keeps no state across a failure and never retries inside
 the process; whatever runs it starts it again, with a wait of its own.
 
