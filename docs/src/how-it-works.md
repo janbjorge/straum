@@ -64,22 +64,45 @@ Straum drops the dead ones in one pass under the write lock.
 
 ## Dims
 
-A view's `FROM` table is its fact table. A table it joins is a dim, here
-`accounts`. Cells key on the join column, `e.account_id`, not the dim column,
-`a.region`. Straum keeps a projection of each dim: its key and the columns
-the views read, kept current from the stream. An ask reads `region` through
-each cell's `account_id`.
+The `usage` view groups events by `region`, but `events` has no
+`region`. It is a column of `accounts`, which the view joins:
 
-So a dim change moves no cell. Moving an account from `eu` to `us` changes
-its events' region in the next answer, as PostgreSQL's view would. A join
-column with many distinct values means many cells, one per value.
+```sql
+FROM public.events AS e
+LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
+```
 
-For a view whose joins all read fact columns, and at least one of which is
-not a key of the view, Straum also keeps bound cells: the same cells keyed by
-the dim columns' values, so an ask reads them without a projection. A dim
-change walks the fact's keyed cells once under the write lock, and skips
-keys no fact row names. A view whose join columns are keys, as `usage` is,
-has none.
+Straum treats the two tables differently. The `FROM` table, `events`,
+is the fact table: each row is something that happened, and the
+measures count and add up its rows. A joined table, `accounts`, is a
+dim, short for dimension: each row describes something the fact rows
+point at, here an account and its region.
+
+A cell keeps the join column, `account_id`, and not `region`. Beside
+the cells, Straum keeps a projection of each dim: its key and the
+columns the views read, here `id` and `region`, kept current from the
+stream. An ask by region looks up each cell's `account_id` in the
+projection and adds up the cells of each region:
+
+![Cells keep the join column; an ask reads the dim through it](diagrams/dims.svg)
+
+*A dim change moves no cell. The next ask reads the new region.*
+
+Moving account 7 from `eu` to `us` changes one projection row, and the
+next answer counts its events under `us`, as PostgreSQL's view would.
+Had cells kept `region`, the move would have to find every cell of
+account 7, in every bucket of every width. The cost is in the cell
+key: the join column is part of it, so a join column with many
+distinct values means many cells. [Joining a
+dim](spec.md#joining-a-dim) has the rules for writing a join.
+
+A view that selects `a.region` but not `e.account_id` would make every
+ask by region add up the cells of each account. For such a view, when
+its joins all read fact columns, Straum also keeps bound cells: the
+same cells keyed by the dim columns' values, so an ask reads no
+projection. A dim change then moves cells: it walks the fact's keyed
+cells once under the write lock, and skips keys no fact row names.
+`usage` selects `account_id`, so it has no bound cells.
 
 ## Following
 
