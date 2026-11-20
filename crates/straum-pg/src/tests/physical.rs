@@ -550,8 +550,7 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     });
     // A commit after the DDL's, which comes out once Straum has the
     // layouts the DDL left.
-    db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
-    let written = db.insert_lsn();
+    let written = db.run_committed("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
     while !applied_through(&writer, written) {
         assert!(Instant::now() < deadline, "never applied {written}");
         applied(&mut writer);
@@ -862,8 +861,7 @@ pub(super) fn catch_up(db: &mut Db, writer: &mut Writer<Postgres>, rng: &mut Rng
     loop {
         assert!(Instant::now() < deadline, "never caught up");
         *next += 1;
-        db.run(&rng.trip(*next));
-        let written = db.insert_lsn();
+        let written = db.run_committed(&rng.trip(*next));
         while !applied_through(writer, written) {
             assert!(Instant::now() < deadline, "never applied {written}");
             applied(writer);

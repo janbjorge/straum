@@ -279,6 +279,19 @@ impl Db {
         parse_lsn(rows[0][0].as_deref().unwrap()).unwrap()
     }
 
+    /// Runs `sql` in a transaction and gives where WAL stood just before
+    /// its commit: a stream has applied that commit once it is past it.
+    /// Where WAL stands after the commit may already hold another
+    /// session's records, such as autovacuum's `ANALYZE` or the standby's
+    /// `RUNNING_XACTS`, which no commit the stream delivers reaches.
+    pub(super) fn run_committed(&mut self, sql: &str) -> Lsn {
+        self.run("BEGIN");
+        self.run(sql);
+        let before_commit = self.insert_lsn();
+        self.run("COMMIT");
+        before_commit
+    }
+
     /// The spec `text` over the test's schema.
     pub(super) fn spec(&self, text: &str) -> Spec {
         straum_notation::parse(&self.sql(text)).unwrap()

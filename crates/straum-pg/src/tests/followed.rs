@@ -118,8 +118,8 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
     let mut writer = db.physical_writer(TASKS_SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     db.run("ALTER TYPE $S.kind ADD VALUE 'bin'");
-    db.run("INSERT INTO $S.tasks VALUES (3, 1, 1, '2024-01-15 12:00', NULL, 5, 'bin')");
-    let written = db.insert_lsn();
+    let written = db
+        .run_committed("INSERT INTO $S.tasks VALUES (3, 1, 1, '2024-01-15 12:00', NULL, 5, 'bin')");
     while writer.app().status().applied < Some(written) {
         applied(&mut writer);
     }
