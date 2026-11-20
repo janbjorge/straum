@@ -124,7 +124,8 @@ The [user guide](https://janbjorge.github.io/straum/) is built from
 indexes it for agents. Decisions are in [docs/adr/](docs/adr/).
 Research: [Straum and PostgreSQL](research/POSTGRESQL.md),
 [Joins](research/JOINS.md), [Aggregates](research/AGGREGATES.md),
-[User-defined aggregates](research/UDAF.md).
+[User-defined aggregates](research/UDAF.md). What is not built yet is
+in [ROADMAP.md](ROADMAP.md).
 
 ## Development
 

@@ -83,6 +83,7 @@ old name, flag, message, default, number. Then check:
   added, renamed or given a new default.
 - `docs/adr/`: a change against a record edits that record and moves
   its revised date (ADR-0001).
+- `ROADMAP.md`: work shipped, started, parked or dropped.
 - This file: command, tool or rule changed.
 
 End the report with the documents changed, or say none describes the
