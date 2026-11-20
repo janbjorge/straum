@@ -21,7 +21,7 @@ NOTIFY delivery, was dropped for 0018; numbers are never reused.
 | [0014](0014-the-guide-is-one-path-of-fixed-pages.md) | The guide's pages, order and what each owns |
 | [0015](0015-straum-writes-the-copy-and-psql-runs-it.md) | Copying a spec's tables for a try |
 | [0016](0016-a-mysql-source-is-the-test-of-every-source-boundary.md) | The MySQL test for the source port |
-| [0018](0018-triggers-write-changes-to-an-outbox.md) | Trigger capture and its outbox |
+| [0018](0018-triggers-write-changes-to-an-outbox.md) | Trigger capture, its outbox, one Straum per outbox |
 
 ## Numbers before 2026-11-16
 
