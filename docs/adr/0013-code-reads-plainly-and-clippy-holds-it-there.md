@@ -1,6 +1,6 @@
 # ADR-0013: Code reads plainly, and clippy holds it there
 
-Status: Accepted 2026-11-10; revised 2026-11-17
+Status: Accepted 2026-11-10; revised 2026-11-20
 
 ## Context
 
@@ -27,8 +27,9 @@ it. Functions stay under 70 lines, files under 1000.
 
 Every file opens with a plain-English header saying what it holds and
 how data moves through it; every public type gets one line. Other
-comments say only why. `docs/src/reading-the-code.md` explains the
-Rust used and the order to read the crates in.
+comments say only why. `docs/src/reading-the-code.md` gives the order
+to read the crates in and the patterns the code keeps and refuses; it
+does not teach Rust.
 
 Clippy enforces what it can. `[workspace.lints]` turns on `pedantic`
 and `min_ident_chars`, every crate takes it, and `clippy.toml` caps

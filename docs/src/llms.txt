@@ -60,5 +60,5 @@ quick start January 2024, performance January to June 2024.
   store, invariants and state machines, and which record shaped what.
   Examples use the usage view.
 - [Reading the code](https://janbjorge.github.io/straum/reading-the-code.html):
-  The order to read the crates in, and the Rust they use. Examples use
-  the usage view.
+  The order to read the crates in, and the patterns the code keeps and
+  refuses.

@@ -158,8 +158,8 @@ change.
   saying what it is. Other comments say only a why the code can't show:
   constraint, invariant, PostgreSQL quirk, rejected alternative. Never
   reference callers or tickets. Never leave `TODO` or commented-out
-  code. `docs/src/reading-the-code.md` explains the Rust used; add to it
-  when code needs a feature it doesn't cover.
+  code. `docs/src/reading-the-code.md` lists the patterns the code keeps
+  and refuses; change it with the rule. It does not teach Rust.
 - Every behaviour gets a positive and a negative test. State that
   changes over time gets a property test against a reference; a planted
   bug must make it fail.

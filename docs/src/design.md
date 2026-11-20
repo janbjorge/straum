@@ -3,7 +3,7 @@
 This page names the code behind [How Straum works](how-it-works.md).
 The [glossary](glossary.md) gives each term its name in the code;
 [Reading the code](reading-the-code.md) gives the order to read the
-crates in and the Rust they use.
+crates in and the patterns the code keeps.
 
 Four participants:
 
