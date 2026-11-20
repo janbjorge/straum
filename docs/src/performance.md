@@ -1,9 +1,8 @@
 # Performance
 
-How fast does Straum answer, and how much memory does it take? Below are
-one benchmark's numbers and the commands to measure them yourself.
-
-The benchmark sends Straum and PostgreSQL the same asks about six months
+One benchmark measures how fast Straum answers and how much memory it
+takes; [Running it yourself](#running-it-yourself) has the commands. It
+sends Straum and PostgreSQL the same asks about six months
 of New York taxi trips, checks that the answers are equal, then times
 both. [Transactions](#transactions) measures what one large transaction
 costs Straum, [Physical write-ahead log (WAL)](#physical-wal) how fast
@@ -344,8 +343,9 @@ thread, PostgreSQL 18, six reads each way:
 Images are full-page images. "Against PostgreSQL" divides the time
 PostgreSQL took to write a phase's WAL by the time the pipeline took to
 read it. Below 1x, a writer that keeps that pace for long leaves Straum
-behind, and once the lag passes `--max-lag`, `/readyz` turns off. The pipeline held at most 429.5 MiB of rows, most of them
-the open `COPY` transactions' rows, which wait for their commit.
+behind, and once the lag passes `--max-lag`, `/readyz` turns off. The
+pipeline held at most 429.5 MiB of rows, most of them the open `COPY`
+transactions' rows, which wait for their commit.
 
 Timings drift with the machine, so two tests in
 `crates/straum-pg/src/wal/pipeline.rs` hold what this bench gained by
