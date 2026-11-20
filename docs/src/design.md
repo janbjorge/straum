@@ -34,8 +34,7 @@ add up, in plain structs, enums and functions with no dependency and no
 I/O. It holds what a spec and an ask mean, never how Straum SQL writes
 them. Its errors are data, and `straum-notation` words them
 (`describe_ask_error`); `scripts/check-domain-syntax.py` refuses a
-Straum SQL word in a domain string, so the syntax can't leak into the
-meaning.
+Straum SQL word in a domain string.
 
 `straum-app` turns the domain into use cases: `App` answers asks, and
 `Writer` keeps the store in step with PostgreSQL. It declares the one
@@ -43,7 +42,7 @@ port, `Source`, the trait PostgreSQL sits behind, so the tests run the
 same writer over an in-memory fake. Like the domain, it takes no
 outside crate and does no I/O; it reads only the clock.
 
-The adapters never meet. `straum-pg` implements `Source`, and
+Neither adapter depends on the other. `straum-pg` implements `Source`, and
 `straum-http` serves the endpoints and is the only crate that runs
 tokio. HTTP still has to read an ask and word its errors, which takes
 Straum SQL, so the binary hands it both as `AskSyntax`, a reader and the
@@ -64,20 +63,20 @@ an empty `Store` and the `Limits`, and a `Writer` over a `Postgres`
 source, then spawns the writer thread and serves HTTP until SIGTERM or
 SIGINT.
 
-Failure is short. `run_writer` logs a failed step's error and exits 1,
-and PostgreSQL drops the temporary slot as the connection closes.
-Straum never retries inside the process: whatever runs it starts it
-again, and the new process loads afresh ([States](deploy.md#states)).
+`run_writer` logs a failed step's error and exits 1, and PostgreSQL
+drops the temporary slot as the connection closes. Straum never retries
+inside the process: whatever runs it starts it again, and the new
+process loads afresh ([States](deploy.md#states)).
 
-`straum plan --copy` stands apart. It writes the psql scripts that copy
-the spec's tables into another database (ADR-0015) and reads no
-database itself, so `copy_scripts.rs` sits beside `plan.rs` in
-`straum-pg`, outside the `Source` port, which only loads and streams.
+`straum plan --copy` writes the psql scripts that copy the spec's
+tables into another database (ADR-0015) and reads no database itself,
+so `copy_scripts.rs` sits beside `plan.rs` in `straum-pg`, outside the
+`Source` port, which only loads and streams.
 
 ## Start
 
-`Writer::start` has one job: fill a store that is exactly current at
-one point in the log, and hand over to the stream at that point.
+`Writer::start` fills a store that is exactly current at one point in
+the log, and hands over to the stream at that point.
 
 With `--wal logical`, `Source::open` connects, begins a read-only
 repeatable-read transaction and creates a temporary logical slot with
@@ -102,7 +101,7 @@ slot was opened.
 All of this fills a new store outside any lock, so asks never wait on
 PostgreSQL; they answer 503 meanwhile. Only at the end does the writer
 take the write lock, swap the loaded store in for the empty one and set
-`Following` at L. Straum is ready. The stream thread starts at the
+`Following` at L, and Straum is ready. The stream thread starts at the
 first `next_commit`: it reads the stream, answers the server's
 keepalives and confirms what the writer has applied, so the server can
 recycle WAL. Any error on the way is a `Failure`, and Straum exits. A
@@ -143,7 +142,7 @@ as above.
 
 ## The store
 
-The load pours rows into the store: one per process, mutable, owned by
+The load puts rows into the store: one per process, mutable, owned by
 `App`.
 
 ![What the store holds](diagrams/store.svg)
@@ -184,8 +183,8 @@ join column ([Dims](how-it-works.md#dims)). For a fact whose joins all
 read fact columns, one of them a column no key reads, the store keeps a
 second rollup keyed by the keys and the dim columns' values. Its cells
 are fewer than the fact's, and an ask reads no projection (ADR-0006).
-Writes pay for it. A fact row goes into both rollups, and into the
-bound one once per way its joins resolve now (`Bound::rows`). A dim
+The cost falls on writes: a fact row goes into both rollups, and into
+the bound one once per way its joins resolve now (`Bound::rows`). A dim
 change moves the bound cells whose join columns name the changed key
 (`Store::retarget`); a dim truncate or load makes them again from the
 keyed cells (`Store::rebuild_dim`); a dim update that reads the same
@@ -211,7 +210,7 @@ its input.
 A value keeps its code after its last cell or dim row goes. Once a
 column holds more than 4,096 codes and its dead codes outnumber its
 live ones, the end of a store change drops the dead ones and numbers
-the rest again (`Store::reclaim_codes`), so a code is not forever.
+the rest again (`Store::reclaim_codes`), so a value's code can change.
 
 ## Applying a commit
 
@@ -294,8 +293,8 @@ code that touches the terminal.
 
 ## Model
 
-The story above passes a few types between its steps. The diagrams
-below draw them; an arrow points at what a thing holds.
+A few types pass between these steps. In the diagrams below, an arrow
+points at what a thing holds.
 
 ### The spec: what Straum keeps
 
