@@ -5,8 +5,8 @@ Status: Accepted 2026-11-20
 ## Context
 
 PostgreSQL is the only source Straum reads (ADR-0007), and the only
-one planned. But every way of following it, logical decoding, the
-physical WAL, and the ways still to come, puts PostgreSQL's words
+one planned. But every way of following it (logical decoding, the
+physical WAL and the ways still to come) puts PostgreSQL's words
 within reach of the core: LSNs, slots, xids, snapshots, type OIDs. Once
 `straum-app` or `straum-domain` holds one, a second source means
 rewriting the core, and the core is where the tests and the cost
@@ -27,7 +27,7 @@ PostgreSQL stays in `straum-pg`: replication, slots, LSNs, xids,
 snapshots, OIDs, wire formats. A source turns its values into
 `Datum`'s meanings, in its own crate.
 
-MySQL is the test because it differs where it matters: a binlog
+MySQL is the test because it has its own form of each: a binlog
 position or GTID set instead of an LSN, `START TRANSACTION WITH
 CONSISTENT SNAPSHOT` instead of an exported snapshot, its own types and
 zero dates. No MySQL source is built or planned.
