@@ -6,13 +6,27 @@ is not a superuser; a superuser runs a few lines of the setup once.
 
 `--wal` picks the stream, and `straum run` and `straum plan` both
 need it. Logical decoding reads changes through a publication. The
-physical write-ahead log (WAL) reads the WAL a server writes at
-`wal_level = replica`, the default, so only a server at `minimal`
-needs a restart for it.
+physical write-ahead log (WAL) reads the WAL itself. Which one a
+server can serve depends on its `wal_level`, so check that first:
+
+```sql
+SHOW wal_level;
+```
+
+Then give Straum the stream that setting serves, or change the
+setting, which takes a restart. A managed service sets it through its
+own parameter ([Managed services](#managed-services)):
+
+| `wal_level` | `--wal logical` | `--wal physical` |
+| --- | --- | --- |
+| `logical` | Yes | Yes |
+| `replica`, the default | From 19. On 17 and 18, set `logical` first | Yes |
+| `minimal` | Set `logical` first | Set `replica` first |
+
+The streams differ in what else they need:
 
 | | `--wal logical` | `--wal physical` |
 | --- | --- | --- |
-| Server | `wal_level = logical` on 17 and 18, which takes a restart. From 19, `replica` is enough | `wal_level` of `replica`, the default, or `logical`, which takes a restart from `minimal`. `full_page_writes = on`, the default |
 | Setup SQL | A role, `SELECT`, a publication and `REPLICA IDENTITY FULL` | A role, `SELECT` and one `GRANT EXECUTE` |
 | Where | Any server, managed ones included | Not RDS, Aurora or Cloud SQL, which don't hand out the physical stream |
 
@@ -77,8 +91,9 @@ on Amazon RDS. Grant it to Straum's role.
 
 ### Physical WAL
 
-Straum reads the WAL of PostgreSQL 17 to 19. The server needs a
-`wal_compression` of `off`, `pglz` or `lz4`, and a database in `UTF8`.
+Straum reads the WAL of PostgreSQL 17 to 19. The server needs
+`full_page_writes = on`, the default, a `wal_compression` of `off`,
+`pglz` or `lz4`, and a database in `UTF8`.
 A spec table must not be `UNLOGGED`, and a column the spec reads must
 not be a virtual generated column, the default from 18: the WAL holds
 neither.
