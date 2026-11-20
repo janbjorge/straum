@@ -1,7 +1,7 @@
 # Reading the code
 
 The order to read the crates in, then the patterns the code keeps and
-the ones it refuses. Rust itself is left to the reader.
+the ones it refuses. It doesn't explain Rust.
 [Design](design.md) is the model behind the code; the
 [glossary](glossary.md) names each thing.
 
