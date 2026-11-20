@@ -1,8 +1,7 @@
 # Asks and endpoints
 
-This page is for writing asks: the JSON sent to `POST /ask`, the query
-language it holds, the answer, the errors and the endpoints beside it.
-The examples ask the `usage` view of [Spec](spec.md#synopsis):
+An ask is JSON sent to `POST /ask`. The examples ask the `usage` view
+of [Spec](spec.md#synopsis):
 
 ```sh
 curl --json '{
@@ -38,40 +37,38 @@ condition   key = $n
 comparison  measure { = | <> | < | <= | > | >= } $n
 ```
 
-The notation is that of the [spec's synopsis](spec.md#synopsis), and
-`time` is the name the view gives its [time](spec.md#time): `bucket` in
-`usage`. This is the whole language: anything it does not show is an
-error that names the construct and says what to write. The shortest
-ask reads every bucket Straum holds:
+The notation is the [spec's synopsis](spec.md#synopsis); `time` is the
+name the view gives its [time](spec.md#time), `bucket` in `usage`.
+Anything the synopsis does not show is an error that names the
+construct and says what to write. The shortest ask reads every bucket
+Straum holds:
 
 ```sql
 SELECT events, amount FROM usage
 ```
 
-A key or a measure goes by the name the view gives it with `AS`:
-`region`, `kind`, `account_id`, `amount`. `a.region` is not a name an
-ask can use; neither is `a`, the join, nor a table name. The time goes
-by its name too, `bucket` in `usage`, and is a key like any other in
-`SELECT` and `GROUP BY`.
+A key or a measure, the time included, goes by the name the view gives
+it with `AS`: `region`, `kind`, `account_id`, `amount`, `bucket`.
+`a.region`, `a` (the join) and table names are not names an ask can
+use. The time is a key like any other in `SELECT` and `GROUP BY`.
 
-`SELECT` lists the keys first, then one measure or more. Each name is
-selected at most once, since the names become the fields of each
-answer row. `GROUP BY` names exactly the selected keys. `SELECT` and
-`GROUP BY` each list at most 256 names.
+`SELECT` lists the keys first, then one measure or more, each name at
+most once, since the names become the fields of each answer row.
+`GROUP BY` names exactly the selected keys. `SELECT` and `GROUP BY`
+each list at most 256 names.
 
-`WHERE` takes `=` and `IN` on keys, and `IN` lists two parameters or
-more; for one, write `=`. `bucket >= $n` and `bucket < $n` bound the
-range, each at most once, and only the time takes `>=` or `<`. The
-start must be before the end. Leave one out and that end is open: the
-ask reads from the first bucket held, or to the end of the last. With
-no `WHERE` it reads every bucket held; `WHERE true` is refused. The
-bounds and the conditions come in any order. No condition is put in
-parentheses, and none, in `WHERE` or `HAVING`, is written twice:
-`kind = $1 AND kind = $1` is refused, naming `kind = $1`.
+`WHERE` takes `=` and `IN` on keys; `IN` lists two parameters or more,
+and for one, write `=`. Only the time takes `>=` and `<`, each at most
+once, to bound the range; the start must be before the end. Leave one
+out and that end is open: the ask reads from the first bucket held, or
+to the end of the last. With no `WHERE` it reads every bucket held;
+`WHERE true` is refused. Bounds and conditions come in any order. No
+condition is put in parentheses, and none, in `WHERE` or `HAVING`, is
+written twice: `kind = $1 AND kind = $1` is refused, naming
+`kind = $1`.
 
-Names are written in lowercase, `buckets` too; keywords such as
-`SELECT` and `GROUP BY` take any case. An ask holds no comment and no
-`;` after it.
+Names are lowercase, `buckets` too; keywords such as `SELECT` and
+`GROUP BY` take any case. An ask holds no comment and no `;` after it.
 
 An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
 `+`, `::` and the like), as does each statement of a spec: each is a
@@ -81,9 +78,9 @@ level of the tree Straum reads it into.
 
 `GROUP BY bucket` answers a row per bucket of the view's narrowest
 width, an hour in `usage`. `buckets(bucket, '1 day')`, the view's own
-`buckets` at one of its wider widths, answers a row per day instead,
-read from the day buckets the view keeps. Each row is one stored
-bucket, so a month of days reads 31 buckets, not 744 hours:
+`buckets` at one of its wider widths, answers a row per day, read from
+the day buckets the view keeps: a month of days reads 31 buckets, not
+744 hours:
 
 ```sql
 SELECT buckets(bucket, '1 day'), region, events FROM usage WHERE bucket >= $1 AND bucket < $2 GROUP BY buckets(bucket, '1 day'), region
@@ -91,9 +88,9 @@ SELECT buckets(bucket, '1 day'), region, events FROM usage WHERE bucket >= $1 AN
 
 The width is one the view's `buckets` item lists after its first,
 written as the spec writes widths: `'1 day'`, never `'24 hours'`. Any
-other width is refused, naming the widths the view keeps. A width built
-from narrower buckets would cost as much as asking by those. At the
-narrowest width itself, write `bucket`. The width is part of the query,
+other width is refused, naming the widths the view keeps: a width
+built from narrower buckets would cost as much as asking by those. At
+the narrowest width, write `bucket`. The width is part of the query,
 not a parameter, since it sets the answer's shape, as the view's own
 width does.
 
@@ -115,23 +112,17 @@ SELECT bucket, region, events, amount FROM usage WHERE kind = $1 AND bucket >= $
 
 A comparison names a measure the ask selects, so the answer shows every
 value a group was kept for. A key goes in `WHERE`, a measure in
-`HAVING`; each refuses the other and says where it goes.
+`HAVING`; each refuses the other and says where it goes. Comparisons
+join by `AND`. Not equal is `<>`; `!=` is refused.
 
-Not equal is `<>`; `!=` is refused. Comparisons join by `AND`.
-
-A measure that is null meets no comparison, `<>` included, as in
-PostgreSQL, so its group is left out.
+A null measure meets no comparison, `<>` included, as in PostgreSQL,
+so its group is left out. An ask without keys answers its one row
+only if it meets every comparison; otherwise none.
 
 `bool_and` and `bool_or` compare with a boolean, by `=` or `<>` only.
-
-Every other measure answers a number and compares with a number
-parameter: a count, sum, min, max, average, percentile, mode, variance
-or standard deviation, and a `count`, `sum` or `avg` of `DISTINCT`
-values. It compares exactly: `avg_amount > 44.27` is true of 44.273058,
-and `amount = 1875.7` of 1875.70.
-
-An ask without keys answers its one row only if it meets every
-comparison; otherwise none.
+Every other measure, `DISTINCT` ones included, answers a number and
+compares exactly with a number parameter: `avg_amount > 44.27` is true
+of 44.273058, and `amount = 1875.7` of 1875.70.
 
 ## Parameters
 
@@ -151,22 +142,22 @@ integer; a longer number is an error.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
-for a boolean or a null-ness key. A `date` or `uuid` key takes a string
-spelled as PostgreSQL prints the value and as the answer shows it:
-`"2024-01-15"`, `"0044-03-15 BC"` or `"infinity"` for a date, lowercase
-hex in groups of 8-4-4-4-12 for a uuid. `"2024-1-15"` or an uppercase
-uuid is an error that says how to write it. `account_id = $1` with
-`"7"` is an error, not an answer with no rows. A `numeric` key with a
-scale above 0 can't be filtered on: at scale 2, `1` could mean 1 or
-0.01. A [HAVING](#having) comparison takes a number of any scale.
+for a boolean or a null-ness key. `account_id = $1` with `"7"` is an
+error, not an answer with no rows. A `date` or `uuid` key takes a
+string spelled as PostgreSQL prints the value and as the answer shows
+it: `"2024-01-15"`, `"0044-03-15 BC"` or `"infinity"` for a date,
+lowercase hex in groups of 8-4-4-4-12 for a uuid. `"2024-1-15"` or an
+uppercase uuid is an error that says how to write it. A `numeric` key
+with a scale above 0 can't be filtered on: at scale 2, `1` could mean
+1 or 0.01. A [HAVING](#having) comparison takes a number of any scale.
 
 The time's bounds are RFC 3339 times, such as
 `"2026-11-13T00:00:00-05:00"`, or Unix seconds. A time is written
 `YYYY-MM-DDTHH:MM:SS`, then `Z` or an offset `+HH:MM`, with no fraction
 and no leap second: `2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are
 refused. A zero offset is `Z`, never `+00:00` or `-00:00`. Each bound
-written must fall on an edge of the ask's rows: the view's narrowest
-buckets, or the wider ones a [`buckets` key](#rows-a-day-or-a-week-apart)
+must fall on an edge of the ask's rows: the view's narrowest buckets,
+or the wider ones a [`buckets` key](#rows-a-day-or-a-week-apart)
 names. Straum never answers for part of a bucket, and the error names
 the edges on either side.
 
@@ -186,18 +177,18 @@ the edges on either side.
 }
 ```
 
-`as_of` says that every commit made before this time is in the answer.
-It is Straum's wall time when it last confirmed that it had applied all
+`as_of` says every commit made before this time is in the answer. It
+is Straum's wall time when it last confirmed it had applied all the
 write-ahead log (WAL) PostgreSQL had written, so it keeps moving on a
-quiet database. A transaction is applied whole, so an answer never sees
-half of one. An answer can predate a client's commit ([Seeing your own
-write](#seeing-your-own-write)).
+quiet database. A transaction is applied whole, so an answer never
+sees half of one. An answer can predate a client's commit ([Seeing
+your own write](#seeing-your-own-write)).
 
 `rows` holds one object per group, keyed by the names in `SELECT`,
 sorted by key, nulls first. An ask without keys answers one row even
 when nothing matches: counts are 0, the rest null.
 
-`timestamptz` buckets are their start in UTC. `timestamp` buckets are
+`timestamptz` buckets are their start in UTC; `timestamp` buckets are
 wall clock readings formatted with `Z`. PostgreSQL keeps times past
 the year 9999, which RFC 3339 can't write; an open end reads them, and
 such a bucket prints as `Unix second` and its number. A `date` or
@@ -209,9 +200,8 @@ row arrives.
 
 Measures print as the [measures table](spec.md#measures) says:
 `1875.70` for a `numeric(12, 2)` sum, and `44.273058` for an
-`avg_amount` of 18240.50 over 412 events, at four places past the
-scale with trailing zeros dropped. Each is a bare JSON number, as
-exact as Straum keeps it. A client that reads numbers as doubles
+`avg_amount` of 18240.50 over 412 events. Each is a bare JSON number,
+as exact as Straum keeps it; a client that reads numbers as doubles
 rounds those past 2^53.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
@@ -220,13 +210,12 @@ milliseconds: `parse`, `answer`, `json` and `total`.
 
 ### As a table
 
-An ask sent with `Accept: text/plain` is answered in plain text, for
-people: the same rows as a table, then the row count and `as_of`, as
-[`straum ask`](cli.md#straum-ask) prints it. Its errors are plain
-text too, a line each, under the same statuses. Its `Server-Timing`
-has `text` where the JSON's has `json`;
-[`straum shell`](cli.md#straum-shell) prints it under the table. The
-layout is for reading and may change; a program reads the JSON.
+An ask sent with `Accept: text/plain` is answered in plain text, as
+[`straum ask`](cli.md#straum-ask) prints it: the rows as a table, then
+the row count and `as_of`. Its errors are plain text too, a line each,
+under the same statuses. Its `Server-Timing` has `text` where the
+JSON's has `json`; [`straum shell`](cli.md#straum-shell) prints it
+under the table. The layout may change; a program reads the JSON.
 
 ### Seeing your own write
 
@@ -268,8 +257,8 @@ timeout or fall back to `as_of`.
 | 421 | Straum listens on loopback and the `Host` names another machine or port, on every endpoint ([Who can ask](deploy.md#who-can-ask)). |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 
-A panic in Straum ends the process rather than answering from a store
-it may have left half written, so no ask is answered 500; the client
+No ask is answered 500: a panic in Straum ends the process rather than
+answering from a store it may have left half written, and the client
 sees the connection close.
 
 ```json
