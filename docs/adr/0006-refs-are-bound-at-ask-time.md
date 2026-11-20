@@ -45,12 +45,12 @@ batched pass per commit was dropped: it held changed keys until it ran.
 
 ## Consequences
 
-- A dim change is seen by the next answer. Nothing stops.
+- A dim change is seen by the next answer, and Straum doesn't stop.
 - Every join kind is exact, chains included; a dim needs no unique
   index, only `REPLICA IDENTITY FULL` (ADR-0007).
 - Memory follows distinct join ids plus projections: the warehouse
   holds 12 million cells a width and 2 GiB, where M12 held 312 thousand
-  and 84 MiB. That is the cost of the question.
+  and 84 MiB, because answering the join needs that memory.
 - Without bound cells, a warehouse ask took 21.8 s over all time and
   31.7 ms over a day, against PostgreSQL's 3.2 s and 127 ms. With them,
   a joined view asks like an unjoined one.
