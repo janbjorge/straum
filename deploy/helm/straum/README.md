@@ -43,7 +43,7 @@ killing the pod without one. Set it a little under
 
 ## Checks
 
-`scripts/check-chart.py` runs `helm lint --strict`, the
+`just chart` runs `helm lint --strict`, the
 [helm-unittest](https://github.com/helm-unittest/helm-unittest) suites in
 `tests/`, and [kubeconform](https://github.com/yannh/kubeconform) on what
 the chart renders with `ci/values.yaml`. CI runs it too.

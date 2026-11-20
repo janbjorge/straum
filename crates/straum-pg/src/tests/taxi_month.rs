@@ -15,8 +15,7 @@ use crate::wire::{Connection, ConnectionKind};
 /// The taxi month through straum: load, stream inserts and dim changes, read
 /// the fact again after an update, and every time compare the whole
 /// `taxi.sql` view with PostgreSQL. `bench/load_taxi_trips.py` puts the month
-/// in PostgreSQL, so it needs uv. Slow, so ignored; run
-/// `cargo test -p straum-pg --release taxi_month -- --ignored --nocapture`.
+/// in PostgreSQL, so it needs uv. Slow, so ignored; run `just taxi-month`.
 #[test]
 #[ignore = "slow, and needs uv to load the taxi month"]
 fn taxi_month() {

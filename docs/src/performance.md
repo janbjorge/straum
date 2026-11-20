@@ -95,7 +95,7 @@ answer for the percentile, mode and distinct asks.
 
 ## Against a materialized view
 
-`bench/taxi.py materialized` builds one materialized view per view of
+`just taxi materialized` builds one materialized view per view of
 `bench/trips.sql`, with the same keys at the narrowest bucket, an hour
 on the epoch grid, and a unique index on them so it can refresh
 concurrently. `bench/materialized.py` writes both. The materialized
@@ -170,13 +170,14 @@ included.
 ## Running it yourself
 
 ```sh
-bench/taxi.py
+just taxi
 ```
 
-It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/).
+It needs Docker, a Rust toolchain, [just](https://just.systems) and
+[uv](https://docs.astral.sh/uv/). The recipe runs `bench/taxi.py`.
 The first run downloads the six months into `bench/data/`, which git
 ignores. Then it builds Straum, starts a throwaway `postgres:18` (or
-the major `STRAUM_TEST_POSTGRES` names), loads the months with
+another major, as `just postgres=17 taxi` picks), loads the months with
 `bench/load_taxi_trips.py`, runs the SQL `straum plan` prints and
 starts `straum run`. Last, it sends each ask to both sides and stops at
 the first answer that differs.
@@ -186,26 +187,23 @@ PostgreSQL's `avg`, variance and standard deviation rounded half to even
 at the places Straum gives them. A run takes about 80 seconds once the
 data is there.
 
-The script has four modes, each after the same setup. `bench/taxi.py`
-or `bench/taxi.py asks` gives the [Results](#results).
-`bench/taxi.py materialized` builds and refreshes the materialized
+The recipe has four modes, each after the same setup. `just taxi`
+or `just taxi asks` gives the [Results](#results).
+`just taxi materialized` builds and refreshes the materialized
 views, then asks all three sides
 ([Against a materialized view](#against-a-materialized-view)).
-`bench/taxi.py transactions` runs one transaction of 1,000 to 1,000,000
+`just taxi transactions` runs one transaction of 1,000 to 1,000,000
 changed rows while a client asks Straum back to back
-([Transactions](#transactions)). `bench/taxi.py shell` opens
+([Transactions](#transactions)). `just taxi shell` opens
 [`straum shell`](cli.md#straum-shell) at the trips in place of the
 asks; leaving the shell removes PostgreSQL.
 
-Each mode takes `--wal physical` to have Straum read the
+Each mode takes `wal=physical`, as in `just wal=physical taxi
+shell`, to have Straum read the
 [physical WAL](postgresql.md#physical-wal) in place of logical
 decoding. The script then turns `full_page_writes` back on after the
 load and takes a checkpoint, since the physical stream needs page
 images.
-
-`just taxi [asks|transactions|materialized|shell]` runs the same, with
-`wal=physical` for the physical WAL and `postgres=17` for another
-major, as in `just postgres=17 wal=physical taxi`.
 
 ## The views
 
@@ -348,7 +346,7 @@ SELECT borough, trips FROM trips
 
 Straum holds a transaction until its commit and applies it whole under
 its write lock: its rows wait in memory, and every ask waits for the
-apply. `bench/taxi.py transactions` updates the fare of the first N
+apply. `just taxi transactions` updates the fare of the first N
 trips, which both views follow, in one transaction, while a client
 asks for one day of hour buckets as fast as the answers come. It
 measures the time from the commit until Straum has applied it, the
@@ -385,10 +383,10 @@ limit out of the way, since it measures what the limit prevents.
 ## Physical WAL
 
 ```sh
-cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
+just wal-bench
 ```
 
-`just wal-bench` runs the same. It measures how fast Straum reads
+It measures how fast Straum reads
 [physical WAL](https://github.com/janbjorge/straum/blob/main/docs/adr/0008-straum-reads-physical-wal-where-logical-decoding-is-off.md).
 
 It loads the taxi month with `bench/load_taxi_trips.py`, so it needs
@@ -398,10 +396,10 @@ and opens a physical replication slot. Four phases each change
 rows, then `INSERT`, `UPDATE` and `DELETE` in transactions of 10,000.
 The slot streams the WAL, and Straum keeps it in memory. Autovacuum is
 off and the checkpoint interval is an hour, so each run writes the same
-records. `STRAUM_TEST_POSTGRES` picks the major.
+records. `postgres` picks the major, as in `just postgres=17 wal-bench`.
 
 Straum then reads the captured WAL again, with no socket in the way,
-three times each way (`STRAUM_BENCH_RUNS`, or `just runs=6 wal-bench`);
+three times each way (`just runs=6 wal-bench` for six);
 the fastest read counts. "Records read" only splits pages into records.
 "Pipeline read" goes all the way to the commits for
 `crates/straum-notation/tests/taxi.sql`; every row changed must come
@@ -456,10 +454,10 @@ on 2026-11-20 once the distinct values read the percentiles' counts.
 ### The taxi month under a wide key
 
 ```sh
-cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
+just taxi-month
 ```
 
-`just taxi-month` runs the same. It loads the month with
+It loads the month with
 `bench/load_taxi_trips.py`, so it needs uv, and reads it with
 `crates/straum-notation/tests/taxi.sql`, a wider view than the
 benchmark's: 15 minute buckets with day and week widths, keyed by

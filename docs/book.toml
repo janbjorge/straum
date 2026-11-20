@@ -1,6 +1,6 @@
 # The user guide, built with mdBook (https://rust-lang.github.io/mdBook/)
 # and published to GitHub Pages by the docs job in .github/workflows/ci.yml.
-# Preview with `mdbook serve docs`. The introduction links llms.txt,
+# Preview with `just docs serve --open`. The introduction links llms.txt,
 # which mdBook copies to the site.
 [book]
 title = "Straum"

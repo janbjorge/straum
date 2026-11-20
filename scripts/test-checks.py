@@ -10,9 +10,11 @@ The layer check reads Cargo's metadata; these tests hand it metadata
 built here, over a workspace of files in a temporary folder, so they
 need no cargo and no network. The domain syntax check reads a folder of
 Rust files; these tests write one. The chart check reads its oldest
-Kubernetes from Chart.yaml; these tests hand it the line. The guard
-that the crate recipes run, changed-crates.py, maps paths to crates;
-these tests hand it paths. Many cases here are ways past a
+Kubernetes from Chart.yaml; these tests hand it the line.
+changed-crates.py maps paths to crates; these tests hand it paths. The
+justfile's guard against a crate recipe with no crate runs under
+`just -n`, which prints what would run and runs nothing. Many cases
+here are ways past a
 check that a red team found; each stays so the way stays shut.
 """
 
@@ -20,6 +22,7 @@ import collections.abc
 import importlib.util
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -713,15 +716,38 @@ class ChangedCrates(unittest.TestCase):
         paths = ["crates", "crates/README.md", "docs/crates/x/y.md", "justfile", ""]
         self.assertEqual(changed.crate_names(paths), [])
 
+
+
+def dry_run(recipe: str, crates: str) -> subprocess.CompletedProcess[str]:
+    """What `just -n RECIPE CRATES` prints, against the repository's justfile."""
+    return subprocess.run(
+        ["just", "--justfile", str(SCRIPTS.parent / "justfile"), "-n", recipe, crates],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+class CrateRecipes(unittest.TestCase):
     def test_no_crate_named_fails_and_says_how(self):
         for crates in ["", "  "]:
             with self.subTest(crates=crates):
-                self.assertEqual(changed.main(["--named", crates]), 1)
+                ran = dry_run("lint", crates)
+                self.assertNotEqual(ran.returncode, 0)
+                self.assertIn("name one, as in just test straum-pg", ran.stderr)
 
-    def test_a_crate_named_passes(self):
-        for crates in ["straum-pg", "straum-pg straum-domain"]:
-            with self.subTest(crates=crates):
-                self.assertEqual(changed.main(["--named", crates]), 0)
+    def test_a_crate_named_takes_each(self):
+        ran = dry_run("lint", "straum-pg straum-domain")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn("cargo clippy -p straum-pg -p straum-domain ", ran.stderr)
+
+    def test_all_takes_the_workspace(self):
+        for recipe in ["lint", "test", "cov"]:
+            with self.subTest(recipe=recipe):
+                ran = dry_run(recipe, "all")
+                self.assertEqual(ran.returncode, 0, ran.stderr)
+                self.assertIn(" --workspace", ran.stderr)
+                self.assertNotIn("-p ", ran.stderr)
 
 
 if __name__ == "__main__":

@@ -136,10 +136,11 @@ in [ROADMAP.md](ROADMAP.md).
 
 ## Development
 
-[AGENTS.md](AGENTS.md) has the commands and the rules. PostgreSQL tests
-need Docker. `bench/demo.py` loads January's trips on your machine,
-times trips by pickup borough, then inserts a trip, deletes it, and
-moves two zones into a borough of their own. It needs Docker and
+Every tool runs through [just](https://just.systems): `just` lists the
+recipes. [AGENTS.md](AGENTS.md) has the rules. PostgreSQL tests need
+Docker. `just demo` loads January's trips on your machine, times trips
+by pickup borough, then inserts a trip, deletes it, and moves two zones
+into a borough of their own. It needs Docker and
 [uv](https://docs.astral.sh/uv/).
 
 ## License

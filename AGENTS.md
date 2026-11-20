@@ -4,63 +4,72 @@
 
 ## Commands
 
-Scope every run to crates you touch. CI runs the whole workspace.
+Every tool runs through the `justfile`, locally and in CI. Docs name
+the recipe, not the command under it; `just --show RECIPE` prints that.
+Scope every run to crates you touch; CI runs `all`.
 
 ```sh
-cargo fmt --all
-cargo clippy -p <crate> --all-targets -- -D warnings
-cargo test -p <crate>
-cargo llvm-cov -p <crate> --all-targets --fail-under-lines 98
-scripts/check-layers.py
-scripts/check-domain-syntax.py
-scripts/test-checks.py
-bench/test-stack.py
+just fmt
+just lint <crate>
+just test <crate>
+just cov <crate>
+just scripts
+just check <crate>   # all of the above but cov
 ```
 
-A change to a check script changes `scripts/test-checks.py` with it: a
-planted break for each rule it adds, and the honest form passing.
+With no crate named, crate recipes take the crates changed since HEAD;
+`all` takes the workspace. A change to a check script changes
+`scripts/test-checks.py` with it: a planted break for each rule it
+adds, and the honest form passing.
 
 Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker with Compose. `STRAUM_TEST_POSTGRES` picks the major
-(18 by default). The random workloads of the physical stream run
-`STRAUM_TEST_SEEDS` seeds (6) from `STRAUM_TEST_SEED_FROM` (0); CI's
+PostgreSQL tests need Docker with Compose. `postgres` picks the major
+(18 by default). The random workloads of the physical stream
+(`just correctness`) run `seeds` seeds (6) from `seed_from` (0); CI's
 `correctness` job runs 50 new ones per major each run. The heap unit
 tests replay records captured per major in
 `crates/straum-pg/src/wal/heap/fixtures/`; after a WAL layout change,
-capture them again for each major with `STRAUM_TEST_POSTGRES=<major>
-cargo test -p straum-pg --lib capture_heap_fixture -- --ignored`.
-`bench/taxi.py shell` runs Straum against
-a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
-Demo and try-out data is always the taxi trips, never a hand-written
-dataset. In docs, ADR-0014 says which pages use the taxi trips and
-which the `usage` view over `public.events AS e` and
-`public.accounts AS a`.
+capture them again for each major with `just postgres=<major>
+heap-fixtures`. `just taxi shell` runs Straum against a throwaway
+PostgreSQL with the taxi trips and ends in `straum shell`. Demo and
+try-out data is always the taxi trips, never a hand-written dataset. In
+docs, ADR-0014 says which pages use the taxi trips and which the
+`usage` view over `public.events AS e` and `public.accounts AS a`.
 
-- Change under `deploy/helm/`: run `scripts/check-chart.py`. Needs uv,
-  helm, the helm-unittest plugin and kubeconform.
-- Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
+- Change under `deploy/helm/`: run `just chart`. Needs uv, helm, the
+  helm-unittest plugin and kubeconform.
+- Change under `docs/`: run `just docs`; `just docs serve --open`
+  previews. CI uses mdBook 0.5.4.
+- Change to the Dockerfile or `compose.yaml`: run `just image`.
 
-The `justfile` is the entry point to every tool: `just check`, `just fmt`,
-`just lint`, `just test`, `just cov`, `just layers`, `just domain-syntax`,
-`just test-checks`, `just test-bench`, `just correctness`,
-`just chart`, `just docs` (live preview), `just docs-build`,
-`just taxi [asks|transactions|materialized|shell]` (`wal=physical`
-for the physical WAL), `just taxi-month`,
-`just wal-bench`, `just demo`, `just outbox`, `just try SPEC --data DIR`.
-With no crate named, crate recipes take the crates changed since HEAD.
-Every setting has a default, overridden on the command line (`just postgres=17 seeds=50 correctness`)
-or through its environment variable; `just --evaluate` shows them.
-A new script, check, benchmark or setting gets a recipe or variable
-in the same commit, with the same default as the code. Keep it tidy:
-one recipe per tool, in a `[group]`, with a one-line comment; recipes
-are thin wrappers, logic stays in the script or test. The script is
-Python, run with uv, as `scripts/` and `bench/` are. No shell script:
-no `.sh` file, and no bash body in a recipe. Drop a recipe when its
-tool goes. Nothing depends on it; the commands here and in
-`docs/src/performance.md` stay the reference. Keep them in step.
+`just --list` names every recipe: the checks above, `just correctness`,
+`just heap-fixtures`, `just image`, `just taxi
+[asks|transactions|materialized|shell]` (`wal=physical` for the
+physical WAL), `just taxi-month`, `just wal-bench`, `just cost-bench`,
+`just demo`, `just outbox`, `just try SPEC --data DIR`. Every setting
+has a default, overridden on the command line (`just postgres=17
+seeds=50 correctness`) or through its environment variable; `just
+--evaluate` shows them.
+
+A new script, check, benchmark or setting gets a recipe or variable in
+the same commit, with the same default as the code, and CI calls the
+recipe, never the command under it. Keep it tidy: one recipe per tool,
+in a `[group]`, with a one-line comment; recipes are thin wrappers,
+logic stays in the script or test. A recipe that runs a cargo test
+calls `test` with its arguments rather than repeating cargo. A recipe
+that passes free arguments on takes `[positional-arguments]` and passes
+`"$@"`, so an argument with a space stays one; `test` is the
+exception, since its first argument is the crates and its others are
+cargo's test filters, which hold no space. `set lazy` keeps a
+backtick from running until a recipe reads it. `just fmt` formats the
+justfile too. The guard against a crate recipe with no crate lives in
+the justfile, and `scripts/test-checks.py` tests it under `just -n`.
+The script is Python, run with uv, as `scripts/` and `bench/` are. No
+shell script: no `.sh` file, and no bash body in a recipe. Drop a
+recipe when its tool goes, and fix every doc that names it.
 
 ## Documents
 

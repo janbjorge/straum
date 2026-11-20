@@ -305,8 +305,7 @@ fn an_ask_reads_only_the_buckets_in_its_range() {
 
 /// Every cell of a rollup the size of the taxi month at one hour, against a
 /// time budget per cell. Timing depends on the machine and the build, so it
-/// runs on request:
-/// `cargo test -p straum-domain --release --test cost -- --ignored --nocapture`.
+/// runs on request: `just cost-bench`.
 #[test]
 #[ignore = "timing depends on the machine and the build"]
 fn an_ask_stays_within_its_time_per_cell() {

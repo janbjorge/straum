@@ -126,10 +126,10 @@ enum Work {
     Delete,
 }
 
-/// Run `cargo test -p straum-pg --release physical_wal_bench -- --ignored
-/// --nocapture`. Loads the taxi month with `bench/load_taxi_trips.py`, so
-/// it needs uv. `STRAUM_TEST_POSTGRES` picks the major, `STRAUM_BENCH_RUNS`
-/// the reads of each kind (3), of which the fastest counts.
+/// Run `just wal-bench`. Loads the taxi month with
+/// `bench/load_taxi_trips.py`, so it needs uv. `STRAUM_TEST_POSTGRES` picks
+/// the major, `STRAUM_BENCH_RUNS` the reads of each kind (3), of which the
+/// fastest counts.
 #[test]
 #[ignore = "a benchmark: it needs uv and the taxi month, and runs for minutes"]
 fn physical_wal_bench() {

@@ -42,7 +42,7 @@ const LIMITS: Limits = Limits {
 };
 /// Rows one transaction may change before Straum stops instead of applying
 /// it, so the next start brings its rows in through the load;
-/// `bench/taxi.py transactions` measures what a transaction this size holds
+/// `just taxi transactions` measures what a transaction this size holds
 /// the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
 /// Bytes of rows a physical stream holds before Straum stops: a guard,

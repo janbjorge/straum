@@ -2,8 +2,7 @@
 //! records after a checkpoint, through inserts, a bulk `COPY`, updates
 //! on and off the page, deletes and a vacuum that prunes and freezes, and
 //! the rows a `SELECT` reads after. Run once per major when the fixtures
-//! change:
-//! `STRAUM_TEST_POSTGRES=18 cargo test -p straum-pg --lib capture_heap_fixture -- --ignored`.
+//! change: `just postgres=18 heap-fixtures`.
 
 use std::fs;
 use std::path::PathBuf;

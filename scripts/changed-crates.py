@@ -6,13 +6,10 @@
 """The workspace crates changed since HEAD, for the justfile's crate
 recipes when no crate is named.
 
-With no argument it prints their names on one line, space separated:
-every crate with a file git sees changed against HEAD, staged or not,
-or untracked and not ignored. Nothing changed prints an empty line.
-
-With `--named CRATES` it prints nothing and fails, saying how to name a
-crate, when CRATES is empty: the recipes' guard against running cargo
-on no crate, which would take the whole workspace.
+It prints their names on one line, space separated: every crate with a
+file git sees changed against HEAD, staged or not, or untracked and not
+ignored. Nothing changed prints an empty line, which the justfile
+refuses.
 """
 
 import pathlib
@@ -21,7 +18,6 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CRATES = "crates"
-NONE_NAMED = "no crate changed since HEAD; name one, as in just test straum-pg"
 
 
 def crate_names(paths: list[str]) -> list[str]:
@@ -56,13 +52,8 @@ def main(arguments: list[str]) -> int:
         case []:
             print(" ".join(crate_names(changed_paths())))
             return 0
-        case ["--named", crates]:
-            if crates.strip():
-                return 0
-            print(NONE_NAMED, file=sys.stderr)
-            return 1
         case _:
-            print("usage: changed-crates.py [--named CRATES]", file=sys.stderr)
+            print("usage: changed-crates.py", file=sys.stderr)
             return 2
 
 
