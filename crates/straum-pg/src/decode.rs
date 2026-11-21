@@ -383,7 +383,13 @@ mod tests {
         )
     }
 
+    /// A Relation for `public.zones`.
     fn relation(id: u32, columns: &[(&str, u32)]) -> Message<'static> {
+        named_relation(id, "zones", columns)
+    }
+
+    /// A Relation for `public.<name>`.
+    fn named_relation(id: u32, name: &str, columns: &[(&str, u32)]) -> Message<'static> {
         let mut relation_columns = Vec::new();
         for &(name, type_oid) in columns {
             relation_columns.push(RelationColumn {
@@ -395,7 +401,7 @@ mod tests {
         Message::Relation(Relation {
             id,
             schema: "public".into(),
-            name: "zones".into(),
+            name: name.into(),
             columns: relation_columns,
         })
     }
@@ -609,10 +615,11 @@ mod tests {
     /// name, no longer reads as loaded; its rows aren't read.
     #[test]
     fn a_table_renamed_or_replaced_is_unfit() {
-        let mut renamed = relation(ZONES_OID, &[("ref", UUID), ("id", INT4), ("name", TEXT)]);
-        if let Message::Relation(relation) = &mut renamed {
-            relation.name = "zones_old".into();
-        }
+        let renamed = named_relation(
+            ZONES_OID,
+            "zones_old",
+            &[("ref", UUID), ("id", INT4), ("name", TEXT)],
+        );
         let replaced = relation(
             ZONES_OID + 1,
             &[("ref", UUID), ("id", INT4), ("name", TEXT)],
@@ -656,10 +663,7 @@ mod tests {
     fn relations_that_change() {
         let mut decoder = zones_decoder();
         // Not in the spec: its changes are skipped.
-        let mut other = relation(8, &[("x", INT4)]);
-        if let Message::Relation(relation) = &mut other {
-            relation.name = "other".into();
-        }
+        let other = named_relation(8, "other", &[("x", INT4)]);
         // The same types in another order; then a column that reads
         // differently.
         let reordered = relation(
@@ -778,11 +782,7 @@ mod tests {
 
     /// A relation `public.<name>` of one `int4` column, `id`.
     fn one_column(id: u32, name: &str) -> Message<'static> {
-        let mut message = relation(id, &[("id", INT4)]);
-        if let Message::Relation(relation) = &mut message {
-            relation.name = name.into();
-        }
-        message
+        named_relation(id, name, &[("id", INT4)])
     }
 
     /// `zones` inserts into `public.zones`, `boroughs` into
