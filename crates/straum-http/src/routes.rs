@@ -63,7 +63,7 @@ impl Format {
             return default;
         };
         for range in accept.split(',') {
-            let media_type = range.split(';').next().unwrap_or_default().trim();
+            let media_type = media_type(range);
             if media_type.eq_ignore_ascii_case(JSON) {
                 return Format::Json;
             }
@@ -93,10 +93,7 @@ impl Format {
     // Generic: the body, the query, the range and the app each have their
     // own error type, and a reply prints them all the same way.
     fn errors<E: Display>(self, status: StatusCode, errors: &[E]) -> Reply {
-        let mut lines = Vec::with_capacity(errors.len());
-        for error in errors {
-            lines.push(error.to_string());
-        }
+        let lines = lines(errors);
         if let Format::Text = self {
             return text(status, lines.join("\n") + "\n");
         }
@@ -174,8 +171,12 @@ fn is_json(content_type: Option<&HeaderValue>) -> bool {
     let Some(Ok(content_type)) = content_type.map(HeaderValue::to_str) else {
         return false;
     };
-    let media_type = content_type.split(';').next().unwrap_or_default().trim();
-    media_type.eq_ignore_ascii_case(JSON)
+    media_type(content_type).eq_ignore_ascii_case(JSON)
+}
+
+/// A media type or range without its parameters or the spaces around it.
+fn media_type(value: &str) -> &str {
+    value.split(';').next().unwrap_or_default().trim()
 }
 
 async fn post_ask(body: Incoming, app: &App, syntax: AskSyntax, format: Format) -> Reply {
