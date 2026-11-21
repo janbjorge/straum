@@ -373,9 +373,9 @@ impl Rollup {
         key.clear();
         self.code(row, &mut key);
         for (position, level) in self.levels.iter_mut().enumerate() {
-            let new = level.add(row, &key, &self.inputs);
+            let shift = level.add(row, &key, &self.inputs);
             if LevelIndex(position) == DATE_BIN {
-                self.cells += usize::from(new);
+                count_shift(&mut self.cells, shift);
             }
         }
         self.key = key;
@@ -434,9 +434,9 @@ impl Rollup {
 
     fn remove_coded(&mut self, row: &[Datum], key: &[u32]) -> Result<(), RowError> {
         for (position, level) in self.levels.iter_mut().enumerate() {
-            let cell_gone = level.remove(row, key, &self.inputs)?;
-            if cell_gone && LevelIndex(position) == DATE_BIN {
-                self.cells -= 1;
+            let shift = level.remove(row, key, &self.inputs)?;
+            if LevelIndex(position) == DATE_BIN {
+                count_shift(&mut self.cells, shift);
             }
         }
         Ok(())
@@ -467,13 +467,8 @@ impl Rollup {
         };
         for (position, level) in self.levels.iter_mut().enumerate() {
             let shift = level.adjust(&self.inputs, &time, move_cell)?;
-            if LevelIndex(position) != DATE_BIN {
-                continue;
-            }
-            match shift {
-                Shift::New => self.cells += 1,
-                Shift::Removed => self.cells -= 1,
-                Shift::Same => {}
+            if LevelIndex(position) == DATE_BIN {
+                count_shift(&mut self.cells, shift);
             }
         }
         Ok(())
@@ -632,6 +627,15 @@ impl Rollup {
         for (coded, codes) in self.key_columns.iter().zip(&mut self.codes) {
             key.push(codes.code(&coded.datum(row)));
         }
+    }
+}
+
+/// Counts the `date_bin` cell a [`Shift`] made or took out into `cells`.
+fn count_shift(cells: &mut usize, shift: Shift) {
+    match shift {
+        Shift::New => *cells += 1,
+        Shift::Removed => *cells -= 1,
+        Shift::Same => {}
     }
 }
 

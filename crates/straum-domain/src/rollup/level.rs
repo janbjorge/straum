@@ -4,6 +4,7 @@
 //! buckets that fit inside it, narrower ones at its ends.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::{Entry, OccupiedEntry};
 
 use crate::value::Datum;
 use crate::width::Width;
@@ -32,6 +33,7 @@ pub(super) struct CodedRows<'a> {
 }
 
 /// What moving a cell did to the cells of its bucket.
+#[derive(Clone, Copy)]
 pub(super) enum Shift {
     Same,
     New,
@@ -71,8 +73,8 @@ impl Level {
         }
     }
 
-    /// Adds a checked row under its key codes; whether its cell is new.
-    pub(super) fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> bool {
+    /// Adds a checked row under its key codes.
+    pub(super) fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> Shift {
         let cells = self.cells_of(&row[TIME], key.len(), inputs);
         let entry = cells.entry(key);
         let cell = entry.position;
@@ -80,7 +82,7 @@ impl Level {
         for (state, input) in cells.states.iter_mut().zip(inputs) {
             state.add(cell, &row[input.column.0]);
         }
-        entry.new
+        if entry.new { Shift::New } else { Shift::Same }
     }
 
     /// The cells of the bucket `time` falls in, made if it has none.
@@ -95,23 +97,24 @@ impl Level {
         let mut new_cells = 0;
         for (row_index, row) in coded.rows.iter().enumerate() {
             let key = &coded.keys[row_index * parts..][..parts];
-            new_cells += usize::from(self.add(row, key, inputs));
+            if let Shift::New = self.add(row, key, inputs) {
+                new_cells += 1;
+            }
         }
         new_cells
     }
 
-    /// Takes a row out of the cell of `key`; whether the cell went with
-    /// it.
+    /// Takes a row out of the cell of `key`.
     pub(super) fn remove(
         &mut self,
         row: &[Datum],
         key: &[u32],
         inputs: &[Input],
-    ) -> Result<bool, RowError> {
-        let bucket = self.bucket(&row[TIME]);
-        let Some(cells) = self.buckets.get_mut(&bucket) else {
+    ) -> Result<Shift, RowError> {
+        let Entry::Occupied(mut bucket) = self.buckets.entry(self.bucket(&row[TIME])) else {
             return Err(RowError::Missing);
         };
+        let cells = bucket.get_mut();
         let cell = cells.find(key).ok_or(RowError::Missing)?;
         let rows = cells.rows.get(cell);
         for (state, input) in cells.states.iter_mut().zip(inputs) {
@@ -119,13 +122,10 @@ impl Level {
         }
         cells.rows.sub(cell, 1);
         if rows > 1 {
-            return Ok(false);
+            return Ok(Shift::Same);
         }
-        cells.swap_remove(cell);
-        if cells.len() == 0 {
-            self.buckets.remove(&bucket);
-        }
-        Ok(true)
+        drop_cell(bucket, cell);
+        Ok(Shift::Removed)
     }
 
     /// Moves one keyed cell into or out of the bound cell `key` names, in
@@ -151,10 +151,10 @@ impl Level {
             }
             return Ok(if entry.new { Shift::New } else { Shift::Same });
         }
-        let start = self.bucket(time);
-        let Some(cells) = self.buckets.get_mut(&start) else {
+        let Entry::Occupied(mut bucket) = self.buckets.entry(self.bucket(time)) else {
             return Err(RowError::Missing);
         };
+        let cells = bucket.get_mut();
         let Some(cell) = cells.find(key) else {
             return Err(RowError::Missing);
         };
@@ -164,10 +164,7 @@ impl Level {
         if cells.rows.get(cell) != 0 {
             return Ok(Shift::Same);
         }
-        cells.swap_remove(cell);
-        if cells.len() == 0 {
-            self.buckets.remove(&start);
-        }
+        drop_cell(bucket, cell);
         Ok(Shift::Removed)
     }
 
@@ -177,6 +174,16 @@ impl Level {
         let width = i64::from(self.width.seconds);
         let buckets = self.buckets.range(Some(from)..Some(to));
         buckets.map(move |(start, cells)| covered(width, *start, cells))
+    }
+}
+
+/// Takes out `cell`, whose last row went, and its bucket with it once
+/// the bucket holds no cell.
+fn drop_cell(mut bucket: OccupiedEntry<'_, Option<i64>, Cells>, cell: usize) {
+    let cells = bucket.get_mut();
+    cells.swap_remove(cell);
+    if cells.len() == 0 {
+        bucket.remove();
     }
 }
 
