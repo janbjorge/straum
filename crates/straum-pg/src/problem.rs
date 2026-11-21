@@ -1,7 +1,7 @@
 //! The setup check's problems: each thing wrong with PostgreSQL's setup
 //! for the spec, and what to change. `catalog/` finds most of them in
 //! PostgreSQL's catalog (its system tables), the decoder one more as the
-//! stream runs, and a physical start the ones about waiting. Each prints as
+//! stream runs, and a start the ones about waiting. Each prints as
 //! one line of `Error::Setup`.
 
 use std::fmt;
@@ -30,7 +30,7 @@ pub(crate) enum Problem {
         view: Identifier,
         problem: ViewProblem,
     },
-    /// A physical start waited this long and gave up.
+    /// A start waited this long and gave up.
     Wait {
         waited_seconds: u64,
         problem: WaitProblem,
@@ -209,7 +209,7 @@ pub(crate) enum Filter {
     Where,
 }
 
-/// What a physical start waited for in vain.
+/// What a start waited for in vain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WaitProblem {
     /// PostgreSQL to log which transactions run.

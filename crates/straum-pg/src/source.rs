@@ -468,7 +468,7 @@ fn wait_consistent(stream: &mut Stream, wait: Duration) -> Result<(), Error> {
     }
 }
 
-/// The setup error of a physical start that waited `waited_seconds` in vain.
+/// The setup error of a start that waited `waited_seconds` in vain.
 pub(crate) fn waited_for(waited_seconds: u64, problem: WaitProblem) -> Error {
     Error::Setup(vec![Problem::Wait {
         waited_seconds,

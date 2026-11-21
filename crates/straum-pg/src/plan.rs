@@ -149,8 +149,6 @@ fn qualified(table: &straum_domain::Table) -> String {
 mod tests {
     use super::*;
 
-    /// A schema or a table named again apart from its first place still
-    /// comes once.
     /// A view `name` counting the rows of `table` by the hour.
     fn view(name: &str, table: &str) -> String {
         format!(
@@ -172,6 +170,8 @@ mod tests {
         lines[0]
     }
 
+    /// A schema or a table named again apart from its first place still
+    /// comes once.
     #[test]
     fn table_names_are_the_spec_tables_quoted_once_each() {
         let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
