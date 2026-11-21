@@ -322,8 +322,11 @@ fn loads_the_views_as_json() {
         "GET /views HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: application/json\r\n\r\n",
         "HTTP/1.1 200 OK\r\n\r\n{\"views\":[],\"dims\":[]}",
     );
-    assert_eq!(load_views(&server(&url)), Some(Vec::new()));
-    assert_eq!(load_views(&server("http://127.0.0.1:1")), None);
+    assert_eq!(
+        said(views(&server(&url), Output::Json)),
+        Said::Body("{\"views\":[],\"dims\":[]}".to_owned())
+    );
+    assert!(views(&server("http://127.0.0.1:1"), Output::Json).is_err());
 }
 
 #[test]
@@ -514,39 +517,11 @@ fn a_parameter_says_its_type() {
         ("a\"b\\c", "\"a\\\"b\\\\c\""),
         ("a\nb\u{1}", "\"a\\nb\\u0001\""),
         ("blåbær", "\"blåbær\""),
+        // A quoted word, as the shell splits one, is one string.
+        ("'Staten Island'", "\"Staten Island\""),
     ];
     for (text, json) in cases {
         assert_eq!(parameter(text), json, "{text}");
-    }
-}
-
-#[test]
-fn a_quoted_parameter_word_holds_its_spaces() {
-    let cases: [(&str, &[&str]); 7] = [
-        (" 7  paid\ttrue ", &["7", "paid", "true"]),
-        ("'Staten Island' 7", &["'Staten Island'", "7"]),
-        ("'O'Brien  St' x", &["'O'Brien  St'", "x"]),
-        ("'' 'blå bær'", &["''", "'blå bær'"]),
-        ("'7' '", &["'7'", "'"]),
-        ("it's 'a", &["it's", "'a"]),
-        ("", &[]),
-    ];
-    for (text, words) in cases {
-        assert_eq!(parameter_words(text), words, "{text}");
-    }
-    // The quoted word is one string, its quotes gone.
-    assert_eq!(parameter("'Staten Island'"), "\"Staten Island\"");
-}
-
-#[test]
-fn a_quote_that_never_closes_is_a_word_like_any_other() {
-    assert_eq!(parameter_words("'Staten Island"), ["'Staten", "Island"]);
-    assert_eq!(parameter_words("'a'b c"), ["'a'b", "c"]);
-    for open in ["'", "x 'Staten", "'Staten Is", "'a'b"] {
-        assert!(has_open_quote(open), "{open}");
-    }
-    for closed in ["", "x", "it's", "'Staten Island'", "'' y", "'a' 'b'"] {
-        assert!(!has_open_quote(closed), "{closed}");
     }
 }
 

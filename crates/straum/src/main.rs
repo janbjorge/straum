@@ -13,6 +13,7 @@ mod client;
 mod command_line;
 mod complete;
 mod help;
+mod line;
 mod memory;
 mod shell;
 #[cfg(test)]

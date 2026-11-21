@@ -16,8 +16,6 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use straum_domain::Identifier;
 
-use crate::complete::{View, read_views};
-
 /// How long a request waits for the whole exchange, connect and the
 /// reply together, when `--timeout` doesn't say.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
@@ -338,14 +336,6 @@ pub(crate) fn spec(server: &Server, view: &str) -> Result<String, ClientError> {
     fetch(server, &request)
 }
 
-/// The views as JSON, for the shell to complete from; `None` when they
-/// can't be had.
-pub(crate) fn load_views(server: &Server) -> Option<Vec<View>> {
-    let request = Request::get(Wanted::Views, "/views".to_owned(), Output::Json);
-    let json = fetch(server, &request).ok()?;
-    read_views(&json)
-}
-
 /// Sends an ask and returns its answer, as a table or as JSON.
 pub(crate) fn ask(
     server: &Server,
@@ -407,61 +397,6 @@ fn all_digits(text: &str) -> bool {
         }
     }
     true
-}
-
-/// The parameters of a shell line, the text past its semicolon, a word
-/// each. A word that opens with a single quote runs to the quote that
-/// closes it, spaces and all: the next `'` with whitespace or the end
-/// after it. One that never closes is read to the next whitespace, as any
-/// other word is, so `'` and `it's` mean what they mean to `straum ask`.
-pub(crate) fn parameter_words(text: &str) -> Vec<&str> {
-    let mut words = Vec::new();
-    let mut rest = text.trim_start();
-    while !rest.is_empty() {
-        let length = match quoted_length(rest) {
-            Some(length) => length,
-            None => plain_length(rest),
-        };
-        words.push(&rest[..length]);
-        rest = rest[length..].trim_start();
-    }
-    words
-}
-
-/// Whether `text` opens a quote it doesn't close: the user is still
-/// typing a value. No later quote can close it, or it would be closed.
-pub(crate) fn has_open_quote(text: &str) -> bool {
-    for word in parameter_words(text) {
-        if word.starts_with('\'') && quoted_length(word).is_none() {
-            return true;
-        }
-    }
-    false
-}
-
-/// The bytes of the quoted word `text` starts with, quotes included, if
-/// it starts with one that closes.
-fn quoted_length(text: &str) -> Option<usize> {
-    let inside = text.strip_prefix('\'')?;
-    for (at, character) in inside.char_indices() {
-        if character != '\'' {
-            continue;
-        }
-        let after = &inside[at + 1..];
-        if after.is_empty() || after.starts_with(char::is_whitespace) {
-            // The opening quote, what it holds and the closing quote.
-            return Some(at + 2);
-        }
-    }
-    None
-}
-
-/// The bytes of `text` before its first whitespace.
-fn plain_length(text: &str) -> usize {
-    match text.find(char::is_whitespace) {
-        Some(at) => at,
-        None => text.len(),
-    }
 }
 
 /// `text` without the single quotes around it, if it has them.

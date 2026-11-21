@@ -31,12 +31,10 @@ use rustyline::history::{DefaultHistory, History};
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{CompletionType, Config, Context, Editor};
 
-use crate::client::{
-    ClientError, Output, RowWindow, Server, Timed, ask, load_views, parameter_words, rows, spec,
-    views,
-};
-use crate::complete::{Completion, View, complete, hint};
+use crate::client::{ClientError, Output, RowWindow, Server, Timed, ask, rows, spec, views};
+use crate::complete::{Completion, View, complete, hint, read_views};
 use crate::help::SHELL_HELP;
+use crate::line::parameter_words;
 
 const PROMPT: &str = "straum> ";
 // ANSI escapes that dim a hint and end the dimming, so it reads as a note.
@@ -108,11 +106,11 @@ fn answer(server: &Server, line: &str, timings: Timings) -> Outcome {
             return Outcome::Failed(LineError::NoSuchCommand(line.to_owned()));
         }
         _ => {
-            let (query, parameters) = line.split_once(';').unwrap_or((line, ""));
-            let parameters: Vec<String> = parameter_words(parameters)
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+            let (query, words) = line.split_once(';').unwrap_or((line, ""));
+            let mut parameters = Vec::new();
+            for word in parameter_words(words) {
+                parameters.push(word.to_owned());
+            }
             let answered = ask(server, query.trim_end(), &parameters, Output::Text);
             timed(answered, timings)
         }
@@ -343,8 +341,11 @@ fn prompt_until_leaving(
 ) -> Result<(), ReadlineError> {
     loop {
         // Read again before each line: a view's buckets move on.
-        if let (Some(views), Some(names)) = (load_views(server), editor.helper_mut()) {
-            names.views = views;
+        if let Ok(json) = views(server, Output::Json)
+            && let Some(held) = read_views(&json)
+            && let Some(names) = editor.helper_mut()
+        {
+            names.views = held;
         }
         let line = match editor.readline(PROMPT) {
             Ok(line) => line,

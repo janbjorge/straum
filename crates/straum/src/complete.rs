@@ -13,7 +13,7 @@ use std::fmt;
 
 use serde_json::Value;
 
-use crate::client::{has_open_quote, parameter_words};
+use crate::line::{has_open_quote, parameter_words};
 
 const COMMANDS: [&str; 4] = ["\\d", "\\rows ", "\\?", "\\q"];
 /// What HAVING compares a measure with, as the ask writes it.
