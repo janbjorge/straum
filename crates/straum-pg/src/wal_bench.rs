@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use straum_app::{Change, Commit, Lsn};
 
-use crate::catalog::{self, Checked};
+use crate::catalog::{self, Checked, VERSION_NUM_PER_MAJOR};
 use crate::physical::{Chunk, next_chunk, read_layouts};
 use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::POLL;
@@ -215,7 +215,8 @@ fn set_up(root: &Path, sql: &mut Connection, stream: &mut Connection) -> Setup {
         sql,
         "SELECT setting FROM pg_settings WHERE name = 'wal_segment_size'",
     );
-    let major = number(sql, "SELECT current_setting('server_version_num')") / 10_000;
+    let version = number(sql, "SELECT current_setting('server_version_num')");
+    let major = version / u64::from(VERSION_NUM_PER_MAJOR);
     let major = u32::try_from(major).unwrap();
     let layouts = read_layouts(sql, &checked).unwrap();
     sql.execute("SELECT pg_log_standby_snapshot()").unwrap();
