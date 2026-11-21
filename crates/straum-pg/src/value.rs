@@ -287,9 +287,20 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
         return None;
     }
     let pad = scale.checked_sub(u32::try_from(fraction.len()).ok()?)?;
-    let mut value: i128 = format!("{whole}{fraction}").parse().ok()?;
+    let mut value = append_digits(0, whole)?;
+    value = append_digits(value, fraction)?;
     value = value.checked_mul(10_i128.checked_pow(pad)?)?;
     Some(if negative { -value } else { value })
+}
+
+/// `value` with the decimal `digits` written after it: 12 and `"34"` is
+/// 1234. `None` past an `i128`. Every byte of `digits` is an ASCII digit.
+fn append_digits(mut value: i128, digits: &str) -> Option<i128> {
+    for byte in digits.bytes() {
+        let digit = i128::from(byte.checked_sub(b'0')?);
+        value = value.checked_mul(10)?.checked_add(digit)?;
+    }
+    Some(value)
 }
 
 /// `2024-01-15 10:30:00.5+00` is 1705314600. Offsets other than `+00` are
@@ -490,6 +501,29 @@ mod tests {
         }
         // Both answers, so neither side is vacuous.
         assert!(read > 20_000, "{read}");
+    }
+
+    /// Text numerics read whole up to an `i128`, and none past it.
+    #[test]
+    fn decimals_up_to_the_i128_boundary() {
+        let max = i128::MAX.to_string();
+        let past = (u128::try_from(i128::MAX).unwrap() + 1).to_string();
+        let (head, last) = max.split_at(max.len() - 1);
+        let cases = [
+            (max.clone(), 0, Some(i128::MAX)),
+            (format!("-{max}"), 0, Some(-i128::MAX)),
+            (format!("0000{max}"), 0, Some(i128::MAX)),
+            (format!("{head}.{last}"), 1, Some(i128::MAX)),
+            (head.to_owned(), 1, Some(i128::MAX - 7)),
+            (past.clone(), 0, None),
+            (format!("-{past}"), 0, None),
+            (format!("{max}0"), 0, None),
+            // Whole, but past an `i128` once scaled.
+            (max, 1, None),
+        ];
+        for (text, scale, expected) in cases {
+            assert_eq!(decimal(&text, scale), expected, "{text} at scale {scale}");
+        }
     }
 
     fn numeric(precision: i32, scale: i32) -> i32 {
