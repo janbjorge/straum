@@ -551,16 +551,23 @@ fn stop_past(limit: u64) {
     process::exit(PAST_MAX_MEMORY);
 }
 
-/// Each line of `message` to stderr, prefixed `straum: `, so a reader
-/// can grep for every line Straum logs. A stderr nobody reads any more is
-/// no reason to stop: `eprintln!` would panic, and a panic aborts.
+/// `message` to stderr, as `write_logged` words it. A stderr nobody reads
+/// any more is no reason to stop: `eprintln!` would panic, and a panic
+/// aborts.
 fn log(message: &str) {
-    let mut stderr = io::stderr().lock();
+    write_logged(io::stderr().lock(), message).ok();
+}
+
+/// Writes each line of `message` to `to`, prefixed `straum: `, so a
+/// reader can grep for every line Straum logs. Stops at the first write
+/// that fails.
+// `impl`: stderr, locked or not, and the shell's stream for errors,
+// which tests make a byte buffer.
+pub(crate) fn write_logged(mut to: impl Write, message: &str) -> io::Result<()> {
     for line in message.lines() {
-        if writeln!(stderr, "straum: {line}").is_err() {
-            return;
-        }
+        writeln!(to, "straum: {line}")?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -574,6 +581,22 @@ mod tests {
         };
         let first = errors[0].to_string();
         assert!(first.starts_with("line 1: "), "{first}");
+    }
+
+    #[test]
+    fn each_line_logged_is_prefixed() {
+        let mut written = Vec::new();
+        write_logged(&mut written, "URL answered\nno view trips").unwrap();
+        assert_eq!(
+            String::from_utf8(written).unwrap(),
+            "straum: URL answered\nstraum: no view trips\n"
+        );
+        let full: &mut [u8] = &mut [];
+        let failed = write_logged(full, "URL answered\nno view trips");
+        assert!(
+            matches!(&failed, Err(error) if error.kind() == io::ErrorKind::WriteZero),
+            "{failed:?}"
+        );
     }
 
     fn gone() -> io::Error {

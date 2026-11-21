@@ -174,7 +174,7 @@ fn shell_answers_a_line_at_a_time(url: &str, views: &str) {
         String::from_utf8(shell.stderr).unwrap(),
         format!(
             "straum: {url} answered \"HTTP/1.1 404 Not Found\"\n\
-             no view nope; GET /views lists them\n\
+             straum: no view nope; GET /views lists them\n\
              straum: commands that failed: 1\n"
         )
     );

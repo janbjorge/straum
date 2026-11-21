@@ -400,7 +400,7 @@ fn the_shell_goes_on_after_an_error_and_leaves_when_told() {
          straum: no command \"\\\\rows a 1 2 3\"; \\? lists them\n\
          straum: no command \"\\\\nope\"; \\? lists them\n\
          straum: URL answered \"HTTP/1.1 404 Not Found\"\n\
-         no view trips; GET /views lists them\n"
+         straum: no view trips; GET /views lists them\n"
     );
 }
 

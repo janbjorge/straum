@@ -35,6 +35,7 @@ use crate::client::{ClientError, Output, RowWindow, Server, Timed, ask, rows, sp
 use crate::complete::{Completion, View, complete, hint, read_views};
 use crate::help::SHELL_HELP;
 use crate::line::parameter_words;
+use crate::write_logged;
 
 const PROMPT: &str = "straum> ";
 // ANSI escapes that dim a hint and end the dimming, so it reads as a note.
@@ -259,7 +260,7 @@ fn answer_each(
             },
             Outcome::Failed(error) => {
                 failed += 1;
-                writeln!(errors, "straum: {error}").map_err(PipeError::Writing)?;
+                write_logged(&mut errors, &error.to_string()).map_err(PipeError::Writing)?;
             }
         }
         if read_bytes == 0 {
@@ -358,7 +359,11 @@ fn prompt_until_leaving(
         match answer(server, line.trim(), Timings::Shown) {
             Outcome::Leave => return Ok(()),
             Outcome::Print(text) => print!("{text}"),
-            Outcome::Failed(error) => eprintln!("straum: {error}"),
+            Outcome::Failed(error) => {
+                // A stderr nobody reads any more ends no session, as in
+                // `log`.
+                write_logged(io::stderr(), &error.to_string()).ok();
+            }
         }
     }
 }
