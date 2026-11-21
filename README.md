@@ -112,7 +112,9 @@ by side. One view answers many asks: any range, by any of its keys.
 
 Straum is a sidecar to your database. It keeps the aggregates current
 from the replication stream and answers the asks itself, so no trigger,
-refresh or dashboard query runs in PostgreSQL for them.
+refresh or dashboard query runs in PostgreSQL for them. It adds no
+extension, table, trigger or index, and your tables keep their columns
+and keys.
 [pg_ivm](https://github.com/sraoss/pg_ivm) and TimescaleDB's continuous
 aggregates keep such a summary inside the database instead; the
 [introduction](https://janbjorge.github.io/straum/index.html#what-you-gain)

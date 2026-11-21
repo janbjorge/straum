@@ -11,7 +11,8 @@ Tags as in README.md (R, U, I). R here: pages read on 2026-11-20
 through a fetch tool that quotes them, at most 125 characters a quote,
 so a quote can end before its sentence does. A search snippet is U.
 Every item the guide rests on was read a second time the same day,
-and §4 lists what the guide infers past the quotes.
+and §4 lists what the guide infers past the quotes. Items that say
+"read 2026-11-21", and §6, were read once, on that day.
 
 ## 1. pg_ivm
 
@@ -97,6 +98,16 @@ the [LICENSE](https://github.com/sraoss/pg_ivm/blob/main/LICENSE).
     in the latter transaction only after the former transaction has
     committed." `refresh_immv` "completely replaces the contents of an
     IMMV". The README names no way to change a view's query.
+14. **What it installs** (read 2026-11-21). The server loads it: "add
+    it to either shared_preload_libraries or session_preload_libraries
+    in postgresql.conf", then "restart PostgreSQL for the configuration
+    to take effect." Each database runs `CREATE EXTENSION`.
+    `create_immv` adds a table, "some triggers" and, where it can
+    derive one, "a unique index". The view's query is a row of
+    `pg_ivm_immv`, and "the contents of `pgivm.pg_ivm_immv` are not
+    included in `pg_dump` output": a script the README gives runs
+    before `pg_dump` and `pg_upgrade` and "recreates the metadata,
+    triggers, and indexes" after.
 
 ## 2. TimescaleDB continuous aggregates
 
@@ -234,6 +245,27 @@ each item, and the
     ([page](https://www.tigerdata.com/docs/use-timescale/latest/hypertables/hypertables-and-unique-indexes)).
     "When you create a unique index, it must contain all the
     partitioning columns of the hypertable."
+16. **What it installs, and making a table a hypertable** (read
+    2026-11-21). Self-hosted
+    ([install](https://www.tigerdata.com/docs/self-hosted/latest/install/installation-linux/)):
+    "Open the `postgresql.conf` file and update
+    `shared_preload_libraries`", "Restart the PostgreSQL instance",
+    then `CREATE EXTENSION IF NOT EXISTS timescaledb;` in each
+    database. A table that holds rows
+    ([page](https://www.tigerdata.com/docs/use-timescale/latest/hypertables/hypertable-crud/)):
+    "To convert an existing table with data in it, call
+    `create_hypertable` on that table", with `migrate_data` true, and
+    "if you have a lot of data, this may take a long time." Keys
+    ([page](https://www.tigerdata.com/docs/learn/data-model/primary-keys-time-and-uniqueness)):
+    "TimescaleDB requires that every unique constraint or primary key
+    includes the partitioning column." For a large table that takes
+    writes, the
+    [tutorial](https://www.tigerdata.com/docs/learn/tutorials/migrate-a-table-to-a-hypertable)
+    makes a new hypertable beside the old table, sends new rows to it
+    with a trigger, copies the history so that "each batch commits on
+    its own, so no single transaction holds locks", and renames the
+    two. Whether another table's foreign key may point at a
+    hypertable: a search summary gave two answers by version (U).
 
 ## 3. Where each is offered
 
@@ -277,6 +309,42 @@ summary holds (I):
 | pg_ivm | In the writer's transaction, in triggers (§1.2) | A table of answers, a row a group |
 | Continuous aggregate | In a refresh, which computes each changed time range again (§2.4, §2.13) | A hypertable of answers, one bucket width a view (§2.14) |
 | Straum | In its own process, on the stream after the commit | Cells of counts and sums that merge and subtract, several widths a view |
+
+What each asks of the database before its first answer (R: §1.14,
+§2.16, `docs/src/postgresql.md`). On a managed service the first
+column is whatever the service offers (§3):
+
+| | In the server | In the database |
+| --- | --- | --- |
+| pg_ivm | A preloaded library and a restart | `CREATE EXTENSION`; a table, triggers and an index a view |
+| Continuous aggregate | A preloaded library and a restart | `CREATE EXTENSION`; the table made a hypertable, its unique keys holding the time column; a materialization hypertable and a refresh policy a view |
+| Straum, `--wal logical` | `wal_level = logical`, a restart on 17 and 18 where it is not set | A role, `SELECT`, a publication, `REPLICA IDENTITY FULL` on each spec table |
+| Straum, `--wal physical` | Nothing at the defaults | A role, `SELECT`, one `GRANT EXECUTE` |
+
+Why someone would try Straum, each read from Straum's own pages on
+2026-11-21; the guide's What you gain tells them in this order:
+
+- Trying changes nothing in the database: one command copies the
+  columns the spec reads into Docker with a role that needs only
+  `SELECT`, and the ask is compared with SQL on the copy
+  (`your-data.md`).
+- The answer: trips by pickup borough took PostgreSQL 1,058.8 ms and
+  Straum 269 µs, the answers checked equal (`performance.md`,
+  Results).
+- The structure stays: "It installs nothing in PostgreSQL"
+  (`how-it-works.md`), "The fact table needs no primary key" and "A
+  dim needs no index on its key" (`spec.md`); the try-out copy is
+  "without indexes, keys or defaults" (`your-data.md`). The other
+  side: Straum refuses a partitioned table and a float column a view
+  reads (`postgresql.md`, What Straum checks at start).
+- The app's writes do not change. Its read does: the dashboard's
+  query becomes an ask over HTTP (`asks.md`).
+- The view is PostgreSQL's SQL: "Written as `date_bin` instead, each
+  view gives the same rows in PostgreSQL" (`spec.md`), so an answer
+  can be checked there.
+- Leaving: the slot is temporary and goes with the process
+  (`postgresql.md`, What Straum costs the server); what the setup SQL
+  added is what remains.
 
 What follows for Straum, each with its home in the guide:
 
@@ -346,8 +414,6 @@ all I:
 
 - With pg_ivm "each write waits for it": the trigger runs in the
   writing statement (§1.2).
-- Reading either extension's summary is a query on the database: both
-  keep it in a table there (§1.2, §2.2).
 - A continuous aggregate fits "when the data is already in
   TimescaleDB": it reads a hypertable (§2.3), which Straum refuses.
 
@@ -365,3 +431,27 @@ all I:
 - Engines beside PostgreSQL: Materialize, Feldera and ReadySet are in
   JOINS.md §2 and AGGREGATES.md §2 for their joins and aggregates,
   not as alternatives.
+
+## 6. How tools beside the database state their case
+
+Read on 2026-11-21 for the angles a reader weighs, not as
+alternatives. Each quote is the vendor's own claim (R); none was
+checked.
+
+- [Readyset](https://readyset.io/), a cache in front of the database:
+  "Deploy Readyset without modifying your database schema or
+  application code"; "No stale reads, no TTLs to tune."; "Scale
+  growing workloads without adding read replicas".
+- [Epsio](https://www.epsio.io/), which keeps a results table in the
+  database from its replication stream: "using the SQL you already
+  know in the database you already have."; "Work inside your own
+  database, without any migrations"; "Replace complex caching
+  solutions and denormalizations with a single SQL command."
+- [Materialize](https://materialize.com/): "Offload complex queries
+  from your databases"; "reducing load on your source databases,
+  improving stability".
+
+The angles repeat: nothing to change in the schema, no stale answer
+and no expiry to tune, load taken off the database, SQL the reader
+already writes. Straum can say each of itself (§4) but one: its reads
+are asks over HTTP, so the application's read does change.
