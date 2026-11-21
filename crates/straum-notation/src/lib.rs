@@ -18,7 +18,7 @@ use std::fmt;
 
 use straum_domain::{Definition, Spec, SpecError};
 
-pub use ask_error::{comparison_text, describe_ask_error};
+pub use ask_error::describe_ask_error;
 pub use sql::{SqlError, parse_ask};
 
 /// Why a spec was refused: what the walker found wrong, or failing that,

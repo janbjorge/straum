@@ -31,6 +31,7 @@ use straum_domain::{
 };
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
+use crate::ask_error::comparison_text;
 use super::{
     NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, byte_offset, line,
     statements,
@@ -99,10 +100,11 @@ enum End {
 }
 
 impl End {
-    fn spelling(&self) -> &'static str {
+    /// The comparison a bound on this end writes.
+    fn comparison(&self) -> Comparison {
         match self {
-            End::From => ">=",
-            End::To => "<",
+            End::From => Comparison::GreaterOrEqual,
+            End::To => Comparison::Less,
         }
     }
 }
@@ -395,7 +397,7 @@ impl Walker {
                 End::To => &mut to,
             };
             if !matches!(bound, Bound::Open) {
-                let operator = end.spelling();
+                let operator = comparison_text(end.comparison());
                 self.error(line(part), format!("{name} {operator} given twice"));
                 continue;
             }

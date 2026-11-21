@@ -17,7 +17,7 @@ pub fn describe_ask_error(error: &AskError) -> String {
 }
 
 /// The comparison as an ask writes it.
-pub fn comparison_text(comparison: Comparison) -> &'static str {
+pub(crate) fn comparison_text(comparison: Comparison) -> &'static str {
     match comparison {
         Comparison::Equal => "=",
         Comparison::NotEqual => "<>",

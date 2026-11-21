@@ -5,7 +5,7 @@ mod common;
 
 use common::id;
 use straum_domain::{AskError, ColumnType, Comparison, Instead, Literal, Width};
-use straum_notation::{comparison_text, describe_ask_error};
+use straum_notation::describe_ask_error;
 
 const DAY: u32 = 86_400;
 const WEEK: u32 = 7 * DAY;
@@ -215,16 +215,21 @@ fn value_errors_display() {
 #[test]
 fn comparisons_are_written_as_an_ask_writes_them() {
     let comparisons = [
-        Comparison::Equal,
-        Comparison::NotEqual,
-        Comparison::Less,
-        Comparison::LessOrEqual,
-        Comparison::Greater,
-        Comparison::GreaterOrEqual,
+        (Comparison::Equal, "="),
+        (Comparison::NotEqual, "<>"),
+        (Comparison::Less, "<"),
+        (Comparison::LessOrEqual, "<="),
+        (Comparison::Greater, ">"),
+        (Comparison::GreaterOrEqual, ">="),
     ];
-    let mut written = Vec::new();
-    for comparison in comparisons {
-        written.push(comparison_text(comparison));
+    for (comparison, written) in comparisons {
+        let error = AskError::BooleanOrder {
+            measure: id("paid"),
+            comparison,
+        };
+        assert_eq!(
+            describe_ask_error(&error),
+            format!("paid is a boolean; compare it with = or <>, not {written}")
+        );
     }
-    assert_eq!(written, ["=", "<>", "<", "<=", ">", ">="]);
 }
