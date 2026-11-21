@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use straum_app::{Held, HeldDim, HeldView, ViewKey};
 use straum_domain::{ColumnType, Identifier};
 
-use crate::json::quoted;
+use crate::json::{NULL, quoted, quoted_or_null};
 use crate::time::{rfc3339, rfc3339_or_unix_second};
 
 /// Every view, then every dim, as blocks of plain text.
@@ -59,7 +59,7 @@ fn view_json(view: &HeldView) -> String {
     }
     let (from, to) = match &view.range {
         Some(range) => (edge_json(range.start), edge_json(range.end)),
-        None => ("null".to_owned(), "null".to_owned()),
+        None => (NULL.to_owned(), NULL.to_owned()),
     };
     format!(
         "{{\"name\":{},\"time\":{},\"from\":{from},\"to\":{to},\"keys\":[{}],\"measures\":[{}]}}",
@@ -71,12 +71,9 @@ fn view_json(view: &HeldView) -> String {
 }
 
 fn edge_json(seconds: i64) -> String {
-    match rfc3339(seconds) {
-        Some(at) => quoted(&at),
-        // A time past jiff's year 9999 is null too, as it has no RFC 3339
-        // form here.
-        None => "null".to_owned(),
-    }
+    // A time past jiff's year 9999 is null too, as it has no RFC 3339
+    // form here.
+    quoted_or_null(rfc3339(seconds).as_deref())
 }
 
 fn key_json(name: &str, column: ColumnType) -> String {

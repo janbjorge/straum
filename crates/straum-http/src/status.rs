@@ -20,7 +20,7 @@ use std::time::SystemTime;
 
 use straum_app::{Status, format_mebibytes};
 
-use crate::json::quoted;
+use crate::json::{NULL, quoted, quoted_or_null};
 use crate::time::rfc3339_of;
 
 /// Labels and values line up after this many characters.
@@ -56,24 +56,27 @@ pub(crate) fn write(status: &Status) -> String {
 pub(crate) fn json(status: &Status) -> Vec<u8> {
     let mut fields = Vec::new();
     fields.push(format!("\"ready\":{}", status.ready));
-    fields.push(format!("\"why_not\":{}", text_or_null(why_not(status))));
+    fields.push(format!(
+        "\"why_not\":{}",
+        quoted_or_null(why_not(status).as_deref())
+    ));
     let applied = match status.applied {
         Some(lsn) => quoted(&lsn.to_string()),
-        None => "null".to_owned(),
+        None => NULL.to_owned(),
     };
     fields.push(format!("\"applied\":{applied}"));
     fields.push(format!("\"committed\":{}", time_or_null(status.committed)));
     fields.push(format!("\"as_of\":{}", time_or_null(status.as_of)));
     let lag_ms = match status.lag {
         Some(lag) => lag.as_millis().to_string(),
-        None => "null".to_owned(),
+        None => NULL.to_owned(),
     };
     fields.push(format!("\"lag_ms\":{lag_ms}"));
     let max_lag_ms = status.limits.max_lag.as_millis();
     fields.push(format!("\"max_lag_ms\":{max_lag_ms}"));
     let (written, retained) = match status.wal {
         Some(wal) => (quoted(&wal.written.to_string()), wal.retained().to_string()),
-        None => ("null".to_owned(), "null".to_owned()),
+        None => (NULL.to_owned(), NULL.to_owned()),
     };
     fields.push(format!("\"wal_written\":{written}"));
     fields.push(format!("\"wal_retained_bytes\":{retained}"));
@@ -82,18 +85,11 @@ pub(crate) fn json(status: &Status) -> Vec<u8> {
     format!("{{{}}}\n", fields.join(",")).into_bytes()
 }
 
-fn text_or_null(text: Option<String>) -> String {
-    match text {
-        Some(text) => quoted(&text),
-        None => "null".to_owned(),
-    }
-}
-
 fn time_or_null(time: Option<SystemTime>) -> String {
     let Some(time) = time else {
-        return "null".to_owned();
+        return NULL.to_owned();
     };
-    text_or_null(rfc3339_of(time))
+    quoted_or_null(rfc3339_of(time).as_deref())
 }
 
 fn write_line(out: &mut String, label: &str, value: &str) {

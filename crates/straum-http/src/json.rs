@@ -151,6 +151,17 @@ pub(crate) fn quoted(text: &str) -> String {
     serde_json::to_string(text).expect("a str is a JSON string")
 }
 
+/// JSON's null, as a value Straum writes.
+pub(crate) const NULL: &str = "null";
+
+/// `text` as a JSON string with its quotes, or null when there is none.
+pub(crate) fn quoted_or_null(text: Option<&str>) -> String {
+    match text {
+        Some(text) => quoted(text),
+        None => NULL.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
