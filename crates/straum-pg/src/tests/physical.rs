@@ -9,7 +9,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use straum_app::{App, Lsn, Source, Writer};
-use straum_domain::Spec;
 
 use super::decoding::Pipeline;
 use super::references::*;
@@ -168,8 +167,7 @@ fn follows_a_vacuum_on_19_without_checksums() {
 /// Whether the major under test turns data checksums on by default, as
 /// 18 first does.
 fn checksums_by_default() -> bool {
-    let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
-    major.parse::<u32>().unwrap() >= 18
+    major() >= 18
 }
 
 fn follow(pg: &PostgresContainer, checksums: bool) {
@@ -691,7 +689,7 @@ fn checks_what_the_physical_wal_needs() {
         (catalog.full_page_writes.as_str(), catalog.publication),
         ("on", catalog::PublicationState::Missing)
     );
-    assert_eq!(physical_problems(&spec, &catalog), None);
+    assert_eq!(check_lines(&spec, &catalog, "needs", PHYSICAL), None);
     let logical = catalog::check(&spec, &catalog, "needs", Replication::Logical).unwrap_err();
     let mut publication_missing = false;
     for problem in &logical {
@@ -724,7 +722,7 @@ fn checks_what_the_physical_wal_needs() {
             ..
         } = server;
         assert_eq!(
-            physical_problems(&spec, &catalog),
+            check_lines(&spec, &catalog, "needs", PHYSICAL),
             expected,
             "{version} {wal_level} {full_page_writes} {wal_compression}"
         );
@@ -785,14 +783,6 @@ fn server(version: u32, settings: [&'static str; 3], problems: Vec<&'static str>
         wal_compression,
         problems,
     }
-}
-
-/// What the check for `--wal physical` finds wrong with `catalog`.
-fn physical_problems(spec: &Spec, catalog: &catalog::Catalog) -> Option<Vec<String>> {
-    catalog::check(spec, catalog, "needs", PHYSICAL)
-        .err()
-        .as_deref()
-        .map(crate::problem::lines)
 }
 
 /// With nothing logging which transactions run, and a role that may not

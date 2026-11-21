@@ -19,6 +19,7 @@ use straum_domain::{
     Value, decimal, format_date, format_uuid, push_wide_decimal,
 };
 
+use crate::catalog::{self, Catalog};
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Postgres, Replication, parse_lsn};
@@ -136,6 +137,26 @@ pub(crate) fn tag() -> String {
         return "18".to_owned();
     };
     tag
+}
+
+/// The major of [`tag`] as a number.
+pub(crate) fn major() -> u32 {
+    let digits: String = tag().chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().unwrap()
+}
+
+/// The lines the setup check gives `catalog`, read for `spec` and the
+/// publication `publication`, under `replication`; none when it passes.
+pub(super) fn check_lines(
+    spec: &Spec,
+    catalog: &Catalog,
+    publication: &str,
+    replication: Replication,
+) -> Option<Vec<String>> {
+    let Err(problems) = catalog::check(spec, catalog, publication, replication) else {
+        return None;
+    };
+    Some(crate::problem::lines(&problems))
 }
 
 /// PostgreSQL with logical decoding.

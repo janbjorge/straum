@@ -66,19 +66,9 @@ fn reports_the_server_version_and_wal_level() {
     let mut catalog = catalog::query(&mut db.connection, &spec, "access").unwrap();
     assert!(!catalog.in_recovery);
     assert!(catalog::check(&spec, &catalog, "access", Replication::Logical).is_ok());
-    let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
-    assert_eq!(
-        catalog.server_version / 10_000,
-        major.parse::<u32>().unwrap()
-    );
+    assert_eq!(catalog.server_version / 10_000, major());
     the_wal_level_each_major_needs(&spec, &mut catalog);
     too_old_and_standby_say_so_alone(&spec, &mut catalog);
-}
-
-/// The problem lines the check gives `catalog`, if any.
-fn problem_lines(spec: &Spec, catalog: &Catalog) -> Option<Vec<String>> {
-    let checked = catalog::check(spec, catalog, "access", Replication::Logical);
-    checked.err().as_deref().map(crate::problem::lines)
 }
 
 /// Logical decoding needs `wal_level = logical` before 19, and `replica`
@@ -103,7 +93,7 @@ fn the_wal_level_each_major_needs(spec: &Spec, catalog: &mut Catalog) {
             )]);
         }
         assert_eq!(
-            problem_lines(spec, catalog),
+            check_lines(spec, catalog, "access", Replication::Logical),
             expected,
             "{version} {wal_level}"
         );
@@ -115,7 +105,7 @@ fn too_old_and_standby_say_so_alone(spec: &Spec, catalog: &mut Catalog) {
     catalog.server_version = 160_009;
     catalog.wal_level = "logical".into();
     assert_eq!(
-        problem_lines(spec, catalog),
+        check_lines(spec, catalog, "access", Replication::Logical),
         Some(vec![
             "PostgreSQL 16 is too old; Straum needs 17 or newer".to_owned()
         ])
@@ -124,7 +114,7 @@ fn too_old_and_standby_say_so_alone(spec: &Spec, catalog: &mut Catalog) {
     catalog.server_version = 180_000;
     catalog.in_recovery = true;
     assert_eq!(
-        problem_lines(spec, catalog),
+        check_lines(spec, catalog, "access", Replication::Logical),
         Some(vec![
             "the server is a standby in recovery; give Straum the primary's DSN".to_owned()
         ])
