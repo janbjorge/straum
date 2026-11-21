@@ -224,18 +224,8 @@ fn altered(
     }
     let now = column_versions(connection, &followed.tables)?;
     for table in &followed.tables {
-        let mut loaded = None;
-        for versions in &followed.versions {
-            if versions.oid == table.oid {
-                loaded = Some(versions);
-            }
-        }
-        let mut current = None;
-        for versions in &now {
-            if versions.oid == table.oid {
-                current = Some(versions);
-            }
-        }
+        let loaded = versions_of(&followed.versions, table.oid);
+        let current = versions_of(&now, table.oid);
         if let (Some(loaded), Some(current)) = (loaded, current)
             && loaded.is_altered_in(current)
         {
@@ -243,4 +233,15 @@ fn altered(
         }
     }
     Ok(())
+}
+
+/// The versions of `all` of the table `oid`, if it has any.
+fn versions_of(all: &[ColumnVersions], oid: Oid) -> Option<&ColumnVersions> {
+    let mut found = None;
+    for versions in all {
+        if versions.oid == oid {
+            found = Some(versions);
+        }
+    }
+    found
 }
