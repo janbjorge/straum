@@ -252,7 +252,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | Status | When |
 | --- | --- |
 | 200 | The answer. |
-| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. |
+| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An answer of more than 100,000 rows is refused too, since it is written whole in memory: narrow the ask. |
 | 405 | Not a `POST`. |
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
@@ -275,6 +275,7 @@ sees the connection close.
 {"errors": ["empty range [1794560400, 1794556800)"]}
 {"errors": ["bucket width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}
+{"errors": ["the answer has 105120 rows, past the 100000 an ask may get; narrow the ask: a shorter range, fewer keys or a filter"]}
 ```
 
 ## Endpoints

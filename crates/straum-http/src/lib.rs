@@ -12,8 +12,9 @@
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
 //!   query read by the `AskSyntax` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
-//!   the time went in `Server-Timing`. 400 for an ask Straum can't answer,
-//!   503 while a table it reads isn't ready. With `Accept: text/plain` the
+//!   the time went in `Server-Timing`. 400 for an ask Straum can't answer
+//!   or whose answer has more than `MAX_ANSWER_ROWS` rows, 503 while a
+//!   table it reads isn't ready. With `Accept: text/plain` the
 //!   answer is a table and the errors are lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and Straum is within its

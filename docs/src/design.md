@@ -269,6 +269,10 @@ joins through another dim, walks each cell once per row its joins
 find. The cells are then added up, filtered and sorted as [Answering an
 ask](how-it-works.md#answering-an-ask) says.
 
+An ask builds at most 100,000 rows, and an answer with more is 400:
+it is written whole in memory, so an ask over every key of a large view
+could take more than the process may hold.
+
 The answer carries `as_of` from the `Lag`, the applied LSN in the
 `Straum-LSN` header and `Cache-Control: no-store`. It is JSON, or a
 table in plain text for an ask sent with `Accept: text/plain`.

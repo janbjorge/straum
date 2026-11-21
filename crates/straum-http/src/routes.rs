@@ -7,7 +7,7 @@
 //! view's definition as the spec wrote it.
 
 use std::convert::Infallible;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,7 +16,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
-use straum_domain::{Ask, Definition, Start, Window};
+use straum_domain::{Ask, Cut, Definition, Start, Window};
 
 use crate::json::quoted;
 use crate::{AskSyntax, DescribeAskError, Served, answer, ask, status, views};
@@ -36,6 +36,18 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(10);
 /// The rows `GET /views/NAME` writes at most. A view may hold millions,
 /// which no one reads.
 const MAX_ROWS: usize = 1000;
+
+/// The rows `POST /ask` answers at most. An answer is written whole in
+/// memory, so one ask over every key of a large view could take more than
+/// the process may hold; past this it is refused.
+const MAX_ANSWER_ROWS: usize = 100_000;
+
+/// The rows an ask builds: up to the most it may answer, so that a
+/// refused one builds no more than an answered one.
+const ANSWER_WINDOW: Window = Window {
+    start: Start::FromFirst(0),
+    count: MAX_ANSWER_ROWS,
+};
 
 const ROWS_PREFIX: &str = "/views/";
 
@@ -211,7 +223,7 @@ async fn post_ask(body: Incoming, app: &App, syntax: AskSyntax, format: Format) 
     };
     let writing = Writing {
         format,
-        window: None,
+        rows: Rows::Every,
     };
     answer(
         app,
@@ -281,7 +293,7 @@ async fn get_rows(app: &App, describe: DescribeAskError, view: &str, query: Opti
     };
     let writing = Writing {
         format: Format::Text,
-        window: Some(window),
+        rows: Rows::Window(window),
     };
     answer(app, asked, writing, describe, Duration::ZERO, start).await
 }
@@ -338,12 +350,55 @@ fn window_count(value: Option<&str>) -> Result<usize, String> {
     }
 }
 
-/// How an answer is to be written: its format, and which rows a table
-/// shows.
+/// How an answer is to be written: its format, and which of its rows.
 #[derive(Clone, Copy)]
 struct Writing {
     format: Format,
-    window: Option<Window>,
+    rows: Rows,
+}
+
+/// Which of an answer's rows a reply writes.
+#[derive(Clone, Copy)]
+enum Rows {
+    /// Every one, or none past [`MAX_ANSWER_ROWS`].
+    Every,
+    /// Those the window shows.
+    Window(Window),
+}
+
+/// Why an answer was not written.
+#[derive(Debug, PartialEq, Eq)]
+enum Unwritten {
+    App(AnswerError),
+    /// The answer has this many rows, past [`MAX_ANSWER_ROWS`].
+    TooManyRows(usize),
+}
+
+impl From<AnswerError> for Unwritten {
+    fn from(error: AnswerError) -> Unwritten {
+        Unwritten::App(error)
+    }
+}
+
+impl Display for Unwritten {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unwritten::App(error) => error.fmt(formatter),
+            Unwritten::TooManyRows(total) => write!(
+                formatter,
+                "the answer has {total} rows, past the {MAX_ANSWER_ROWS} an ask may get; \
+                 narrow the ask: a shorter range, fewer keys or a filter"
+            ),
+        }
+    }
+}
+
+/// Refuses an answer of every row when it has more than an ask may get.
+fn within_answer_rows(cut: Cut) -> Result<(), Unwritten> {
+    if cut.total > MAX_ANSWER_ROWS {
+        return Err(Unwritten::TooManyRows(cut.total));
+    }
+    Ok(())
 }
 
 async fn answer(
@@ -378,11 +433,15 @@ struct Timed {
     write_time: Duration,
 }
 
-fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, AnswerError> {
+fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, Unwritten> {
     let answering = Instant::now();
-    let answered = match writing.window {
-        Some(window) => app.ask_window(asked, window)?,
-        None => app.ask(asked)?,
+    let answered = match writing.rows {
+        Rows::Window(window) => app.ask_window(asked, window)?,
+        Rows::Every => {
+            let answered = app.ask_window(asked, ANSWER_WINDOW)?;
+            within_answer_rows(answered.cut)?;
+            answered
+        }
     };
     let written_from = Instant::now();
     let body = match writing.format {
@@ -433,16 +492,19 @@ fn answered_reply(timed: Timed, format: Format, parse_time: Duration, start: Ins
     reply
 }
 
-fn answer_error(error: &AnswerError, describe: DescribeAskError, format: Format) -> Reply {
+fn answer_error(error: &Unwritten, describe: DescribeAskError, format: Format) -> Reply {
     match error {
-        AnswerError::Invalid(invalid) => {
+        Unwritten::App(AnswerError::Invalid(invalid)) => {
             let mut lines = Vec::with_capacity(invalid.len());
             for ask_error in invalid {
                 lines.push(describe(ask_error));
             }
             format.errors(StatusCode::BAD_REQUEST, &lines)
         }
-        AnswerError::NotReady => format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error]),
+        Unwritten::App(AnswerError::NotReady) => {
+            format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
+        }
+        Unwritten::TooManyRows(_) => format.errors(StatusCode::BAD_REQUEST, &[error]),
     }
 }
 
@@ -606,5 +668,26 @@ mod tests {
         for (query, error) in wrong {
             assert_eq!(rows_window(query), Err(error.to_owned()), "{query}");
         }
+    }
+
+    #[test]
+    fn an_answer_of_at_most_the_most_rows_is_written() {
+        for total in [0, 1, MAX_ANSWER_ROWS] {
+            let cut = Cut::of(Some(ANSWER_WINDOW), total);
+            assert_eq!(within_answer_rows(cut), Ok(()), "{total}");
+            assert_eq!(cut.count, total);
+        }
+    }
+
+    #[test]
+    fn an_answer_of_more_rows_is_refused_naming_them() {
+        let total = MAX_ANSWER_ROWS + 1;
+        let refused = within_answer_rows(Cut::of(Some(ANSWER_WINDOW), total));
+        assert_eq!(refused, Err(Unwritten::TooManyRows(total)));
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "the answer has 100001 rows, past the 100000 an ask may get; \
+             narrow the ask: a shorter range, fewer keys or a filter"
+        );
     }
 }
