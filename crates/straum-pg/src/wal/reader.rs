@@ -404,68 +404,65 @@ impl Records {
         length: usize,
         mut out: Option<&mut Vec<u8>>,
     ) -> Result<Option<u64>, WalError> {
-        let (mut gathered, mut position) = self.resume(start, length, out.as_deref());
-        if gathered == 0
+        let mut progress = self.resume(start, length, out.as_deref());
+        if progress.gathered == 0
             && let Some(out) = out.as_deref_mut()
         {
             out.clear();
         }
-        while gathered < length {
-            if position.is_multiple_of(PAGE_SIZE) {
-                let Some(header) = self.page_header(position)? else {
-                    return Ok(self.wait(start, length, gathered, position));
+        while progress.gathered < length {
+            if progress.position.is_multiple_of(PAGE_SIZE) {
+                let Some(header) = self.page_header(progress.position)? else {
+                    self.gathering = Some(progress);
+                    return Ok(None);
                 };
-                let left = (length - gathered) as u64;
+                let left = (length - progress.gathered) as u64;
                 let continues = header.flags & FIRST_IS_CONTINUATION != 0;
                 // Past the record header, the page knows the whole length.
-                let length_known = gathered >= RECORD_HEADER;
+                let length_known = progress.gathered >= RECORD_HEADER;
                 if !continues || (length_known && u64::from(header.remaining) != left) {
-                    return Err(at(position, Problem::Continuation));
+                    return Err(at(progress.position, Problem::Continuation));
                 }
-                position += header.length;
+                progress.position += header.length;
             }
-            let room = PAGE_SIZE - position % PAGE_SIZE;
-            let take = room.min((length - gathered) as u64);
-            let Some(bytes) = self.bytes_at(position, take) else {
-                return Ok(self.wait(start, length, gathered, position));
+            let room = PAGE_SIZE - progress.position % PAGE_SIZE;
+            let take = room.min((length - progress.gathered) as u64);
+            let Some(bytes) = self.bytes_at(progress.position, take) else {
+                self.gathering = Some(progress);
+                return Ok(None);
             };
-            gathered += bytes.len();
+            progress.gathered += bytes.len();
             if let Some(out) = out.as_deref_mut() {
                 out.extend_from_slice(bytes);
             }
-            position += take;
+            progress.position += take;
         }
         self.gathering = None;
-        Ok(Some(position))
+        Ok(Some(progress.position))
     }
 
     /// Where to go on gathering `length` bytes of the record at `start`:
     /// from where the last feed stopped, when that was this record and
     /// `out` still holds what was gathered, else from its start.
-    fn resume(&self, start: u64, length: usize, out: Option<&Vec<u8>>) -> (usize, u64) {
+    fn resume(&self, start: u64, length: usize, out: Option<&Vec<u8>>) -> Gathering {
+        let from_start = Gathering {
+            start,
+            length,
+            gathered: 0,
+            position: start,
+        };
         let Some(gathering) = self.gathering else {
-            return (0, start);
+            return from_start;
         };
         if gathering.start != start || gathering.length != length {
-            return (0, start);
+            return from_start;
         }
         if let Some(out) = out
             && out.len() != gathering.gathered
         {
-            return (0, start);
+            return from_start;
         }
-        (gathering.gathered, gathering.position)
-    }
-
-    /// Keeps how far the record at `start` is gathered, for the next feed.
-    fn wait(&mut self, start: u64, length: usize, gathered: usize, position: u64) -> Option<u64> {
-        self.gathering = Some(Gathering {
-            start,
-            length,
-            gathered,
-            position,
-        });
-        None
+        gathering
     }
 }
 
