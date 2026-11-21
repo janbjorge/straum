@@ -3,9 +3,9 @@
 //! a key of several columns matches on all; a key with a null joins
 //! nothing.
 
-use crate::common::{Rng, attribute, by_key, condition, dim, id, lit, text};
+use crate::common::{Rng, attribute, by_key, condition, dim, id, lit, measure, text};
 use crate::random::trip;
-use crate::views::{new_measure, spec, trips_by_pay, typed};
+use crate::views::{spec, trips_by_pay, typed};
 use crate::{AT, DRO, FARE, PU, SHARED, START, VENDOR, WIDTH, first_values, trips_ask};
 use straum_domain::{
     Aggregate, Ask, AskKey, ColumnType, Datum, Ref, RefKind, RowError, Spec, Store, Value, Via,
@@ -363,7 +363,7 @@ fn a_dim_row_with_a_null_key_is_never_held() {
 /// not through bound cells.
 fn combos_on_by_keys_spec() -> Spec {
     let combos = dim("combos", &["pu_id", "vendor_id"], &["label"]);
-    let mut trips = trips_by_pay(vec![new_measure("trips", Aggregate::Count, vec![])]);
+    let mut trips = trips_by_pay(vec![measure("trips", Aggregate::Count)]);
     trips.refs = vec![Ref {
         alias: id("combo"),
         dim: id("combos"),

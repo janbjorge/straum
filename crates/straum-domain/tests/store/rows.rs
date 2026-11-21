@@ -2,9 +2,9 @@
 //! types its measures read, and held before it is removed. Also where the
 //! columns of a row and the parts of the rollup key lie.
 
-use crate::common::{Rng, id, text};
+use crate::common::{Rng, id, measure, text};
 use crate::random::trip;
-use crate::views::{new_measure, spec, trips_by_pay};
+use crate::views::{spec, trips_by_pay};
 use crate::{
     AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_COLUMNS, SHARED, START, TIP, TOLLED, VENDOR,
     WIDTH,
@@ -178,17 +178,13 @@ fn row_errors() {
 /// cell or other state of the fare stands in for a check the keyed cells
 /// make.
 fn fare_sum_spec() -> Spec {
-    let trips = trips_by_pay(vec![new_measure(
-        "fare",
-        Aggregate::Sum(id("fare")),
-        vec![],
-    )]);
+    let trips = trips_by_pay(vec![measure("fare", Aggregate::Sum(id("fare")))]);
     Spec::new(Vec::new(), vec![trips]).unwrap()
 }
 
 /// Trips by pay with one aggregate of the fare's distinct values.
 fn distinct_fare_spec(aggregate: Aggregate) -> Spec {
-    let trips = trips_by_pay(vec![new_measure("fare", aggregate, vec![])]);
+    let trips = trips_by_pay(vec![measure("fare", aggregate)]);
     Spec::new(Vec::new(), vec![trips]).unwrap()
 }
 

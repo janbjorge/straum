@@ -3,10 +3,10 @@
 //! notices a value its cell lacks, and every kind of cell state refusing a
 //! row it never saw.
 
-use crate::common::{Rng, id, text};
+use crate::common::{Rng, id, measure, text};
 use crate::random::trip;
 use crate::rows::base_trip_with;
-use crate::views::{new_measure, percentile_spec, spec, trips_by_pay, typed};
+use crate::views::{percentile_spec, spec, trips_by_pay, typed};
 use crate::{AT, FARE, HOUR, PU, RIDER, START, TIP, TOLLED, WIDTH, first_values, trips_ask};
 use straum_domain::{Aggregate, Answer, Ask, AskKey, Datum, RowError, Spec, Store, Value, Width};
 
@@ -164,8 +164,8 @@ fn trips_and_tipped_pair(trips: i128, tipped: i128) -> Vec<Value> {
 #[test]
 fn a_count_alone_notices_a_value_its_cell_lacks() {
     let mut trips = trips_by_pay(vec![
-        new_measure("trips", Aggregate::Count, vec![]),
-        new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
+        measure("trips", Aggregate::Count),
+        measure("tipped", Aggregate::CountNotNull(id("tip"))),
     ]);
     trips.time.wider = vec![Width { seconds: HOUR }];
     let spec = Spec::new(Vec::new(), vec![trips]).unwrap();

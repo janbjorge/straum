@@ -3,11 +3,11 @@
 //! zones alone, and one of percentiles. Also the column types a load sets,
 //! so a store here is typed as the source would type it.
 
-use crate::common::{attribute, by_key, condition, dim, id, lit, percentile, table};
+use crate::common::{attribute, by_key, condition, dim, id, lit, measure, percentile, table};
 use crate::{DAY, DIM_TYPES, DIST, FARE, HOUR, ROW_COLUMNS, TIP, TRIP_SCALES, WEEK, WIDTH};
 use straum_domain::{
-    Aggregate, ByKey, ColumnType, Condition, Fact, Literal, Measure, Ref, RefKind, Spec, Store,
-    Time, Via, Width,
+    Aggregate, ByKey, ColumnType, Fact, Literal, Measure, Ref, RefKind, Spec, Store, Time, Via,
+    Width,
 };
 
 /// The trips view with every join a left one.
@@ -57,15 +57,6 @@ pub(crate) fn trips_by_pay(measures: Vec<Measure>) -> Fact {
         by_keys: vec![by_key("pay")],
         filter: vec![],
         measures,
-    }
-}
-
-/// A measure of the trips view.
-pub(crate) fn new_measure(name: &str, aggregate: Aggregate, filter: Vec<Condition>) -> Measure {
-    Measure {
-        name: id(name),
-        aggregate,
-        filter,
     }
 }
 
@@ -146,57 +137,49 @@ fn trip_by_keys() -> Vec<ByKey> {
 /// Counts, sums, mins, maxes and percentiles, one filtered.
 fn count_sum_and_rank_measures() -> Vec<Measure> {
     vec![
-        new_measure("trips", Aggregate::Count, vec![]),
-        new_measure("fare", Aggregate::Sum(id("fare")), vec![]),
-        new_measure("tip_min", Aggregate::Min(id("tip")), vec![]),
-        new_measure("tip_max", Aggregate::Max(id("tip")), vec![]),
-        new_measure("tip_median", percentile(5, 1, "tip"), vec![]),
-        new_measure("tip_lowest", percentile(0, 0, "tip"), vec![]),
-        new_measure("tip_highest", percentile(1, 0, "tip"), vec![]),
+        measure("trips", Aggregate::Count),
+        measure("fare", Aggregate::Sum(id("fare"))),
+        measure("tip_min", Aggregate::Min(id("tip"))),
+        measure("tip_max", Aggregate::Max(id("tip"))),
+        measure("tip_median", percentile(5, 1, "tip")),
+        measure("tip_lowest", percentile(0, 0, "tip")),
+        measure("tip_highest", percentile(1, 0, "tip")),
         // A rank PostgreSQL's float8 puts one past exact math's at
         // every hundred values.
-        new_measure("fare_p07", percentile(7, 2, "fare"), vec![]),
-        new_measure(
-            "card_tip_p90",
-            percentile(90, 2, "tip"),
-            vec![condition("pay", vec![Literal::Int(1)])],
-        ),
+        measure("fare_p07", percentile(7, 2, "fare")),
+        Measure {
+            filter: vec![condition("pay", vec![Literal::Int(1)])],
+            ..measure("card_tip_p90", percentile(90, 2, "tip"))
+        },
         // Beside the fare's sum and the distance's average, so they share
         // one state; the tip's on its own.
         // Beside the tip's min, max and percentiles, so it reads their
         // counts; the distance's on its own.
-        new_measure("tip_mode", Aggregate::Mode(id("tip")), vec![]),
-        new_measure("distance_mode", Aggregate::Mode(id("dist")), vec![]),
+        measure("tip_mode", Aggregate::Mode(id("tip"))),
+        measure("distance_mode", Aggregate::Mode(id("dist"))),
         // Distinct values of numbers: the fare's beside its p07, the
         // tip's beside its min, max and percentiles, so both read the
         // counts those keep; the pickups' below keep their own. Each
         // count reads the tally of the sum or average under the same
         // FILTER, and the card tips' count comes first, so the tally
         // must hold a sum.
-        new_measure("distinct_fares", Aggregate::SumDistinct(id("fare")), vec![]),
-        new_measure(
-            "distinct_fare_count",
-            Aggregate::CountDistinct(id("fare")),
-            vec![],
-        ),
-        new_measure(
-            "card_distinct_tips",
-            Aggregate::CountDistinct(id("tip")),
-            vec![condition("pay", vec![Literal::Int(1)])],
-        ),
-        new_measure(
-            "card_distinct_tip",
-            Aggregate::AvgDistinct(id("tip")),
-            vec![condition("pay", vec![Literal::Int(1)])],
-        ),
-        new_measure("fare_var", Aggregate::VarSamp(id("fare")), vec![]),
-        new_measure("tip_var_pop", Aggregate::VarPop(id("tip")), vec![]),
-        new_measure("distance_sd", Aggregate::StddevSamp(id("dist")), vec![]),
-        new_measure(
-            "card_tip_sd_pop",
-            Aggregate::StddevPop(id("tip")),
-            vec![condition("pay", vec![Literal::Int(1)])],
-        ),
+        measure("distinct_fares", Aggregate::SumDistinct(id("fare"))),
+        measure("distinct_fare_count", Aggregate::CountDistinct(id("fare"))),
+        Measure {
+            filter: vec![condition("pay", vec![Literal::Int(1)])],
+            ..measure("card_distinct_tips", Aggregate::CountDistinct(id("tip")))
+        },
+        Measure {
+            filter: vec![condition("pay", vec![Literal::Int(1)])],
+            ..measure("card_distinct_tip", Aggregate::AvgDistinct(id("tip")))
+        },
+        measure("fare_var", Aggregate::VarSamp(id("fare"))),
+        measure("tip_var_pop", Aggregate::VarPop(id("tip"))),
+        measure("distance_sd", Aggregate::StddevSamp(id("dist"))),
+        Measure {
+            filter: vec![condition("pay", vec![Literal::Int(1)])],
+            ..measure("card_tip_sd_pop", Aggregate::StddevPop(id("tip")))
+        },
     ]
 }
 
@@ -205,57 +188,49 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
 fn average_count_and_bool_measures() -> Vec<Measure> {
     vec![
         // A sum over a column the load groups by.
-        new_measure("tip_avg", Aggregate::Avg(id("tip")), vec![]),
-        new_measure("distance", Aggregate::Avg(id("dist")), vec![]),
-        new_measure("riders", Aggregate::CountDistinct(id("rider")), vec![]),
-        new_measure("pickups", Aggregate::CountDistinct(id("pu")), vec![]),
-        new_measure(
-            "card",
-            Aggregate::Count,
-            vec![condition("pay", vec![Literal::Int(1)])],
-        ),
-        new_measure(
-            "shared_fare",
-            Aggregate::Sum(id("fare")),
-            vec![condition("shared", vec![Literal::Bool(true)])],
-        ),
-        new_measure(
-            "mq_fare",
-            Aggregate::Sum(id("fare")),
-            vec![
+        measure("tip_avg", Aggregate::Avg(id("tip"))),
+        measure("distance", Aggregate::Avg(id("dist"))),
+        measure("riders", Aggregate::CountDistinct(id("rider"))),
+        measure("pickups", Aggregate::CountDistinct(id("pu"))),
+        Measure {
+            filter: vec![condition("pay", vec![Literal::Int(1)])],
+            ..measure("card", Aggregate::Count)
+        },
+        Measure {
+            filter: vec![condition("shared", vec![Literal::Bool(true)])],
+            ..measure("shared_fare", Aggregate::Sum(id("fare")))
+        },
+        Measure {
+            filter: vec![
                 condition("pickup_borough", vec![lit("m"), lit("q")]),
                 condition("vendor", vec![Literal::Int(2)]),
             ],
-        ),
-        new_measure(
-            "m_riders",
-            Aggregate::CountDistinct(id("rider")),
-            vec![condition("dropoff_borough", vec![lit("m")])],
-        ),
-        new_measure(
-            "far_tip",
-            Aggregate::Max(id("tip")),
-            vec![condition("dro", vec![Literal::Int(3), Literal::Int(6)])],
-        ),
-        new_measure(
-            "zone_four_distance",
-            Aggregate::Avg(id("dist")),
-            vec![condition("pu", vec![Literal::Int(4)])],
-        ),
-        new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
+            ..measure("mq_fare", Aggregate::Sum(id("fare")))
+        },
+        Measure {
+            filter: vec![condition("dropoff_borough", vec![lit("m")])],
+            ..measure("m_riders", Aggregate::CountDistinct(id("rider")))
+        },
+        Measure {
+            filter: vec![condition("dro", vec![Literal::Int(3), Literal::Int(6)])],
+            ..measure("far_tip", Aggregate::Max(id("tip")))
+        },
+        Measure {
+            filter: vec![condition("pu", vec![Literal::Int(4)])],
+            ..measure("zone_four_distance", Aggregate::Avg(id("dist")))
+        },
+        measure("tipped", Aggregate::CountNotNull(id("tip"))),
         // Over text: a count reads no value, only that there is one.
-        new_measure(
-            "far_riders",
-            Aggregate::CountNotNull(id("rider")),
-            vec![condition("dro", vec![Literal::Int(3), Literal::Int(6)])],
-        ),
-        new_measure("all_tolled", Aggregate::BoolAnd(id("tolled")), vec![]),
-        new_measure("any_tolled", Aggregate::BoolOr(id("tolled")), vec![]),
-        new_measure(
-            "card_tolled",
-            Aggregate::BoolOr(id("tolled")),
-            vec![condition("pay", vec![Literal::Int(1)])],
-        ),
+        Measure {
+            filter: vec![condition("dro", vec![Literal::Int(3), Literal::Int(6)])],
+            ..measure("far_riders", Aggregate::CountNotNull(id("rider")))
+        },
+        measure("all_tolled", Aggregate::BoolAnd(id("tolled"))),
+        measure("any_tolled", Aggregate::BoolOr(id("tolled"))),
+        Measure {
+            filter: vec![condition("pay", vec![Literal::Int(1)])],
+            ..measure("card_tolled", Aggregate::BoolOr(id("tolled")))
+        },
     ]
 }
 
@@ -308,11 +283,7 @@ pub(crate) enum Widths {
 /// with no join at all.
 pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
     let zones = dim("zones", &["id"], &["borough"]);
-    let mut trips = trips_by_pay(vec![Measure {
-        name: id("trips"),
-        aggregate: Aggregate::Count,
-        filter: vec![],
-    }]);
+    let mut trips = trips_by_pay(vec![measure("trips", Aggregate::Count)]);
     if let Widths::QuarterAndHour = widths {
         trips.time.wider = vec![Width { seconds: HOUR }];
     }
@@ -331,12 +302,12 @@ pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
 /// Trips by pay with a max and percentiles of the fare, joined to nothing.
 pub(crate) fn percentile_spec() -> Spec {
     let trips = trips_by_pay(vec![
-        new_measure("top", Aggregate::Max(id("fare")), vec![]),
-        new_measure("median", percentile(5, 1, "fare"), vec![]),
-        new_measure("p99", percentile(99, 2, "fare"), vec![]),
-        new_measure("lowest", percentile(0, 0, "fare"), vec![]),
-        new_measure("highest", percentile(1, 0, "fare"), vec![]),
-        new_measure("p07", percentile(7, 2, "fare"), vec![]),
+        measure("top", Aggregate::Max(id("fare"))),
+        measure("median", percentile(5, 1, "fare")),
+        measure("p99", percentile(99, 2, "fare")),
+        measure("lowest", percentile(0, 0, "fare")),
+        measure("highest", percentile(1, 0, "fare")),
+        measure("p07", percentile(7, 2, "fare")),
     ]);
     Spec::new(vec![], vec![trips]).unwrap()
 }
