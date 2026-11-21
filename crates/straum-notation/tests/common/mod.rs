@@ -121,6 +121,29 @@ pub fn any_contains(errors: &[String], fragment: &str) -> bool {
     false
 }
 
+/// One wrong spec or ask: as written, the errors it gave, and what one
+/// of them must say.
+pub struct Wrong<'case> {
+    pub written: &'case str,
+    pub errors: Vec<String>,
+    pub fragment: &'case str,
+}
+
+/// Each case's errors name what is wrong with it; every case that says
+/// otherwise is listed before the test fails.
+pub fn assert_each_contains(cases: &[Wrong]) {
+    let mut failed = Vec::new();
+    for case in cases {
+        if !any_contains(&case.errors, case.fragment) {
+            failed.push(format!(
+                "{}: {:?} has no {:?}",
+                case.written, case.errors, case.fragment
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
 /// Whether any error's message contains `fragment`, on `line` if given.
 pub fn any_message(errors: &[SqlError], line: Option<u64>, fragment: &str) -> bool {
     for error in errors {

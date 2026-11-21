@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{FEB, JAN, any_contains, condition, id, strings};
+use common::{FEB, JAN, Wrong, any_contains, assert_each_contains, condition, id, strings};
 use straum_domain::{Ask, AskKey, Comparison, Literal, MeasureCondition, Width};
 use straum_notation::parse_ask;
 
@@ -129,13 +129,15 @@ fn keys_come_in_select_order() {
 
 /// Each case is one wrong ask; its errors must include the fragment.
 fn assert_each_names_what_is_wrong(cases: &[(&str, &[Literal], &str)]) {
-    for (query, parameters, fragment) in cases {
-        let errors = errors(query, parameters);
-        assert!(
-            any_contains(&errors, fragment),
-            "{query}: {errors:?} has no {fragment:?}"
-        );
+    let mut wrong = Vec::with_capacity(cases.len());
+    for &(written, parameters, fragment) in cases {
+        wrong.push(Wrong {
+            written,
+            errors: errors(written, parameters),
+            fragment,
+        });
     }
+    assert_each_contains(&wrong);
 }
 
 #[test]

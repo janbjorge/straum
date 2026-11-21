@@ -5,10 +5,12 @@
 //! `usage` view are cut out the same way, parsed, and checked against the
 //! `usage` view of the Spec page.
 
+mod common;
+
 use std::fmt;
 
+use common::{described, strings};
 use straum_domain::{Literal, Spec};
-use straum_notation::describe_ask_error;
 
 const DOCS: [Page; 5] = [
     Page {
@@ -233,23 +235,14 @@ fn check_asks(name: &str, markdown: &str, spec: &Spec) -> Result<usize, AskExamp
 
 /// What is wrong with `query` as an ask of `spec`, as Straum says it.
 fn ask_errors(query: &str, spec: &Spec) -> Result<(), Vec<String>> {
-    let mut said = Vec::new();
     let ask = match straum_notation::parse_ask(query, &parameters(query)) {
         Ok(ask) => ask,
-        Err(errors) => {
-            for error in &errors {
-                said.push(error.to_string());
-            }
-            return Err(said);
-        }
+        Err(errors) => return Err(strings(&errors)),
     };
     let Err(errors) = spec.check_ask(&ask) else {
         return Ok(());
     };
-    for error in &errors {
-        said.push(describe_ask_error(error));
-    }
-    Err(said)
+    Err(described(&errors))
 }
 
 /// Parses every spec in `markdown`: how many, or the first failure named by

@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{any_contains, edit, error_lines, rejects};
+use common::{Wrong, any_contains, assert_each_contains, edit, error_lines, rejects};
 use straum_domain::{Literal, RefKind};
 use straum_notation::parse;
 
@@ -28,14 +28,17 @@ fn canon(from: &str, to: &str) -> String {
     edit(CANON, from, to)
 }
 
+/// Each case is one edit to `CANON`; its errors must include the fragment.
 fn check(cases: &[(&str, &str, &str)]) {
-    for (from, to, fragment) in cases {
-        let errors = error_lines(&canon(from, to));
-        assert!(
-            any_contains(&errors, fragment),
-            "{to}: {errors:?} has no {fragment:?}"
-        );
+    let mut wrong = Vec::with_capacity(cases.len());
+    for &(from, written, fragment) in cases {
+        wrong.push(Wrong {
+            written,
+            errors: error_lines(&canon(from, written)),
+            fragment,
+        });
     }
+    assert_each_contains(&wrong);
 }
 
 #[test]
@@ -108,13 +111,15 @@ fn one_join_spelling() {
             "table customers must be schema.table",
         ),
     ];
-    for (to, fragment) in cases {
-        let errors = error_lines(&canon(join, &to));
-        assert!(
-            any_contains(&errors, fragment),
-            "{to}: {errors:?} has no {fragment:?}"
-        );
+    let mut wrong = Vec::with_capacity(cases.len());
+    for (written, fragment) in &cases {
+        wrong.push(Wrong {
+            written,
+            errors: error_lines(&canon(join, written)),
+            fragment,
+        });
     }
+    assert_each_contains(&wrong);
 }
 
 /// `INNER JOIN` is the other spelling that stays, and the view's `WHERE`
@@ -136,7 +141,8 @@ fn inner_join_and_exists_parse() {
     }
     assert_eq!(aliases, ["customers", "promos", "blocked"]);
     assert_eq!(kinds, [RefKind::Inner, RefKind::Semi, RefKind::Anti]);
-    for (to, fragment) in [
+    let mut wrong = Vec::new();
+    for (written, fragment) in [
         (
             "WHERE orders.customer_id IN (SELECT id FROM shop.blocked AS blocked)",
             "filter condition, write = or IN joined by AND,",
@@ -152,13 +158,15 @@ fn inner_join_and_exists_parse() {
     ] {
         let errors = error_lines(&canon(
             "GROUP BY 1, 2, 3, 4, 5",
-            &format!("{to} GROUP BY 1, 2, 3, 4, 5"),
+            &format!("{written} GROUP BY 1, 2, 3, 4, 5"),
         ));
-        assert!(
-            any_contains(&errors, fragment),
-            "{to}: {errors:?} has no {fragment:?}"
-        );
+        wrong.push(Wrong {
+            written,
+            errors,
+            fragment,
+        });
     }
+    assert_each_contains(&wrong);
 }
 
 /// The fact table is written whole too.
