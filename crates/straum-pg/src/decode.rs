@@ -45,7 +45,6 @@ struct Mapping {
     table: TableIndex,
     /// For each column the table reads, its place in the relation's tuples.
     positions: Vec<usize>,
-    types: Vec<ColumnType>,
     /// How many columns the relation's tuples have.
     width: usize,
 }
@@ -167,12 +166,11 @@ impl Decoder {
             }
             if table.types != types {
                 self.transaction.changes.push(unfit(table, Drift::Altered));
-                table.types.clone_from(&types);
+                table.types = types;
             }
             mappings.push(Mapping {
                 table: TableIndex(index),
                 positions,
-                types,
                 width: relation.columns.len(),
             });
         }
@@ -295,11 +293,10 @@ impl Mapping {
     ) -> Result<Option<Vec<Datum>>, Error> {
         self.fits(tuple)?;
         let mut row = Vec::with_capacity(self.positions.len());
-        for (index, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate()
-        {
+        for (index, &position) in self.positions.iter().enumerate() {
             let datum = match (&tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
-                (Field::Text(text), _) => read(*column_type, text)
+                (Field::Text(text), _) => read(table.types[index], text)
                     .map_err(|error| error.at(&table.qualified(), &table.columns[index]))?,
                 (Field::Datum(datum), _) => datum.clone(),
                 (Field::Unchanged, Some(old)) => old[index].clone(),
