@@ -112,18 +112,7 @@ fn apply_change(store: &mut Store, change: &Change) -> Result<(), Unfitting> {
             store.clear(table.as_str());
             return Ok(());
         }
-        Change::Unfit {
-            drift: Drift::Altered,
-            ..
-        } => return Err(Unfitting::Altered),
-        Change::Unfit {
-            drift: Drift::OutOfLine,
-            ..
-        } => return Err(Unfitting::OutOfLine),
-        Change::Unfit {
-            drift: Drift::Renamed,
-            ..
-        } => return Err(Unfitting::Renamed),
+        Change::Unfit { drift, .. } => return Err(Unfitting::Drifted(*drift)),
     }
     .map_err(Unfitting::Row)
 }
@@ -289,32 +278,15 @@ pub enum Error {
 pub enum Unfitting {
     /// The store turned the row away.
     Row(RowError),
-    /// The stream no longer carries what Straum reads of the table: it was
-    /// altered or rewritten, or a change came without its old row.
-    Altered,
-    /// A value a column of the table reads was renamed.
-    Renamed,
-    /// A value a column of the table reads is stored out of line, and the
-    /// stream holds only a pointer to it.
-    OutOfLine,
+    /// The table no longer reads as Straum holds it.
+    Drifted(Drift),
 }
 
 impl fmt::Display for Unfitting {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Unfitting::Row(error) => error.fmt(formatter),
-            Unfitting::Altered => formatter.write_str(
-                "the stream no longer carries what Straum reads of it: the table was altered \
-                 or rewritten, or a change came without its old row",
-            ),
-            Unfitting::Renamed => formatter.write_str(
-                "a value of a column Straum reads was renamed, and the rows held carry the \
-                 old one",
-            ),
-            Unfitting::OutOfLine => formatter.write_str(
-                "a value of a column Straum reads is stored out of line, and the stream \
-                 holds only a pointer to it, not the value",
-            ),
+            Unfitting::Drifted(drift) => drift.fmt(formatter),
         }
     }
 }

@@ -132,6 +132,25 @@ impl Change {
     }
 }
 
+impl fmt::Display for Drift {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Drift::Altered => formatter.write_str(
+                "the stream no longer carries what Straum reads of it: the table was altered \
+                 or rewritten, or a change came without its old row",
+            ),
+            Drift::Renamed => formatter.write_str(
+                "a value of a column Straum reads was renamed, and the rows held carry the \
+                 old one",
+            ),
+            Drift::OutOfLine => formatter.write_str(
+                "a value of a column Straum reads is stored out of line, and the stream \
+                 holds only a pointer to it, not the value",
+            ),
+        }
+    }
+}
+
 /// As PostgreSQL prints it: the high and low 32 bits in hex.
 impl fmt::Display for Lsn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
