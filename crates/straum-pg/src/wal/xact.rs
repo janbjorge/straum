@@ -275,7 +275,7 @@ fn running(data: &[u8]) -> Option<Running> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::wal::test_support::{Spec, decoded};
+    use crate::wal::test_support::{Spec, TEST_LSN, decoded};
     use crate::wal::{RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_XLOG};
 
     /// `XACT_XINFO_HAS_ORIGIN`: an `xl_xact_origin` comes last.
@@ -613,7 +613,7 @@ pub(crate) mod tests {
             assert_eq!(
                 got,
                 Err(WalError::At {
-                    lsn: 0x100_0028,
+                    lsn: TEST_LSN,
                     problem: Problem::ShortTransactionRecord
                 }),
                 "{length}"

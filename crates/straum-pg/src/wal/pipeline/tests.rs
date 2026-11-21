@@ -13,7 +13,7 @@ use super::*;
 use crate::pgoutput::{Relation, RelationColumn};
 use crate::value::INT4;
 use crate::wal::messages::Layout;
-use crate::wal::test_support::{BlockSpec, DATABASE, FILE, Spec, assemble};
+use crate::wal::test_support::{BlockSpec, DATABASE, FILE, Spec, TEST_LSN, assemble};
 use crate::wal::test_support::{allocations, decode};
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::xact::tests::{
@@ -64,13 +64,18 @@ fn reading_t(name: &str) -> Checked {
     }
 }
 
+/// The table's layout, and no enum labels.
+fn layouts() -> Layouts {
+    Layouts {
+        tables: vec![table()],
+        labels: HashMap::new(),
+    }
+}
+
 fn pipeline(max_bytes: usize) -> Pipeline {
     Pipeline::new(
         vec![reading_t("t")],
-        Layouts {
-            tables: vec![table()],
-            labels: HashMap::new(),
-        },
+        layouts(),
         18,
         2,
         max_bytes,
@@ -170,10 +175,7 @@ fn no_tables_for(asked: &RefCell<Vec<TransactionId>>, xid: TransactionId) -> Lay
 /// The table as it was, noting in `asked` the xid it must show.
 fn the_table_for(asked: &RefCell<Vec<TransactionId>>, xid: TransactionId) -> Layouts {
     asked.borrow_mut().push(xid);
-    Layouts {
-        tables: vec![table()],
-        labels: HashMap::new(),
-    }
+    layouts()
 }
 
 /// The commits `pipeline` releases as it takes the snapshot `text`.
@@ -239,7 +241,7 @@ fn assert_too_big(result: Result<Vec<Commit>, Error>) {
 fn holds_commits_until_the_snapshot() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     assert_eq!(pipeline.consistency(), Consistency::Unknown);
@@ -318,17 +320,14 @@ fn counted(pipeline: &mut Pipeline, records: &[Record]) -> (usize, usize) {
 #[test]
 fn reads_a_row_within_its_allocations() {
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let checked = Checked {
         oid: TABLE_OID,
         ..Checked::public("t", "t", &["id"], vec![ColumnType::Int])
     };
-    let layouts = Layouts {
-        tables: vec![table()],
-        labels: HashMap::new(),
-    };
+    let layouts = layouts();
     let mut pipeline = warmed(&mut wal, vec![checked], layouts);
     let records = transaction(&mut wal, 101);
     let (made, rows) = counted(&mut pipeline, &records);
@@ -343,7 +342,7 @@ fn reads_a_row_within_its_allocations() {
 #[test]
 fn passes_other_tables_rows_without_allocating() {
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let mut pipeline = warmed(&mut wal, Vec::new(), Layouts::default());
@@ -358,7 +357,7 @@ fn passes_other_tables_rows_without_allocating() {
 #[test]
 fn stops_at_its_limits() {
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let mut big = pipeline(1 << 20);
@@ -416,7 +415,7 @@ fn commit_after_savepoints(wal: &mut Wal, xid: u32, subxacts: &[u32]) -> Record 
 fn reads_layouts_again_after_ddl() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     see_all(&mut pipeline, "1:1:").unwrap();
@@ -466,7 +465,7 @@ fn reads_layouts_again_only_after_an_enum_change_in_its_database() {
     };
     let mut pipeline = Pipeline::new(vec![checked], layouts, 18, 2, 1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     see_all(&mut pipeline, "1:1:").unwrap();
@@ -492,7 +491,7 @@ fn reads_layouts_again_only_after_an_enum_change_in_its_database() {
 fn ddl_not_published_still_lays_out_again() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let asked = RefCell::new(Vec::new());
@@ -534,7 +533,7 @@ fn a_rewrite_the_load_saw_is_unfit_at_once() {
     };
     let asked = RefCell::new(Vec::new());
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let mut after = pipeline(1 << 20);
@@ -564,7 +563,7 @@ fn a_table_made_unfit_before_any_running_transactions_is_unfit_at_once() {
     };
     let asked = RefCell::new(Vec::new());
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let mut pipeline = pipeline(1 << 20);
@@ -583,7 +582,7 @@ fn a_table_made_unfit_before_any_running_transactions_is_unfit_at_once() {
 fn publishes_two_to_the_31_xids_on() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
@@ -603,7 +602,7 @@ fn publishes_two_to_the_31_xids_on() {
 #[test]
 fn a_transaction_past_the_limit_the_load_saw_goes_quietly() {
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     let mut before = pipeline(1 << 20);
@@ -632,7 +631,7 @@ fn a_transaction_past_the_limit_the_load_saw_goes_quietly() {
 fn a_snapshot_must_see_what_was_dropped() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     for record in [
@@ -664,7 +663,7 @@ fn a_snapshot_must_see_what_was_dropped() {
 fn a_snapshot_older_than_the_last_running_xacts_must_see_what_was_dropped() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     for record in [
@@ -694,7 +693,7 @@ fn a_snapshot_older_than_the_last_running_xacts_must_see_what_was_dropped() {
 fn the_load_is_known_only_through_what_was_read() {
     let mut pipeline = pipeline(1 << 20);
     let mut wal = Wal {
-        lsn: 0x100_0028,
+        lsn: TEST_LSN,
         block: 0,
     };
     for record in [wal.running(100, &[]), wal.insert(100, 1)] {

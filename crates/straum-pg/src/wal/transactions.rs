@@ -503,11 +503,6 @@ mod tests {
         Event::Commit(ending(xid, subxacts))
     }
 
-    /// A snapshot that sees nothing.
-    fn blind() -> TransactionSnapshot {
-        TransactionSnapshot::parse("0:0:").unwrap()
-    }
-
     /// A transaction and the changes a reference keeps of it.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Kept {
@@ -615,7 +610,7 @@ mod tests {
             let lsn = self.lsn;
             assert_eq!(self.transactions.event(event, lsn, lsn + 4), Ok(None));
             self.dropped.sort_unstable();
-            let unseen = self.transactions.unseen_dropped(&blind());
+            let unseen = self.transactions.unseen_dropped(&TransactionSnapshot::seeing_nothing());
             assert_eq!(unseen, self.dropped, "seed {seed}");
             self.first_whole.get_or_insert(self.started);
         }
@@ -694,7 +689,7 @@ mod tests {
             // The byte count stays true at every step.
             self.transactions.held_changes();
             self.dropped.sort_unstable();
-            let unseen = self.transactions.unseen_dropped(&blind());
+            let unseen = self.transactions.unseen_dropped(&TransactionSnapshot::seeing_nothing());
             assert_eq!(unseen, self.dropped, "seed {seed}");
             assert!(!self.transactions.holds(script.top), "seed {seed}");
             for sub in &script.kept_subs {
@@ -833,7 +828,7 @@ mod tests {
     #[test]
     fn keeps_what_it_dropped_for_the_load_to_see() {
         let mut transactions = Transactions::new(10);
-        let blind = blind();
+        let blind = TransactionSnapshot::seeing_nothing();
         assert_eq!(transactions.event(commit(5, vec![]), 8, 12), Ok(None));
         assert_eq!(
             transactions.event(running(8, 6, vec![6, 7]), 16, 20),
