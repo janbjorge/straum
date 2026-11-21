@@ -1,6 +1,6 @@
 # ADR-0007: PostgreSQL is the only source
 
-Status: Accepted 2026-11-10; revised 2026-11-20
+Status: Accepted 2026-11-10; revised 2026-11-21
 
 ## Context
 
@@ -23,9 +23,9 @@ load and stream meet at one point; a second plain connection reads the
 WAL position and the catalog.
 
 A load is `COPY (SELECT <columns> FROM <table>) TO STDOUT (FORMAT
-binary)` per table, and Straum groups the rows. A reader thread decodes
-batches of 8192 rows, four in flight; each width fills on its own
-thread. The snapshot commits right after the last load.
+binary)` per view and per dim, so a table two views read is copied
+twice, and Straum groups the rows. A reader thread decodes batches of
+8192 rows, four in flight; each width fills on its own thread. The snapshot commits right after the last load.
 
 Every table a spec names, fact or dim, has `REPLICA IDENTITY FULL` and
 is in the publication; `straum plan` prints both and every start checks

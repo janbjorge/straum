@@ -1,20 +1,21 @@
 # How Straum works
 
-Straum loads each table once into cells, keeps them current from
+Straum loads each view's rows once into cells, keeps them current from
 PostgreSQL's replication stream, and answers every ask from the cells
 alone. [Design](design.md) names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run` loads each spec table once from a snapshot, then streams
-every commit the snapshot did not see, and applies each of them exactly
-once. How the two meet depends on [the logical stream](#the-logical-stream) or [the
+`straum run` loads each view and each dim once from a snapshot, then
+streams every commit the snapshot did not see, and applies each of them
+exactly once. How the two meet depends on [the logical stream](#the-logical-stream) or [the
 physical stream](#the-physical-stream).
 
-The load is one binary `COPY` per table, grouped into cells as rows
-arrive, so Straum never holds a table's rows. It installs nothing in
-PostgreSQL and writes nothing to disk. The slot is temporary, so every
-start loads again.
+The load is one binary `COPY` per view and one per dim, grouped into
+cells as rows arrive, so Straum never holds a table's rows. A table two
+views read is copied once for each. It installs nothing in PostgreSQL
+and writes nothing to disk. The slot is temporary, so every start loads
+again.
 
 ## Cells
 
