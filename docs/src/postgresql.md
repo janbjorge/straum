@@ -255,11 +255,11 @@ The server keeps WAL until Straum confirms it, every second. Past
 cannot keep up cannot fill the disk. A watchdog on its own connection
 checks that every second, during loads too. Past the limit, or when it
 cannot read the slot for 10 seconds, it ends the slot's session, even
-if the rest of Straum is stuck. Many managed services fix
-`max_slot_wal_keep_size` at -1, so the flag is the only limit there. A
-physical slot keeps WAL from the last checkpoint's redo point, which
-the server keeps until its next checkpoint anyway; the watchdog counts
-from where the slot was made.
+if the rest of Straum is stuck. Some managed services, Azure among
+them, fix `max_slot_wal_keep_size` at -1, so the flag is the only limit
+there. A physical slot keeps WAL from the last checkpoint's redo point,
+which the server keeps until its next checkpoint anyway; the watchdog
+counts from where the slot was made.
 
 With logical decoding, `REPLICA IDENTITY FULL` makes each update and
 delete of a spec table log its whole old row, so they write more WAL;
