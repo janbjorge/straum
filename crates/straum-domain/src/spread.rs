@@ -11,7 +11,7 @@
 //! - `var_samp = (n * s2 - s1^2) / (n * (n - 1))`
 //!
 //! and a standard deviation is the root of its variance. `n * s2 - s1^2`
-//! is never below zero (Cauchy-Schwarz) and takes up to 255 bits, so it is
+//! is never below zero (Cauchy-Schwarz) and takes up to 254 bits, so it is
 //! a [`U256`]. The answer is rounded half to even at [`SPREAD_PLACES`]
 //! past the variance's scale, twice the column's, or the deviation's, the
 //! column's.

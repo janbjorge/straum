@@ -480,9 +480,10 @@ impl Iterator for SumsIter<'_> {
 }
 
 /// Sums of squares, one a cell, for a variance: as [`Sums`] while every
-/// sum fits an `i128`, then in 256 bits. A square of an `i64` is below
-/// 2^126, so two near the ends of `bigint` already pass an `i128`; below
-/// 2^64 rows a sum stays below 2^190.
+/// sum fits an `i128`, then in 256 bits. A square of an `i64` is 2^126
+/// at most, so two at the least end of `bigint`, or three at the
+/// greatest, already pass an `i128`; below 2^64 rows a sum stays below
+/// 2^190.
 #[derive(Debug)]
 pub(crate) enum Squares {
     Narrow(Sums),

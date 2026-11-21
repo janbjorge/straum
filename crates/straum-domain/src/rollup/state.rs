@@ -451,7 +451,7 @@ fn refresh_ends(cell: usize, mins: &mut [i64], maxs: &mut [i64], counts: &[Value
     maxs[cell] = ends.greatest;
 }
 
-/// `number` squared, below 2^126 for any `i64`.
+/// `number` squared, 2^126 at most for any `i64`.
 fn square(number: i64) -> U256 {
     let magnitude = u128::from(number.unsigned_abs());
     U256::from(magnitude * magnitude)
