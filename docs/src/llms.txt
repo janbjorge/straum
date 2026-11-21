@@ -12,7 +12,8 @@ quick start January 2024, performance January to June 2024.
 ## Summary
 
 - [Straum](https://janbjorge.github.io/straum/index.html): Why Straum:
-  the problem, the usage view, one ask, and what Straum is not.
+  the problem, the usage view, one ask, what you gain, pg_ivm and
+  TimescaleDB continuous aggregates beside it, and what Straum is not.
   Examples use the usage view.
 - [Quick start](https://janbjorge.github.io/straum/quick-start.html):
   Does it work: the one tutorial, on the taxi trips. Examples use the

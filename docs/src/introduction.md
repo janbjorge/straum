@@ -75,6 +75,57 @@ It replaces a summary you maintain by hand today, such as a materialized
 view refreshed on a schedule or a rollup table kept by triggers. Straum
 follows inserts, updates and deletes itself, and every answer is exact.
 
+## What you gain
+
+Straum is a sidecar to PostgreSQL: a process of its own that loads the
+tables once, then follows the replication stream. The work of a summary
+moves there with it. Follow the `usage` view above through a day.
+
+An app inserts an event. No trigger runs in its transaction, so the
+insert costs what it did before Straum. Milliseconds later Straum reads
+the commit from the stream and adds the event to three cells: its hour,
+its day and its week.
+
+The dashboard sends the ask above, purchases by region for a day.
+Straum answers from the cells, so that `GROUP BY` is no longer a query
+PostgreSQL runs. Someone then picks a month by day, and after it the
+median amount of one account. Each is another ask of the same view. A
+cell keeps counts and sums that merge ([Aggregates 101](aggregates.md)),
+so one view answers any range of its buckets, by any of its keys, a row
+per hour, day or week, with the median still exact ([the
+query](asks.md#the-query)).
+
+In the afternoon support corrects the amount of an event from March.
+Straum takes the old amount out of that event's three cells and puts
+the new one in, the same work as for an event from today. An account
+moves from `eu` to `us`: one row changes in what Straum keeps of
+`accounts`, and the next answer counts its events under `us`
+([Following](how-it-works.md#following)). Neither waits for a refresh,
+and nothing reads the tables again.
+
+All day PostgreSQL holds a replication slot and serves the stream, and
+it is read once at each start ([What Straum costs the
+server](postgresql.md#what-straum-costs-the-server)). That does not
+grow with the views, since Straum reads each table once however many
+views read it: a second view over the same tables is an edit to the
+spec and a restart. Nor is the summary a table in PostgreSQL, so
+nothing of it is written, vacuumed or backed up there.
+
+Two extensions keep such a summary inside PostgreSQL instead.
+[pg_ivm](https://github.com/sraoss/pg_ivm) changes it in the writer's
+transaction, so it is never behind and each write waits for it.
+TimescaleDB's [continuous
+aggregates](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/about-continuous-aggregates)
+change it when a refresh runs, over a table TimescaleDB partitions by
+time. Either leaves a table that any SQL can read and join, which
+Straum does not, and reading it is a query on the database. Choose
+pg_ivm when the summary must be right inside the transaction, a
+continuous aggregate when the data is already in TimescaleDB, and
+Straum when the work should leave the database and an answer may be
+[milliseconds behind](performance.md#transactions). The quotes behind
+this are in
+[ALTERNATIVES.md](https://github.com/janbjorge/straum/blob/main/research/ALTERNATIVES.md).
+
 ## What it is not
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It

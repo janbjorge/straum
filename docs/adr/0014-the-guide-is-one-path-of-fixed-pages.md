@@ -1,6 +1,6 @@
 # ADR-0014: The guide is one path of fixed pages
 
-Status: Accepted 2026-11-16; revised 2026-11-19
+Status: Accepted 2026-11-16; revised 2026-11-20
 
 ## Context
 
@@ -25,7 +25,9 @@ The path, read in order, each page answering the question the one
 before leaves:
 
 1. `introduction.md`, why Straum: the problem, the `usage` view, one
-   ask, what Straum is not. It routes and owns no fact.
+   ask, what you gain, what Straum is not. It routes, and owns one
+   fact: what pg_ivm and TimescaleDB continuous aggregates do instead,
+   as their documentation says.
 2. `quick-start.md`, does it work: the one tutorial, on the taxi trips.
 3. `your-data.md`, does it answer my queries: the spec's tables
    copied into Docker by `docs/compose/try.yaml`, or a copy from
@@ -84,4 +86,7 @@ A new page, a moved fact or a changed order edits this record first.
 - Fourteen pages to keep true: running splits into deploy and the CLI
   reference, and trying Straum on your own tables has a page of its
   own, with its compose file and its script.
+- The introduction's sentences on pg_ivm and TimescaleDB describe
+  projects that release without us, so they go stale by themselves;
+  `research/ALTERNATIVES.md` holds the quotes to read again.
 - `llms.txt` is the agent index. It points at the HTML pages.

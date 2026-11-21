@@ -108,7 +108,15 @@ Every answer is exact, percentiles included. A spec can use `count`,
 percentiles, `mode`, distinct counts and `FILTER`
 ([aggregates](https://janbjorge.github.io/straum/aggregates.html)). It
 can join lookup tables and keep hourly, daily and weekly buckets side
-by side.
+by side. One view answers many asks: any range, by any of its keys.
+
+Straum is a sidecar to your database. It keeps the aggregates current
+from the replication stream and answers the asks itself, so no trigger,
+refresh or dashboard query runs in PostgreSQL for them.
+[pg_ivm](https://github.com/sraoss/pg_ivm) and TimescaleDB's continuous
+aggregates keep such a summary inside the database instead; the
+[introduction](https://janbjorge.github.io/straum/index.html#what-you-gain)
+says when one of them fits better.
 
 Straum runs against PostgreSQL 17 or newer as shipped. It needs a role
 with `SELECT` and a publication, so managed services work. `--wal
@@ -130,8 +138,9 @@ The [user guide](https://janbjorge.github.io/straum/) is built from
 indexes it for agents. Decisions are in [docs/adr/](docs/adr/).
 Research: [Straum and PostgreSQL](research/POSTGRESQL.md),
 [Joins](research/JOINS.md), [Aggregates](research/AGGREGATES.md),
-[User-defined aggregates](research/UDAF.md). What is not built yet is
-in [ROADMAP.md](ROADMAP.md).
+[User-defined aggregates](research/UDAF.md),
+[Alternatives](research/ALTERNATIVES.md). What is not built yet is in
+[ROADMAP.md](ROADMAP.md).
 
 ## Development
 

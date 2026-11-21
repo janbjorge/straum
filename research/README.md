@@ -46,6 +46,9 @@ v1 doesn't build.
 - [UDAF.md](UDAF.md): aggregates a spec's author writes: why they must
   be sums of a per-row lift, what other systems do, and a design as a
   formula over `sum` and `count`, checked against the code.
+- [ALTERNATIVES.md](ALTERNATIVES.md): what the documentation of pg_ivm
+  and of TimescaleDB continuous aggregates says, quoted, and which
+  managed services offered each; nothing in it was run.
 
 ## Tags
 
