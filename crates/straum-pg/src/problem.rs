@@ -8,7 +8,7 @@ use std::fmt;
 
 use straum_domain::{ColumnType, Identifier};
 
-use crate::catalog::Purpose;
+use crate::catalog::{NEWEST_PHYSICAL_MAJOR, OLDEST_MAJOR, Purpose};
 
 /// A transaction id, as PostgreSQL numbers transactions in its WAL.
 pub(crate) type Xid = u32;
@@ -59,7 +59,7 @@ impl TableNames {
 pub(crate) enum ServerProblem {
     /// A standby in recovery, not the primary.
     Standby,
-    /// Older than 17 (ADR-0007).
+    /// Older than `OLDEST_MAJOR` (ADR-0007).
     TooOld {
         major: u32,
     },
@@ -80,7 +80,7 @@ pub(crate) enum ServerProblem {
         setting: String,
     },
     /// Newer than the majors the physical stream's layouts were tested
-    /// on, 17 to 19.
+    /// on, `OLDEST_MAJOR` to `NEWEST_PHYSICAL_MAJOR`.
     TooNewForPhysical {
         major: u32,
     },
@@ -253,7 +253,7 @@ impl fmt::Display for ServerProblem {
                 .write_str("the server is a standby in recovery; give Straum the primary's DSN"),
             ServerProblem::TooOld { major } => write!(
                 formatter,
-                "PostgreSQL {major} is too old; Straum needs 17 or newer"
+                "PostgreSQL {major} is too old; Straum needs {OLDEST_MAJOR} or newer"
             ),
             ServerProblem::WalLevel { wal_level, enough } => write!(
                 formatter,
@@ -274,7 +274,8 @@ impl fmt::Display for ServerProblem {
             ),
             ServerProblem::TooNewForPhysical { major } => write!(
                 formatter,
-                "--wal physical reads the WAL of PostgreSQL 17 to 19, not {major}; \
+                "--wal physical reads the WAL of PostgreSQL {OLDEST_MAJOR} to \
+                 {NEWEST_PHYSICAL_MAJOR}, not {major}; \
                  read it through logical decoding"
             ),
             ServerProblem::WalCompressionZstd => formatter

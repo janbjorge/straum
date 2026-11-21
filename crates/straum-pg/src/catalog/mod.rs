@@ -30,11 +30,13 @@ pub(crate) use query::{labels, locked_tables, query};
 
 /// `server_version_num` is the major times 10 000, plus the minor.
 pub(crate) const VERSION_NUM_PER_MAJOR: u32 = 10_000;
-/// The oldest server Straum reads: 17 (ADR-0007).
-const OLDEST_VERSION_NUM: u32 = 170_000;
-/// The first major `--wal physical` has not been tested on: each major's
+/// The oldest major Straum reads (ADR-0007).
+pub(crate) const OLDEST_MAJOR: u32 = 17;
+const OLDEST_VERSION_NUM: u32 = OLDEST_MAJOR * VERSION_NUM_PER_MAJOR;
+/// The newest major `--wal physical` has been tested on: each major's
 /// records are parsed by its own layout, and a newer one's are unknown.
-const NEWER_THAN_PHYSICAL_VERSION_NUM: u32 = 200_000;
+pub(crate) const NEWEST_PHYSICAL_MAJOR: u32 = 19;
+const NEWER_THAN_PHYSICAL_VERSION_NUM: u32 = (NEWEST_PHYSICAL_MAJOR + 1) * VERSION_NUM_PER_MAJOR;
 /// From 19, a logical slot turns logical decoding on under `replica`.
 const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = 190_000;
 
