@@ -368,13 +368,10 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     let xid = held.rows("SELECT pg_current_xact_id()").unwrap()[0][0]
         .clone()
         .unwrap();
-    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
-    db.run("SELECT pg_reload_conf()");
+    ask_for_a_standby(&mut db);
     // A session reads its configuration again between commands.
     let wait = Wait::new("the setting");
-    while held.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref() != Some("nobody") {
-        wait.poll();
-    }
+    session_reads_the_standby(&mut held, &wait);
     checkpointer_reads_the_setting(&mut db);
     let committing = thread::spawn(move || held.execute("COMMIT").unwrap());
     let waiting = wait.then("the commit to wait");
@@ -400,10 +397,7 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     let release = thread::spawn(move || {
         thread::sleep(Duration::from_secs(1));
         let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
-        connection
-            .execute("ALTER SYSTEM RESET synchronous_standby_names")
-            .unwrap();
-        connection.execute("SELECT pg_reload_conf()").unwrap();
+        release_the_standby(&mut connection);
     });
     drop(writer);
     let mut writer = db.physical_writer(SPEC);
@@ -433,8 +427,7 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     holding
         .execute(&db.sql(&format!("BEGIN; {}", rng.trip(10))))
         .unwrap();
-    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
-    db.run("SELECT pg_reload_conf()");
+    ask_for_a_standby(&mut db);
     let (dsn, sql) = (db.dsn.clone(), db.sql(&rng.trip(11)));
     let helper = thread::spawn(move || {
         let mut watch = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
@@ -445,12 +438,7 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
             "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_log_standby_snapshot()'",
         );
         let mut committing = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
-        let wait = Wait::new("the setting");
-        while committing.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref()
-            != Some("nobody")
-        {
-            wait.poll();
-        }
+        session_reads_the_standby(&mut committing, &Wait::new("the setting"));
         let commit = thread::spawn(move || {
             committing.execute(&format!("BEGIN; {sql} COMMIT")).unwrap();
         });
@@ -460,10 +448,7 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
         );
         holding.execute("ROLLBACK").unwrap();
         thread::sleep(Duration::from_secs(1));
-        watch
-            .execute("ALTER SYSTEM RESET synchronous_standby_names")
-            .unwrap();
-        watch.execute("SELECT pg_reload_conf()").unwrap();
+        release_the_standby(&mut watch);
         commit.join().unwrap();
     });
     let mut writer = db.physical_writer(SPEC);
@@ -491,12 +476,9 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
     let mut altering = db.another_connection();
     db.run("SET synchronous_commit = local");
-    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
-    db.run("SELECT pg_reload_conf()");
+    ask_for_a_standby(&mut db);
     let wait = Wait::new("the setting");
-    while altering.rows("SHOW synchronous_standby_names")[0][0].as_deref() != Some("nobody") {
-        wait.poll();
-    }
+    session_reads_the_standby(&mut altering.connection, &wait);
     checkpointer_reads_the_setting(&mut db);
     let alter = thread::spawn(move || {
         altering.run("ALTER TABLE $S.trips ADD late text DEFAULT 'late'");
@@ -517,10 +499,7 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
         while watch.rows(snapshot_query).unwrap().is_empty() && later_applied.try_recv().is_err() {
             waiting.poll();
         }
-        watch
-            .execute("ALTER SYSTEM RESET synchronous_standby_names")
-            .unwrap();
-        watch.execute("SELECT pg_reload_conf()").unwrap();
+        release_the_standby(&mut watch);
     });
     // A commit after the DDL's, which comes out once Straum has the
     // layouts the DDL left.
@@ -566,6 +545,30 @@ fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
     let layouts = read_layouts_seeing(&mut connection, &checked, xid, wait).unwrap();
     let columns = &layouts.tables[0].relation.columns;
     assert_eq!(columns.last().unwrap().name, "later");
+}
+
+/// Makes every commit wait for a synchronous standby named `nobody`,
+/// which never answers.
+fn ask_for_a_standby(db: &mut Db) {
+    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
+    db.run("SELECT pg_reload_conf()");
+}
+
+/// Returns once `session` shows the standby [`ask_for_a_standby`] asked
+/// for, failing when `wait` ends first.
+fn session_reads_the_standby(session: &mut Connection, wait: &Wait) {
+    while session.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref() != Some("nobody")
+    {
+        wait.poll();
+    }
+}
+
+/// Lets commits go on without a standby again.
+fn release_the_standby(connection: &mut Connection) {
+    connection
+        .execute("ALTER SYSTEM RESET synchronous_standby_names")
+        .unwrap();
+    connection.execute("SELECT pg_reload_conf()").unwrap();
 }
 
 /// Returns once the checkpointer has read the configuration reloaded
