@@ -1,24 +1,17 @@
 //! The function calls a view's SELECT holds: the one `buckets` item,
 //! the view's time, and the aggregates that become its measures, each with its own
-//! FILTER. A call is checked for every option Straum SQL has no use for
-//! before its arguments are read.
+//! FILTER. `calls`, beside the walker, checks a call for every option
+//! Straum SQL has no use for before its arguments are read here.
 
 use sqlparser::ast as sql;
-use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Time, Width};
+use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Time};
 
-use super::{Scope, WIDTH_FORM, parse_width};
+use super::Scope;
+use crate::sql::calls::{Call, function_name};
 use crate::sql::{Clause, Reported, Walker, line};
 
 /// What DISTINCT on any other aggregate is refused as.
 const DISTINCT_OUTSIDE: &str = "DISTINCT outside count, sum and avg";
-
-/// A call's arguments and how it treats them.
-// Borrows from the tree, which outlives the walk.
-pub(in crate::sql) struct Call<'tree> {
-    pub(in crate::sql) arguments: &'tree [sql::FunctionArg],
-    pub(in crate::sql) distinct: bool,
-    within_group: &'tree [sql::OrderByExpr],
-}
 
 /// An aggregate and the FILTER it counts under.
 struct Aggregated {
@@ -70,14 +63,7 @@ impl Walker {
     ) -> Result<Time, Reported> {
         let name = self.read_output_name(alias);
         let at = line(function);
-        self.reject_if_present(at, function.filter.is_some(), "FILTER on buckets");
-        let Call {
-            arguments,
-            distinct,
-            ..
-        } = self.call(function)?;
-        self.require_lowercase_name(function);
-        self.reject_if_present(at, distinct, "DISTINCT on buckets");
+        let arguments = self.buckets_arguments(function)?;
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
             widths @ ..,
@@ -93,9 +79,8 @@ impl Walker {
                 self.refuse(at, "buckets arguments", function);
                 return Err(Reported);
             };
-            match width_literal(width) {
-                Ok(parsed) => kept.push(parsed),
-                Err(fix) => self.error(line(width), format!("bucket width {width}: {fix}")),
+            if let Ok(parsed) = self.bucket_width(width) {
+                kept.push(parsed);
             }
         }
         if widths.is_empty() {
@@ -364,100 +349,6 @@ impl Walker {
         }
         Ok(fraction)
     }
-
-    /// A function Straum SQL lists, found in any case, is named in
-    /// lowercase as every name is: `COUNT` is refused, saying `count`.
-    pub(in crate::sql) fn require_lowercase_name(&mut self, function: &sql::Function) {
-        let Some(written) = function_name(function) else {
-            return;
-        };
-        let lower = written.to_ascii_lowercase();
-        if written != lower {
-            self.error(
-                line(function),
-                format!("{written}: write names in lowercase, {lower}"),
-            );
-        }
-    }
-
-    /// The arguments of a plain call `name(args)`, after rejecting
-    /// anything else about the call.
-    // Borrows the arguments from the tree, which outlives the walk.
-    pub(in crate::sql) fn call<'tree>(
-        &mut self,
-        function: &'tree sql::Function,
-    ) -> Result<Call<'tree>, Reported> {
-        let call = self.ordered_call(function)?;
-        self.reject_if_present(
-            line(function),
-            !call.within_group.is_empty(),
-            "WITHIN GROUP",
-        );
-        Ok(call)
-    }
-
-    /// As [`Walker::call`], with what `WITHIN GROUP (ORDER BY ...)` lists,
-    /// for the aggregates that take it, `percentile_disc` and `mode`.
-    // Borrows the arguments from the tree, which outlives the walk.
-    fn ordered_call<'tree>(
-        &mut self,
-        function: &'tree sql::Function,
-    ) -> Result<Call<'tree>, Reported> {
-        let sql::Function {
-            name: _,
-            uses_odbc_syntax,
-            parameters,
-            args,
-            within_group,
-            filter: _,
-            null_treatment,
-            over,
-        } = function;
-        let at = line(function);
-        self.reject_if_present(at, *uses_odbc_syntax, "ODBC call syntax");
-        self.reject_if_present(
-            at,
-            !matches!(parameters, sql::FunctionArguments::None),
-            "function parameters",
-        );
-        self.reject_if_present(at, null_treatment.is_some(), "IGNORE or RESPECT NULLS");
-        self.reject_if_present(at, over.is_some(), "a window function (OVER)");
-        let sql::FunctionArguments::List(sql::FunctionArgumentList {
-            duplicate_treatment,
-            args,
-            clauses,
-        }) = args
-        else {
-            self.refuse(at, "function call", function);
-            return Err(Reported);
-        };
-        self.reject_if_present(at, !clauses.is_empty(), "ORDER BY or LIMIT inside a call");
-        let distinct = match duplicate_treatment {
-            None => false,
-            Some(sql::DuplicateTreatment::Distinct) => true,
-            Some(sql::DuplicateTreatment::All) => {
-                self.not_in_subset(at, "ALL inside a call");
-                false
-            }
-        };
-        Ok(Call {
-            arguments: args,
-            distinct,
-            within_group,
-        })
-    }
-}
-
-/// `'<n> <unit>'`, a width as a view's and an ask's `buckets` write it.
-pub(in crate::sql) fn width_literal(width: &sql::Expr) -> Result<Width, String> {
-    let sql::Expr::Value(sql::ValueWithSpan {
-        value: sql::Value::SingleQuotedString(text),
-        span: _,
-    }) = width
-    else {
-        return Err(WIDTH_FORM.into());
-    };
-    parse_width(text)
 }
 
 fn split_decimal(text: &str) -> Decimal<'_> {
@@ -501,23 +392,4 @@ fn fraction_of(whole: &str, places: &str) -> Option<Fraction> {
     let units = format!("{whole}{places}").parse().ok()?;
     let places = u32::try_from(places.len()).ok()?;
     Fraction::new(units, places)
-}
-
-/// Whether the call is to the function `name`, in any case, so a name
-/// in capitals is refused as itself and not as some other call.
-pub(in crate::sql) fn is_call(function: &sql::Function, name: &str) -> bool {
-    match function_name(function) {
-        Some(written) => written.eq_ignore_ascii_case(name),
-        None => false,
-    }
-}
-
-/// A call's name, when it is one unquoted word.
-fn function_name(function: &sql::Function) -> Option<&str> {
-    match function.name.0.as_slice() {
-        [sql::ObjectNamePart::Identifier(identifier)] if identifier.quote_style.is_none() => {
-            Some(&identifier.value)
-        }
-        _ => None,
-    }
 }

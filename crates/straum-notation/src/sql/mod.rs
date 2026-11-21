@@ -4,7 +4,8 @@
 //! `Ask`; `definition` cuts a spec's text into its statements as written.
 //! This file holds the `Walker`, which collects every error it
 //! meets, and the parts both walks share: names, tables, the one `SELECT`
-//! and its clauses, and filter conditions.
+//! and its clauses, and filter conditions. `calls` holds the function
+//! calls both walks read, `buckets` among them.
 //!
 //! Deny by default: every `match` lists what Straum SQL accepts and rejects the
 //! rest by name, and accepted structs are destructured without `..`, so a
@@ -22,6 +23,7 @@ use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
 use straum_domain::{Condition, Identifier, Literal};
 
 mod ask;
+mod calls;
 mod definition;
 mod view;
 

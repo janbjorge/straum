@@ -11,15 +11,14 @@ use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, UNITS, Via,
-    Width,
+    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Via,
 };
 
+use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
     Clause, Names, NullTest, Reported, SqlError, Walker, and_parts, line, statements,
     without_leading_zeros,
 };
-pub(super) use measures::{Call, is_call, width_literal};
 
 mod columns;
 mod dims;
@@ -449,56 +448,6 @@ fn select_position(expression: &sql::Expr) -> Option<usize> {
         return None;
     }
     digits.parse().ok()
-}
-
-/// The function a view's time is written with.
-const BUCKETS: &str = "buckets";
-
-/// PostgreSQL's function for a bucket, refused for `buckets`.
-const DATE_BIN: &str = "date_bin";
-
-/// What to write for a width that can't be read.
-pub(super) const WIDTH_FORM: &str = "use '<n> seconds|minutes|hours|days'";
-
-/// A width `'<n> <unit>'`, written one way: `n` plain digits, the
-/// largest unit that divides it, singular for one. `Err` says what to
-/// write instead.
-pub(super) fn parse_width(text: &str) -> Result<Width, String> {
-    let [count, unit] = text.split_whitespace().collect::<Vec<_>>()[..] else {
-        return Err(WIDTH_FORM.into());
-    };
-    let name = unit.strip_suffix('s').unwrap_or(unit);
-    let mut scale = None;
-    for candidate in UNITS {
-        if candidate.name == name {
-            scale = Some(candidate.seconds);
-        }
-    }
-    let (Some(scale), true) = (scale, plain_digits(count)) else {
-        return Err(WIDTH_FORM.into());
-    };
-    let Ok(count) = count.parse::<u32>() else {
-        return Err(WIDTH_FORM.into());
-    };
-    let Some(seconds) = count.checked_mul(scale) else {
-        return Err(WIDTH_FORM.into());
-    };
-    let width = Width { seconds };
-    let written = width.to_string();
-    if text != written {
-        return Err(format!("write '{written}'"));
-    }
-    Ok(width)
-}
-
-/// Whether `text` is one or more ASCII digits, with no sign.
-fn plain_digits(text: &str) -> bool {
-    for byte in text.bytes() {
-        if !byte.is_ascii_digit() {
-            return false;
-        }
-    }
-    !text.is_empty()
 }
 
 /// The columns the view reads as `::text`: the fact's, returned, and each

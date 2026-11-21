@@ -30,7 +30,7 @@ use straum_domain::{
     Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
 
-use super::view::{Call, is_call, width_literal};
+use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
     NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
     without_leading_zeros,
@@ -304,11 +304,11 @@ impl Walker {
     /// `buckets(name, '<width>')` for the view's time at a wider width.
     fn ask_key(&mut self, expression: &sql::Expr) -> Result<AskKey, Reported> {
         if let sql::Expr::Function(function) = expression {
-            if is_call(function, "buckets") {
+            if is_call(function, BUCKETS) {
                 return self.wider_bucket(function);
             }
             // PostgreSQL's spelling, which a reader of SQL reaches for.
-            if is_call(function, "date_bin") {
+            if is_call(function, DATE_BIN) {
                 self.error(
                     line(function),
                     "date_bin in an ask: write buckets(<time>, '<width>')".into(),
@@ -332,14 +332,7 @@ impl Walker {
     /// whether `name` is the view's time.
     fn wider_bucket(&mut self, function: &sql::Function) -> Result<AskKey, Reported> {
         let at = line(function);
-        self.reject_if_present(at, function.filter.is_some(), "FILTER on buckets");
-        let Call {
-            arguments,
-            distinct,
-            ..
-        } = self.call(function)?;
-        self.require_lowercase_name(function);
-        self.reject_if_present(at, distinct, "DISTINCT on buckets");
+        let arguments = self.buckets_arguments(function)?;
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
@@ -352,20 +345,17 @@ impl Walker {
             );
             return Err(Reported);
         };
-        let parsed = width_literal(width);
-        if let Err(fix) = &parsed {
-            self.error(line(width), format!("bucket width {width}: {fix}"));
-        }
+        let width = self.bucket_width(width);
         let sql::Expr::Identifier(identifier) = column else {
             let message = format!("buckets in an ask reads the view's time by name, not {column}");
             self.error(line(column), message);
             return Err(Reported);
         };
         let name = self.read_identifier(identifier)?;
-        let Ok(width) = parsed else {
-            return Err(Reported);
-        };
-        Ok(AskKey::WiderBucket { name, width })
+        Ok(AskKey::WiderBucket {
+            name,
+            width: width?,
+        })
     }
 
     /// The conditions, and the range from `time >= $n AND time < $m`, a
