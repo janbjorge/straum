@@ -26,13 +26,7 @@ fn follows_the_database() {
     let mut rng = Rng::within_hours(7, 6);
     let mut trips: Vec<u64> = Vec::new();
     let mut next = 1;
-    for zone in 1..=4 {
-        db.run(&format!(
-            "INSERT INTO $S.zones VALUES ({zone}, '{}', {})",
-            rng.pick(&BOROUGHS),
-            rng.toll()
-        ));
-    }
+    insert_zones(&mut db, &mut rng);
     for _ in 0..400 {
         db.run(&rng.trip(next));
         trips.push(next);
@@ -119,7 +113,7 @@ fn follows_the_task_tables() {
     // a zone on either side would show.
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::new(17);
-    insert_task_tables(&mut db, &mut rng);
+    insert_task_tables(&mut db, &mut rng, 200);
     // On a bucket edge, a microsecond before it, and at the infinities,
     // which no bucket holds.
     db.run(&format!(
@@ -153,21 +147,6 @@ fn follows_the_task_tables() {
         refused(writer.app(), &done_is(Literal::Int(1))),
         ["done is a boolean, so it can't be the integer 1"]
     );
-}
-
-/// Six task groups in three organizations, then 200 tasks.
-fn insert_task_tables(db: &mut Db, rng: &mut Rng) {
-    for organization in 1..=3 {
-        for taskgroup in 1..=2 {
-            db.run(&format!(
-                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
-                rng.pick(&["pick", "pack", "count"])
-            ));
-        }
-    }
-    for id in 0..200 {
-        db.run(&rng.task(id));
-    }
 }
 
 /// The hour before `START` holds the row a microsecond before it alone.
@@ -309,7 +288,7 @@ fn a_dim_change_shows_at_once() {
     let mut db = Db::new(&pg, "ingest", TASKS);
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::new(29);
-    insert_task_tables(&mut db, &mut rng);
+    insert_task_tables(&mut db, &mut rng, 200);
     let mut picks = db.writer(PICKS_SPEC);
     let mut tasks = db.writer(TASKS_SPEC);
     started(&mut picks);

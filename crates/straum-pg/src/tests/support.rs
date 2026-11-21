@@ -603,6 +603,33 @@ impl Rng {
     }
 }
 
+/// Zones 1 to 4, each in a borough and with a toll drawn from `rng`.
+pub(super) fn insert_zones(db: &mut Db, rng: &mut Rng) {
+    for zone in 1..=4 {
+        db.run(&format!(
+            "INSERT INTO $S.zones VALUES ({zone}, '{}', {})",
+            rng.pick(&BOROUGHS),
+            rng.toll()
+        ));
+    }
+}
+
+/// Six task groups in three organizations, then tasks 0 up to, not
+/// including, `tasks`.
+pub(super) fn insert_task_tables(db: &mut Db, rng: &mut Rng, tasks: u64) {
+    for organization in 1..=3 {
+        for taskgroup in 1..=2 {
+            db.run(&format!(
+                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
+                rng.pick(&["pick", "pack", "count"])
+            ));
+        }
+    }
+    for id in 0..tasks {
+        db.run(&rng.task(id));
+    }
+}
+
 /// A message as PostgreSQL frames it: tag, length counting itself, body.
 pub(crate) fn message(tag: u8, body: &[u8]) -> Vec<u8> {
     let length = i32::try_from(body.len() + 4).unwrap();

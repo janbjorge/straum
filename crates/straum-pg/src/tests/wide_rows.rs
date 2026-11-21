@@ -122,13 +122,7 @@ fn rows_a_day_or_a_week_apart_match_postgresql() {
     let pg = postgres();
     let mut db = Db::new(&pg, "wide_rows", TABLES);
     let mut rng = Rng::within_hours(41, SPAN_HOURS);
-    for zone in 1..=4 {
-        db.run(&format!(
-            "INSERT INTO $S.zones VALUES ({zone}, '{}', {})",
-            rng.pick(&BOROUGHS),
-            rng.toll()
-        ));
-    }
+    insert_zones(&mut db, &mut rng);
     for id in 1..=500 {
         db.run(&rng.trip(id));
     }
@@ -180,17 +174,7 @@ fn wall_clock_days_match_postgresql() {
     let mut db = Db::new(&pg, "wide_wall_clock", TASKS);
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::within_hours(43, SPAN_HOURS);
-    for organization in 1..=3 {
-        for taskgroup in 1..=2 {
-            db.run(&format!(
-                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
-                rng.pick(&["pick", "pack", "count"])
-            ));
-        }
-    }
-    for id in 0..300 {
-        db.run(&rng.task(id));
-    }
+    insert_task_tables(&mut db, &mut rng, 300);
     // Either side of a midnight before 1970 and after, and an infinity.
     db.run(
         "INSERT INTO $S.tasks (task_id, organization_id, taskgroup_id, created, picks) VALUES
