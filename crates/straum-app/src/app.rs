@@ -86,8 +86,8 @@ pub struct Answered {
     pub applied: Lsn,
     /// Every commit made before this, by Straum's clock, is in the answer:
     /// when the slot was last known to have confirmed all the WAL there
-    /// was. Unlike the time of the commit at `lsn`, it moves on while the
-    /// database is idle.
+    /// was. Unlike the time of the commit at `applied`, it moves on while
+    /// the database is idle.
     pub as_of: SystemTime,
 }
 
