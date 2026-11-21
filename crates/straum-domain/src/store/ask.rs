@@ -10,7 +10,6 @@ use crate::aggregate::Partials;
 use crate::ask::{Ask, AskError, Comparison};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
-use crate::projection::AttributeIndex;
 use crate::rollup::{Cover, CoveredBucket, Rollup};
 use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefKind, Via};
 
@@ -201,14 +200,7 @@ impl Store {
             Read::Bound(rollup) => return rollup.key_type(bound_part_of(fact, name)),
             Read::Keyed(rollup) => rollup,
         };
-        match fact.resolve(name).expect(CHECKED) {
-            Key::ByKey(by) => rollup.key_type(key_part_of(fact, by.key_part())),
-            Key::Attribute(reference, attribute) => {
-                let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
-                let read = AttributeIndex(position_of(&dim.attributes, &attribute.column));
-                self.projection(reference.dim.as_str()).attribute_type(read)
-            }
-        }
+        self.keyed_key_type(fact, rollup, fact.resolve(name).expect(CHECKED))
     }
 
     /// How a cell's joins repeat it, when any can: a key with several rows
@@ -238,14 +230,10 @@ impl Store {
     fn via_from(&self, fact: &Fact, via: &Via) -> ViaFrom {
         match via {
             Via::Fact(column) => ViaFrom::KeyPart(key_part_of(fact, KeyPart::Column(column))),
-            Via::Attribute { through, column } => {
-                let parent = self.spec.dim(fact.refs[*through].dim.as_str());
-                let attributes = &parent.expect(CHECKED).attributes;
-                ViaFrom::Through {
-                    reference: *through,
-                    attribute: AttributeIndex(position_of(attributes, column)),
-                }
-            }
+            Via::Attribute { through, column } => ViaFrom::Through {
+                reference: *through,
+                attribute: self.attribute_index(&fact.refs[*through], column),
+            },
         }
     }
 
@@ -312,14 +300,11 @@ impl Store {
         };
         match fact.resolve(name).expect(CHECKED) {
             Key::ByKey(by) => Lookup::KeyPart(key_part_of(fact, by.key_part())),
-            Key::Attribute(reference, attribute) => {
-                let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
-                Lookup::Attribute(AttributeLookup {
-                    reference: ref_position(fact, reference),
-                    attribute: AttributeIndex(position_of(&dim.attributes, &attribute.column)),
-                    joined: self.joined(fact, reference, rollup, cells),
-                })
-            }
+            Key::Attribute(reference, attribute) => Lookup::Attribute(AttributeLookup {
+                reference: ref_position(fact, reference),
+                attribute: self.attribute_index(reference, &attribute.column),
+                joined: self.joined(fact, reference, rollup, cells),
+            }),
         }
     }
 

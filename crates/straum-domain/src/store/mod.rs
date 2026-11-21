@@ -17,7 +17,7 @@ use std::ops::Range;
 use crate::identifier::Identifier;
 use crate::projection::{AttributeIndex, Projection};
 use crate::rollup::{PartIndex, Rollup};
-use crate::spec::{Fact, Key, KeyPart, Spec};
+use crate::spec::{Fact, Key, KeyPart, Ref, Spec};
 use crate::value::{ColumnType, Datum, Value};
 
 use bound::Bound;
@@ -209,14 +209,27 @@ impl Store {
     pub fn key_type(&self, fact: &str, key: &Identifier) -> Option<ColumnType> {
         let index = self.fact_index(fact)?;
         let fact = self.fact(index);
-        match fact.resolve(key)? {
-            Key::ByKey(by) => Some(self.keyed(index).key_type(key_part_of(fact, by.key_part()))),
+        let resolved = fact.resolve(key)?;
+        Some(self.keyed_key_type(fact, self.keyed(index), resolved))
+    }
+
+    /// The type of a key read through the keyed cells: a `by` key's part,
+    /// or the dim column a ref reads.
+    fn keyed_key_type(&self, fact: &Fact, keyed: &Rollup, key: Key<'_>) -> ColumnType {
+        match key {
+            Key::ByKey(by) => keyed.key_type(key_part_of(fact, by.key_part())),
             Key::Attribute(reference, attribute) => {
-                let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
-                let read = AttributeIndex(position_of(&dim.attributes, &attribute.column));
-                Some(self.projection(reference.dim.as_str()).attribute_type(read))
+                let read = self.attribute_index(reference, &attribute.column);
+                self.projection(reference.dim.as_str()).attribute_type(read)
             }
         }
+    }
+
+    /// Where the dim `reference` joins keeps `column` among the
+    /// attributes of its projection.
+    fn attribute_index(&self, reference: &Ref, column: &Identifier) -> AttributeIndex {
+        let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
+        AttributeIndex(position_of(&dim.attributes, column))
     }
 
     /// The type of the view's time column, as the load found it.
