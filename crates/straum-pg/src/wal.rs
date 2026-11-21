@@ -150,6 +150,7 @@ pub(crate) enum Problem {
     WrongLength,
     UnlabelledEnum,
     UnreadableNumeric,
+    UnreadableBool,
     NotUtf8,
 }
 
@@ -188,6 +189,7 @@ impl fmt::Display for Problem {
             Problem::WrongLength => "a value of the wrong length for its type",
             Problem::UnlabelledEnum => "an enum value Straum has no label for",
             Problem::UnreadableNumeric => "a numeric Straum can't read",
+            Problem::UnreadableBool => "a boolean Straum can't read",
             Problem::NotUtf8 => "text that isn't UTF-8",
         };
         formatter.write_str(text)
@@ -254,7 +256,7 @@ mod tests {
     use super::*;
 
     /// Every problem, and the words it says.
-    const EVERY_PROBLEM: [(Problem, &str); 31] = [
+    const EVERY_PROBLEM: [(Problem, &str); 32] = [
         (
             Problem::PageAddress,
             "a page header that names another page",
@@ -339,6 +341,7 @@ mod tests {
             "an enum value Straum has no label for",
         ),
         (Problem::UnreadableNumeric, "a numeric Straum can't read"),
+        (Problem::UnreadableBool, "a boolean Straum can't read"),
         (Problem::NotUtf8, "text that isn't UTF-8"),
     ];
 

@@ -281,7 +281,9 @@ fn value(
     let datum = match column_type {
         ColumnType::Int => Datum::Int(integer(bytes).ok_or(wrong)?),
         ColumnType::Bool => match bytes {
-            [byte] => Datum::Bool(*byte != 0),
+            [0] => Datum::Bool(false),
+            [1] => Datum::Bool(true),
+            [_] => return Err(Problem::UnreadableBool),
             _ => return Err(wrong),
         },
         ColumnType::Time { .. } => {
@@ -709,6 +711,19 @@ mod tests {
             &[numeric],
             Problem::UnreadableNumeric,
         );
+    }
+
+    /// PostgreSQL stores a boolean as 0 or 1; any other byte is not one.
+    #[test]
+    fn rejects_a_boolean_neither_0_nor_1() {
+        let boolean = attribute(1, 1, Kind::Read(ColumnType::Bool));
+        for byte in [2, 0xFF] {
+            check(
+                &row(&[boolean], &[Some(&[byte])]),
+                &[boolean],
+                Problem::UnreadableBool,
+            );
+        }
     }
 
     fn long_numeric(negative: bool, scale: u16, weight: i16, digits: &[i16]) -> Vec<u8> {
