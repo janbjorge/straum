@@ -340,7 +340,7 @@ fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     let seconds =
         days * SECONDS_PER_DAY + hour * SECONDS_PER_HOUR + minute * SECONDS_PER_MINUTE + second;
     let offset = if zoned { offset_seconds(offset)? } else { 0 };
-    Some(seconds - offset)
+    seconds.checked_sub(offset)
 }
 
 /// An hour, minute or second of a clock, at most `max`.
@@ -352,7 +352,8 @@ fn clock_field(text: Option<&str>, max: i64) -> Option<i64> {
     Some(value)
 }
 
-/// `+05:30` is 19800 seconds.
+/// `+05:30` is 19800 seconds. `None` for an offset past an `i64` of
+/// seconds, which PostgreSQL never prints.
 fn offset_seconds(text: &str) -> Option<i64> {
     let sign = if text.starts_with('-') { -1 } else { 1 };
     let mut parts = text[1..].split(':');
@@ -362,7 +363,11 @@ fn offset_seconds(text: &str) -> Option<i64> {
     if parts.next().is_some() {
         return None;
     }
-    Some(sign * (hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds))
+    let total = hours
+        .checked_mul(SECONDS_PER_HOUR)?
+        .checked_add(minutes.checked_mul(SECONDS_PER_MINUTE)?)?
+        .checked_add(seconds)?;
+    Some(sign * total)
 }
 
 /// Digits only; no sign.
@@ -714,6 +719,12 @@ mod tests {
             (zoned, "2024-01-01 00:00:00+00:00:0a"),
             (zoned, "2024-01-01 00:00:00+00:00:00:00"),
             (zoned, "2024-01-01 00:00:00+"),
+            // An offset past an `i64` of seconds, on its own or with the
+            // time it shifts.
+            (zoned, "2024-01-01 00:00:00+9999999999999999"),
+            (zoned, "2024-01-01 00:00:00+00:999999999999999999"),
+            (zoned, "2024-01-01 00:00:00-00:00:9223372036854775807"),
+            (zoned, "0044-03-15 12:00:00+00:00:9223372036854775807 BC"),
             // A timestamp never carries an offset; one that does was read
             // under the wrong type.
             (naive, "2024-01-01 00:00:00+00"),
