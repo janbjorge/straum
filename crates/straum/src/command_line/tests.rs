@@ -5,6 +5,7 @@
 use std::time::Instant;
 
 use super::*;
+use crate::testing::{args, server};
 
 /// A command line read with no `STRAUM_URL` set.
 fn command_of(args: &[String]) -> Result<Command, Usage> {
@@ -48,7 +49,6 @@ fn the_url_is_the_flag_else_straum_url_else_the_default() {
         })
     );
 }
-use crate::testing::{args, server};
 
 #[test]
 fn reads_run_and_plan() {
