@@ -464,12 +464,7 @@ impl Spec {
 
     /// The dim of that name, if the spec has one.
     pub fn dim(&self, name: &str) -> Option<&Dim> {
-        for dim in &self.dims {
-            if dim.name.as_str() == name {
-                return Some(dim);
-            }
-        }
-        None
+        find_dim(&self.dims, name)
     }
 
     /// The view of that name, if the spec has one.
@@ -636,15 +631,15 @@ fn carried_before(
         return false;
     }
     let parent = &fact.refs[through];
-    let Some(dim) = find_dim(dims, &parent.dim) else {
+    let Some(dim) = find_dim(dims, parent.dim.as_str()) else {
         return false;
     };
     dim.attributes.contains(column)
 }
 
-fn find_dim<'d>(dims: &'d [Dim], name: &Identifier) -> Option<&'d Dim> {
+fn find_dim<'d>(dims: &'d [Dim], name: &str) -> Option<&'d Dim> {
     for dim in dims {
-        if dim.name == *name {
+        if dim.name.as_str() == name {
             return Some(dim);
         }
     }
@@ -657,7 +652,7 @@ fn check_ref_dim<'d>(
     dims: &'d [Dim],
     errors: &mut Vec<SpecError>,
 ) -> Option<&'d Dim> {
-    let Some(dim) = find_dim(dims, &join.dim) else {
+    let Some(dim) = find_dim(dims, join.dim.as_str()) else {
         let error = JoinError::UnknownDim {
             dim: join.dim.clone(),
         };
