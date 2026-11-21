@@ -85,6 +85,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | `4Gi` | WAL retained for the slot before Straum stops. The [watchdog](postgresql.md#what-straum-costs-the-server) checks it every second, during loads too. |
 | `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. A row counts once, however many views and dims read its table ([Large transactions](deploy.md#large-transactions)). |
+| `--max-answer-rows ROWS` | `100000` | Rows an ask may get. An answer is written whole in memory, so an ask whose answer has more is [refused with 400](asks.md#errors). |
 | `--max-page-memory BYTES` | `1Gi` | Only with `--wal physical`, else a command line error: the rows Straum may hold from the WAL, pages and open transactions' changes, before it stops. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. |
 | `--max-memory BYTES` | Off | Resident memory Straum may hold before it [stops](deploy.md#states). Linux only: it reads `VmRSS` in `/proc/self/status` about once a second from the start on, loads included, and where that file can't be read a set limit fails the start. Set it under the memory limit of the pod or host ([Kubernetes](deploy.md#kubernetes)). |
 

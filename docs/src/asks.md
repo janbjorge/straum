@@ -252,7 +252,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | Status | When |
 | --- | --- |
 | 200 | The answer. |
-| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An answer of more than 100,000 rows is refused too, since it is written whole in memory: narrow the ask. |
+| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An answer of more rows than [`--max-answer-rows`](cli.md#straum-run) allows, 100,000 by default, is refused too, since it is written whole in memory: narrow the ask. |
 | 405 | Not a `POST`. |
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |

@@ -38,6 +38,7 @@ tests:
       maxLag: 1
       maxRetainedWal: "1"
       maxTransactionRows: 1
+      maxAnswerRows: 1
       replicaCount: 0
     asserts:
       - isKind:
@@ -121,6 +122,20 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "maxTransactionRows"
+
+  - it: refuses an answer limit of nothing
+    set:
+      maxAnswerRows: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxAnswerRows"
+
+  - it: refuses an answer limit that isn't a count
+    set:
+      maxAnswerRows: "many"
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxAnswerRows"
 
   - it: refuses a rollout deadline of nothing
     set:

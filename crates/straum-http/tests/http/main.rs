@@ -26,6 +26,9 @@ use tokio::sync::oneshot;
 
 use crate::fake::{Fake, SPEC, START};
 
+/// The most rows an ask may get, as `straum run` has it by default.
+const MAX_ANSWER_ROWS: usize = 100_000;
+
 /// A server on its own thread, and how to stop it.
 struct Server {
     address: SocketAddr,
@@ -77,10 +80,27 @@ fn serve_in(app: App, syntax: AskSyntax) -> Server {
     serve_on(app, syntax, "127.0.0.1:0", Vec::new())
 }
 
+/// Serves `app`, refusing an ask whose answer has more than
+/// `max_answer_rows` rows.
+fn serve_at_most(app: App, max_answer_rows: usize) -> Server {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    serve_listening(app, notation(), listener, Vec::new(), max_answer_rows)
+}
+
 /// Serves `app` on `listen`, answering `named_hosts` if any, reached
 /// through loopback whatever address it listens on.
 fn serve_on(app: App, syntax: AskSyntax, listen: &str, named_hosts: Vec<String>) -> Server {
     let listener = TcpListener::bind(listen).unwrap();
+    serve_listening(app, syntax, listener, named_hosts, MAX_ANSWER_ROWS)
+}
+
+fn serve_listening(
+    app: App,
+    syntax: AskSyntax,
+    listener: TcpListener,
+    named_hosts: Vec<String>,
+    max_answer_rows: usize,
+) -> Server {
     let port = listener.local_addr().unwrap().port();
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let (stop, stopped) = oneshot::channel::<()>();
@@ -96,6 +116,7 @@ fn serve_on(app: App, syntax: AskSyntax, listen: &str, named_hosts: Vec<String>)
             syntax,
             definitions,
             named_hosts,
+            max_answer_rows,
             async {
                 stopped.await.ok();
             },

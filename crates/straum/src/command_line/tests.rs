@@ -63,6 +63,7 @@ fn reads_run_and_plan() {
             dsn_file: None,
             limits: LIMITS,
             max_transaction_rows: MAX_TRANSACTION_ROWS,
+            max_answer_rows: MAX_ANSWER_ROWS,
             max_memory: None,
         }))
     );
@@ -70,7 +71,7 @@ fn reads_run_and_plan() {
         command_of(&args(
             "run --dsn-file d --listen 127.0.0.1:9 s --publication p \
              --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
-             --max-page-memory 256Mi --max-memory 2Gi"
+             --max-page-memory 256Mi --max-memory 2Gi --max-answer-rows 50"
         )),
         Ok(Command::Run(Run {
             spec: "s".into(),
@@ -86,6 +87,7 @@ fn reads_run_and_plan() {
                 max_retained_wal: 536_870_912,
             },
             max_transaction_rows: 2500,
+            max_answer_rows: 50,
             max_memory: Some(2 << 30),
         }))
     );
@@ -491,6 +493,7 @@ fn help_names_each_default() {
         format!("({})", LIMITS.max_lag.as_secs()),
         format!("({};", gibibytes(LIMITS.max_retained_wal)),
         format!("({MAX_TRANSACTION_ROWS})"),
+        format!("({MAX_ANSWER_ROWS})"),
         format!("({})", gibibytes(MAX_PAGE_MEMORY as u64)),
         "(off;".to_owned(),
     ] {
@@ -746,6 +749,15 @@ fn number_flags_say_what_they_take() {
         let error = format!("--max-transaction-rows takes a count of rows above 0, not {rows:?}");
         assert_eq!(usage(&line), error, "{rows}");
     }
+    for rows in ["0", "-1", "1.5", "10k", "1Ki", "lots"] {
+        let line = format!("run s --wal logical --max-answer-rows {rows}");
+        let error = format!("--max-answer-rows takes a count of rows above 0, not {rows:?}");
+        assert_eq!(usage(&line), error, "{rows}");
+    }
+    assert_eq!(
+        usage("plan s --wal logical --max-answer-rows 5"),
+        "straum plan takes no \"--max-answer-rows\""
+    );
 }
 
 #[test]
@@ -766,7 +778,7 @@ fn reads_sizes() {
 
 /// Pieces a command line is built from: every command and flag, the
 /// shapes values take, and the characters a parser trips on.
-const PIECES: [&str; 34] = [
+const PIECES: [&str; 35] = [
     "run",
     "plan",
     "--copy",
@@ -785,6 +797,7 @@ const PIECES: [&str; 34] = [
     "--max-retained-wal",
     "--max-page-memory",
     "--max-memory",
+    "--max-answer-rows",
     "-h",
     "-V",
     "--",

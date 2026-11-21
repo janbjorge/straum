@@ -93,6 +93,10 @@ maxRetainedWal: "4Gi"
 # loads every table from a snapshot after it.
 maxTransactionRows: 100000
 
+# maxAnswerRows is how many rows one ask may get. An answer is written
+# whole in memory, so an ask whose answer has more is refused with 400.
+maxAnswerRows: 100000
+
 # replicaCount is how many pods run. Each holds its own replication slot
 # and walsender on PostgreSQL, so keep it low.
 replicaCount: 1

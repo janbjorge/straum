@@ -13,7 +13,7 @@
 //!   query read by the `AskSyntax` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer
-//!   or whose answer has more than `MAX_ANSWER_ROWS` rows, 503 while a
+//!   or whose answer has more rows than `serve` is told it may, 503 while a
 //!   table it reads isn't ready or while every core answers another ask. With `Accept: text/plain` the
 //!   answer is a table and the errors are lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
@@ -112,13 +112,17 @@ pub struct AskSyntax {
 }
 
 /// What every request is answered from: the app, the syntax its asks are
-/// read in, each view's definition, the hosts it answers to, and the
-/// turns to read the store.
+/// read in, each view's definition, the hosts it answers to, the most
+/// rows an ask may get, and the turns to read the store.
 struct Served {
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     hosts: Hosts,
+    /// An answer is written whole in memory, so one ask over every key of
+    /// a large view could take more than the process may hold; past this
+    /// it is refused.
+    max_answer_rows: usize,
     /// One per core: a request that reads the store holds one until it is
     /// done, so asks without end can't keep the writer from the store's
     /// lock, which a waiting writer would hold every new reader behind.
@@ -129,7 +133,8 @@ struct Served {
 /// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
 /// time enabled. With `named_hosts`, each `NAME[:PORT]`, a request whose
-/// `Host` is none of them gets 421; with none, the address decides.
+/// `Host` is none of them gets 421; with none, the address decides. An
+/// ask whose answer has more than `max_answer_rows` rows gets 400.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 pub async fn serve(
     listener: net::TcpListener,
@@ -137,6 +142,7 @@ pub async fn serve(
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     named_hosts: Vec<String>,
+    max_answer_rows: usize,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let hosts = Hosts::of(listener.local_addr()?, named_hosts);
@@ -149,6 +155,7 @@ pub async fn serve(
         syntax,
         definitions,
         hosts,
+        max_answer_rows,
         turns: Arc::new(Semaphore::new(cores)),
     });
     let graceful = GracefulShutdown::new();
@@ -181,14 +188,15 @@ pub async fn serve(
 /// or SIGINT, then finishes the requests in flight, for at most
 /// [`DRAIN_DEADLINE`], and returns; a second signal returns at once. The
 /// caller stays synchronous, since only this crate runs tokio (ADR-0002).
-/// `stopping` runs when the first signal arrives; `named_hosts` as for
-/// [`serve`].
+/// `stopping` runs when the first signal arrives; `named_hosts` and
+/// `max_answer_rows` as for [`serve`].
 pub fn serve_until_signal(
     listener: net::TcpListener,
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     named_hosts: Vec<String>,
+    max_answer_rows: usize,
     stopping: fn(),
 ) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -214,7 +222,15 @@ pub fn serve_until_signal(
         either_signal(&mut terminate_again, &mut interrupt_again).await;
         either_signal(&mut terminate_again, &mut interrupt_again).await;
     };
-    let served = serve(listener, app, syntax, definitions, named_hosts, shutdown);
+    let served = serve(
+        listener,
+        app,
+        syntax,
+        definitions,
+        named_hosts,
+        max_answer_rows,
+        shutdown,
+    );
     let result = runtime.block_on(until_done_or(served, second));
     // An answer still running on a blocking thread is not waited for.
     runtime.shutdown_background();

@@ -44,6 +44,7 @@ const DSN_FILE_FLAG: &str = "--dsn-file";
 const MAX_LAG_FLAG: &str = "--max-lag";
 const MAX_RETAINED_WAL_FLAG: &str = "--max-retained-wal";
 const MAX_TRANSACTION_ROWS_FLAG: &str = "--max-transaction-rows";
+const MAX_ANSWER_ROWS_FLAG: &str = "--max-answer-rows";
 const MAX_PAGE_MEMORY_FLAG: &str = "--max-page-memory";
 const MAX_MEMORY_FLAG: &str = "--max-memory";
 const URL_FLAG: &str = "--url";
@@ -60,6 +61,13 @@ const LIMITS: Limits = Limits {
 /// `just taxi transactions` measures what a transaction this size holds
 /// the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
+/// The rows `POST /ask` answers at most. An answer is written whole in
+/// memory, so one ask over every key of a large view could take more than
+/// the process may hold; past this it is refused.
+const MAX_ANSWER_ROWS: usize = 100_000;
+/// What `--max-transaction-rows` and `--max-answer-rows` take, as their
+/// errors say.
+const ROW_COUNT_TAKES: &str = "a count of rows above 0";
 /// Bytes of rows a physical stream holds before Straum stops: a guard,
 /// far above what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
@@ -138,6 +146,7 @@ impl Name {
                 MAX_LAG_FLAG,
                 MAX_RETAINED_WAL_FLAG,
                 MAX_TRANSACTION_ROWS_FLAG,
+                MAX_ANSWER_ROWS_FLAG,
                 MAX_PAGE_MEMORY_FLAG,
                 MAX_MEMORY_FLAG,
             ],
@@ -203,6 +212,8 @@ pub(crate) struct Run {
     pub(crate) dsn_file: Option<String>,
     pub(crate) limits: Limits,
     pub(crate) max_transaction_rows: usize,
+    /// The rows an ask may get before it is refused.
+    pub(crate) max_answer_rows: usize,
     /// Bytes of resident memory before Straum stops; `None`, the default,
     /// sets no limit and never reads it.
     pub(crate) max_memory: Option<u64>,
@@ -569,7 +580,13 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
         MAX_TRANSACTION_ROWS_FLAG,
         MAX_TRANSACTION_ROWS,
         count,
-        "a count of rows above 0",
+        ROW_COUNT_TAKES,
+    )?;
+    let max_answer_rows = flags.parsed(
+        MAX_ANSWER_ROWS_FLAG,
+        MAX_ANSWER_ROWS,
+        count,
+        ROW_COUNT_TAKES,
     )?;
     Ok(Command::Run(Run {
         spec,
@@ -585,6 +602,7 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
             max_retained_wal,
         },
         max_transaction_rows,
+        max_answer_rows,
         max_memory: flags.parsed_if_given(MAX_MEMORY_FLAG, bytes, BYTE_LIMIT_TAKES)?,
     }))
 }

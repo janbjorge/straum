@@ -38,18 +38,6 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(10);
 /// which no one reads.
 const MAX_ROWS: usize = 1000;
 
-/// The rows `POST /ask` answers at most. An answer is written whole in
-/// memory, so one ask over every key of a large view could take more than
-/// the process may hold; past this it is refused.
-const MAX_ANSWER_ROWS: usize = 100_000;
-
-/// The rows an ask builds: up to the most it may answer, so that a
-/// refused one builds no more than an answered one.
-const ANSWER_WINDOW: Window = Window {
-    start: Start::FromFirst(0),
-    count: MAX_ANSWER_ROWS,
-};
-
 const ROWS_PREFIX: &str = "/views/";
 
 /// What follows a view's name in `GET /views/NAME/spec`.
@@ -129,6 +117,7 @@ pub(crate) async fn handle(
         syntax,
         definitions,
         hosts,
+        max_answer_rows,
         turns,
     } = &*served;
     let (parts, body) = request.into_parts();
@@ -143,7 +132,11 @@ pub(crate) async fn handle(
         (&Method::POST, "/ask") => {
             let format = Format::of(accept, Format::Json);
             if is_json(parts.headers.get(CONTENT_TYPE)) {
-                post_ask(body, app, turns, *syntax, format).await
+                let rows = Rows::Every {
+                    max_rows: *max_answer_rows,
+                };
+                let writing = Writing { format, rows };
+                post_ask(body, app, turns, *syntax, writing).await
             } else {
                 let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
                 format.errors(StatusCode::UNSUPPORTED_MEDIA_TYPE, &[error])
@@ -222,8 +215,9 @@ async fn post_ask(
     app: &App,
     turns: &Arc<Semaphore>,
     syntax: AskSyntax,
-    format: Format,
+    writing: Writing,
 ) -> Reply {
+    let format = writing.format;
     let start = Instant::now();
     let collected = Limited::new(body, MAX_ASK_BYTES).collect();
     let Ok(collected) = tokio::time::timeout(BODY_TIMEOUT, collected).await else {
@@ -256,10 +250,6 @@ async fn post_ask(
         Ok((Ok(asked), turn)) => (asked, turn),
         Ok((Err(errors), _)) => return format.errors(StatusCode::BAD_REQUEST, &errors),
         Err(_) => return failed(format),
-    };
-    let writing = Writing {
-        format,
-        rows: Rows::Every,
     };
     let parse_time = parsing.elapsed();
     answer(
@@ -407,8 +397,8 @@ struct Writing {
 /// Which of an answer's rows a reply writes.
 #[derive(Clone, Copy)]
 enum Rows {
-    /// Every one, or none past [`MAX_ANSWER_ROWS`].
-    Every,
+    /// Every one, or none when there are more than `max_rows`.
+    Every { max_rows: usize },
     /// Those the window shows.
     Window(Window),
 }
@@ -417,8 +407,11 @@ enum Rows {
 #[derive(Debug, PartialEq, Eq)]
 enum Unwritten {
     App(AnswerError),
-    /// The answer has this many rows, past [`MAX_ANSWER_ROWS`].
-    TooManyRows(usize),
+    /// The answer has `total` rows, past the `max_rows` an ask may get.
+    TooManyRows {
+        total: usize,
+        max_rows: usize,
+    },
 }
 
 impl From<AnswerError> for Unwritten {
@@ -431,19 +424,30 @@ impl Display for Unwritten {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Unwritten::App(error) => error.fmt(formatter),
-            Unwritten::TooManyRows(total) => write!(
+            Unwritten::TooManyRows { total, max_rows } => write!(
                 formatter,
-                "the answer has {total} rows, past the {MAX_ANSWER_ROWS} an ask may get; \
+                "the answer has {total} rows, past the {max_rows} an ask may get; \
                  narrow the ask: a shorter range, fewer keys or a filter"
             ),
         }
     }
 }
 
-/// Refuses an answer of every row when it has more than an ask may get.
-fn within_answer_rows(cut: Cut) -> Result<(), Unwritten> {
-    if cut.total > MAX_ANSWER_ROWS {
-        return Err(Unwritten::TooManyRows(cut.total));
+/// The rows an ask builds: up to the most it may answer, so that a
+/// refused one builds no more than an answered one.
+fn answer_window(max_rows: usize) -> Window {
+    Window {
+        start: Start::FromFirst(0),
+        count: max_rows,
+    }
+}
+
+/// Refuses an answer of every row when it has more than the `max_rows` an
+/// ask may get.
+fn within_answer_rows(cut: Cut, max_rows: usize) -> Result<(), Unwritten> {
+    if cut.total > max_rows {
+        let total = cut.total;
+        return Err(Unwritten::TooManyRows { total, max_rows });
     }
     Ok(())
 }
@@ -492,9 +496,9 @@ fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, Unwri
     let answering = Instant::now();
     let answered = match writing.rows {
         Rows::Window(window) => app.ask_window(asked, window)?,
-        Rows::Every => {
-            let answered = app.ask_window(asked, ANSWER_WINDOW)?;
-            within_answer_rows(answered.cut)?;
+        Rows::Every { max_rows } => {
+            let answered = app.ask_window(asked, answer_window(max_rows))?;
+            within_answer_rows(answered.cut, max_rows)?;
             answered
         }
     };
@@ -559,7 +563,7 @@ fn answer_error(error: &Unwritten, describe: DescribeAskError, format: Format) -
         Unwritten::App(AnswerError::NotReady) => {
             format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
         }
-        Unwritten::TooManyRows(_) => format.errors(StatusCode::BAD_REQUEST, &[error]),
+        Unwritten::TooManyRows { .. } => format.errors(StatusCode::BAD_REQUEST, &[error]),
     }
 }
 
@@ -727,18 +731,20 @@ mod tests {
 
     #[test]
     fn an_answer_of_at_most_the_most_rows_is_written() {
-        for total in [0, 1, MAX_ANSWER_ROWS] {
-            let cut = Cut::of(Some(ANSWER_WINDOW), total);
-            assert_eq!(within_answer_rows(cut), Ok(()), "{total}");
+        let max_rows = 3;
+        for total in [0, 1, max_rows] {
+            let cut = Cut::of(Some(answer_window(max_rows)), total);
+            assert_eq!(within_answer_rows(cut, max_rows), Ok(()), "{total}");
             assert_eq!(cut.count, total);
         }
     }
 
     #[test]
     fn an_answer_of_more_rows_is_refused_naming_them() {
-        let total = MAX_ANSWER_ROWS + 1;
-        let refused = within_answer_rows(Cut::of(Some(ANSWER_WINDOW), total));
-        assert_eq!(refused, Err(Unwritten::TooManyRows(total)));
+        let max_rows = 100_000;
+        let total = max_rows + 1;
+        let refused = within_answer_rows(Cut::of(Some(answer_window(max_rows)), total), max_rows);
+        assert_eq!(refused, Err(Unwritten::TooManyRows { total, max_rows }));
         assert_eq!(
             refused.unwrap_err().to_string(),
             "the answer has 100001 rows, past the 100000 an ask may get; \

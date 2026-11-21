@@ -439,6 +439,7 @@ fn run(
         dsn_file,
         limits,
         max_transaction_rows,
+        max_answer_rows,
         max_memory,
     }: Run,
 ) -> Result<(), Failure> {
@@ -495,6 +496,7 @@ fn run(
         syntax,
         definitions,
         allow_hosts,
+        max_answer_rows,
         say_stopping,
     )
     .map_err(Failure::Serving)?;

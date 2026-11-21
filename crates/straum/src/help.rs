@@ -45,6 +45,8 @@ or follow ends it with exit 1, for whatever runs it to start it again.
                                stops (4Gi; takes Ki, Mi, Gi or Ti)
   --max-transaction-rows ROWS  rows one transaction may change before
                                Straum stops (100000)
+  --max-answer-rows ROWS       rows an ask may get before it is refused
+                               (100000)
   --max-page-memory BYTES      with --wal physical: rows held from the WAL
                                before Straum stops (1Gi)
   --max-memory BYTES           resident memory before Straum stops (off;

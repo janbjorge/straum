@@ -1,6 +1,7 @@
 //! `POST /ask` end to end: answers as JSON and as a table, asks not sent
 //! as JSON, rows a day apart, the errors of the body, the query and the
-//! app, `Server-Timing`, and a `ReadAsk` other than Straum SQL. Each test
+//! app, an answer past the most rows, `Server-Timing`, and a `ReadAsk`
+//! other than Straum SQL. Each test
 //! starts a server over the fake in `fake.rs`.
 
 use std::io::Write;
@@ -16,7 +17,7 @@ use straum_http::{AskSyntax, QueryError};
 use crate::fake::{COMMIT, HOUR, JAN_1, loaded, writer};
 use crate::{
     Headers, Reply, ask, call, call_as_text, first_hour, header, read_reply, request, request_with,
-    rows_of, send, serve, serve_in, serve_with, started,
+    rows_of, send, serve, serve_at_most, serve_in, serve_with, started,
 };
 
 const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fare_max \
@@ -210,6 +211,33 @@ fn errors_are_lines_to_those_who_accept_text() {
             reply.head
         );
     }
+    server.stop();
+}
+
+/// An answer of as many rows as the server allows is written; one row
+/// more is refused, naming both counts.
+#[test]
+fn an_answer_past_the_most_rows_is_refused() {
+    let range = r#"["2024-01-01T00:00:00Z", "2024-01-03T00:00:00Z"]"#;
+    let body = ask(BY_BUCKET, range);
+    let writer = loaded();
+
+    let server = serve_at_most(writer.app().clone(), 4);
+    let reply = call(server.address, "POST", "/ask", &body);
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(rows_of(&reply.body).matches("\"bucket\"").count(), 4);
+    server.stop();
+
+    let server = serve_at_most(writer.app().clone(), 3);
+    let reply = call_as_text(server.address, &body);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (
+            400,
+            "the answer has 4 rows, past the 3 an ask may get; \
+             narrow the ask: a shorter range, fewer keys or a filter\n"
+        )
+    );
     server.stop();
 }
 
