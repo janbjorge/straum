@@ -609,9 +609,15 @@ fn starts_while_a_checkpoint_runs() {
     }
     for _ in 0..100 {
         let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
-        if let Some(record) = physical.next_record().unwrap() {
-            assert!(record.lsn >= start.0);
-        }
+        // A read may end inside a message and give no record yet.
+        let deadline = Instant::now() + LONG;
+        let record = loop {
+            if let Some(record) = physical.next_record().unwrap() {
+                break record;
+            }
+            assert!(Instant::now() < deadline, "no record past {start}");
+        };
+        assert!(record.lsn >= start.0);
     }
     stop.store(true, Ordering::Relaxed);
     for thread in busy {
