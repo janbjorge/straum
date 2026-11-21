@@ -677,7 +677,10 @@ fn a_changed_column_type_stops_the_writer() {
         "INSERT INTO $S.trips VALUES (2, to_timestamp({START}), 'cab', 1, 2.125, 'bo', 3)"
     ));
     let error = writer.step().unwrap_err().to_string();
-    assert_eq!(error, no_longer_fits("trips"));
+    assert!(
+        error == no_longer_fits("trips") || trips_altered(&db, &error),
+        "{error}"
+    );
     writer = db.writer(SPEC);
     writer.step().unwrap();
     db.run(&Rng::new(2).trip(3));
@@ -691,10 +694,20 @@ fn a_changed_column_type_stops_the_writer() {
          VALUES (4, to_timestamp({START}), 'cab', 1, 1.000, 1)"
     ));
     let error = writer.step().unwrap_err().to_string();
-    assert!(error.contains("column rider of"), "{error}");
+    assert!(
+        error.contains("column rider of") || trips_altered(&db, &error),
+        "{error}"
+    );
     writer = db.writer(SPEC);
     let error = writer.step().unwrap_err().to_string();
     assert!(error.contains("has no column rider"), "{error}");
+}
+
+/// Whether `error` is the WAL reading's word that trips was altered. The
+/// writer reads the WAL before it asks the stream when a reading is due,
+/// so either may say first why Straum stops.
+fn trips_altered(db: &Db, error: &str) -> bool {
+    error == db.sql("trips: a column Straum reads of $S.trips was altered")
 }
 
 /// Too big and too random to stay inline: PostgreSQL TOASTs the rider, and
