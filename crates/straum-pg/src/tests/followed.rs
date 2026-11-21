@@ -1,5 +1,6 @@
 //! A spec table that stops being the one Straum loaded, with no change
-//! the stream reads to say so: left out of the publication, renamed away
+//! the stream reads to say so: left out of the publication, its rows or
+//! an action filtered out by the publication, renamed away
 //! with another table made under its name, a label of an enum it reads
 //! renamed, a column it reads rewritten to its own type. Each reading of
 //! the WAL checks the tables, so Straum stops, and the setup check of the
@@ -44,6 +45,37 @@ fn a_table_left_out_of_the_publication_stops_the_stream() {
         db.sql(
             "trips: publication $S leaves out $S.trips: ALTER PUBLICATION $S ADD TABLE $S.trips"
         )
+    );
+}
+
+/// A publication altered to leave out an action, or to filter a table's
+/// rows, sends nothing the stream reads, and the totals would drift: the
+/// reading of the WAL finds it. All four actions again, unfiltered, keep
+/// the stream.
+#[test]
+fn a_publication_narrowed_stops_the_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "narrowed", TABLES);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    db.run("ALTER PUBLICATION $S SET (publish = 'insert')");
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql("publication $S must publish insert, update, delete and truncate")
+    );
+    db.run("ALTER PUBLICATION $S SET (publish = 'insert, update, delete, truncate')");
+    assert!(source.wal().is_ok());
+    db.run(
+        "ALTER PUBLICATION $S DROP TABLE $S.trips;
+         ALTER PUBLICATION $S ADD TABLE $S.trips WHERE (fare > 0)",
+    );
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql("trips: publication $S filters the rows of $S.trips; Straum needs every row")
     );
 }
 

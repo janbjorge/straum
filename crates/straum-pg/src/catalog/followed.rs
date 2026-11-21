@@ -1,8 +1,8 @@
 //! What a running stream checks of its tables with each reading of the
 //! WAL: changes no message the stream reads says. A table is gone from
-//! under its name, another is there, the publication left it out, a
-//! label of an enum it reads was renamed, or a column it reads was
-//! altered.
+//! under its name, another is there, the publication left it out,
+//! filters its rows or leaves out an action, a label of an enum it reads
+//! was renamed, or a column it reads was altered.
 
 use std::collections::HashMap;
 
@@ -10,10 +10,10 @@ use postgres_protocol::escape::escape_literal;
 
 use super::{Checked, EnumLabel, is_true, shape};
 use crate::error::Error;
-use crate::problem::{Problem, TableProblem};
+use crate::problem::{Problem, ServerProblem, TableProblem};
 use crate::source::Replication;
 use crate::value::Oid;
-use crate::wire::Connection;
+use crate::wire::{Connection, Row};
 
 /// The spec's tables a stream follows, as loaded.
 #[derive(Debug, Clone, Default)]
@@ -28,10 +28,11 @@ pub(crate) struct Followed {
 }
 
 /// Fails once a table the stream follows is gone from under its name,
-/// another table is there, the publication left it out, or a label of
-/// an enum it reads was renamed or dropped: none of it sends a message
-/// the stream reads, and a renamed label leaves the rows loaded with the
-/// old one. The setup check of the next start says what is wrong.
+/// another table is there, the publication left it out, filters its rows
+/// or leaves out an action, or a label of an enum it reads was renamed or
+/// dropped: none of it sends a message the stream reads, and a renamed
+/// label leaves the rows loaded with the old one. The setup check of the
+/// next start says what is wrong.
 pub(crate) fn still_followed(
     connection: &mut Connection,
     followed: &Followed,
@@ -41,6 +42,62 @@ pub(crate) fn still_followed(
     if followed.tables.is_empty() {
         return Ok(());
     }
+    let rows = publication_rows(connection, followed, publication)?;
+    if rows.len() != followed.tables.len() {
+        return Err(shape("followed tables"));
+    }
+    let logical = replication == Replication::Logical;
+    let mut problems = Vec::new();
+    let mut some_actions = false;
+    for (table, row) in followed.tables.iter().zip(rows) {
+        let [oid, published, row_filter, all_actions] =
+            row.try_into().map_err(|_| shape("followed tables"))?;
+        if let Some(all_actions) = &all_actions
+            && !is_true(all_actions)
+        {
+            some_actions = true;
+        }
+        let names = table.names();
+        let Some(oid) = oid else {
+            problems.push(names.table_problem(TableProblem::Missing));
+            continue;
+        };
+        let oid: Oid = oid.parse().map_err(|_| shape("followed tables"))?;
+        let publication = publication.to_owned();
+        let problem = match oid {
+            oid if oid != table.oid => TableProblem::Replaced,
+            _ if !logical => continue,
+            _ if !published.as_deref().is_some_and(is_true) => {
+                TableProblem::NotPublished { publication }
+            }
+            _ if row_filter.as_deref().is_some_and(is_true) => {
+                TableProblem::RowFilter { publication }
+            }
+            _ => continue,
+        };
+        problems.push(names.table_problem(problem));
+    }
+    if logical && some_actions {
+        problems.push(Problem::Server(ServerProblem::PublicationActions {
+            publication: publication.to_owned(),
+        }));
+    }
+    relabelled(connection, followed, &mut problems)?;
+    altered(connection, followed, &mut problems)?;
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Setup(problems))
+}
+
+/// Per table followed, in order: its oid, whether the publication sends
+/// it, whether it filters its rows, and whether the publication sends all
+/// four actions.
+fn publication_rows(
+    connection: &mut Connection,
+    followed: &Followed,
+    publication: &str,
+) -> Result<Vec<Row>, Error> {
     let mut values = Vec::new();
     for (index, table) in followed.tables.iter().enumerate() {
         values.push(format!(
@@ -50,48 +107,19 @@ pub(crate) fn still_followed(
         ));
     }
     let rows = connection.rows(&format!(
-        "SELECT c.oid, p.tablename IS NOT NULL
+        "SELECT c.oid, p.tablename IS NOT NULL, p.rowfilter IS NOT NULL,
+                pub.pubinsert AND pub.pubupdate AND pub.pubdelete AND pub.pubtruncate
            FROM (VALUES {}) AS t(at, schema, name)
            LEFT JOIN pg_namespace n ON n.nspname = t.schema
            LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.name
            LEFT JOIN pg_publication_tables p
-                  ON p.pubname = {} AND p.schemaname = t.schema AND p.tablename = t.name
+                  ON p.pubname = {publication} AND p.schemaname = t.schema AND p.tablename = t.name
+           LEFT JOIN pg_publication pub ON pub.pubname = {publication}
           ORDER BY t.at",
         values.join(", "),
-        escape_literal(publication)
+        publication = escape_literal(publication)
     ))?;
-    if rows.len() != followed.tables.len() {
-        return Err(shape("followed tables"));
-    }
-    let mut problems = Vec::new();
-    for (table, row) in followed.tables.iter().zip(rows) {
-        let [oid, published] = row.try_into().map_err(|_| shape("followed tables"))?;
-        let names = table.names();
-        let Some(oid) = oid else {
-            problems.push(names.table_problem(TableProblem::Missing));
-            continue;
-        };
-        let oid: Oid = oid.parse().map_err(|_| shape("followed tables"))?;
-        let problem = match oid {
-            oid if oid == table.oid => {
-                let logical = replication == Replication::Logical;
-                if !logical || published.as_deref().is_some_and(is_true) {
-                    continue;
-                }
-                TableProblem::NotPublished {
-                    publication: publication.to_owned(),
-                }
-            }
-            _ => TableProblem::Replaced,
-        };
-        problems.push(names.table_problem(problem));
-    }
-    relabelled(connection, followed, &mut problems)?;
-    altered(connection, followed, &mut problems)?;
-    if problems.is_empty() {
-        return Ok(());
-    }
-    Err(Error::Setup(problems))
+    Ok(rows)
 }
 
 /// A problem for each table whose enum has a label loaded that is now

@@ -126,9 +126,11 @@ the default.
 
 Straum also stops on a lost connection, WAL past `--max-retained-wal`
 or, when set, resident memory past `--max-memory`
-([States](deploy.md#states)), and on a spec table that is renamed away
-or replaced by another table under its name. It checks for these once
-a second.
+([States](deploy.md#states)), on a spec table that is renamed away
+or replaced by another table under its name, and, on logical decoding,
+on a publication altered to leave a spec table out, filter its rows or
+stop sending inserts, updates, deletes or truncates. It checks for
+these once a second.
 
 ## The logical stream
 
