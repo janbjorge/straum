@@ -70,11 +70,6 @@ pub(super) enum Unreadable {
     },
 }
 
-/// The key a FILTER's column reaches.
-struct FilterKey {
-    name: Identifier,
-    form: KeyForm,
-}
 
 /// `(column IS NULL)` or `(column IS NOT NULL)`, as written.
 // Borrows the column from the tree, which outlives the walk.
@@ -385,7 +380,7 @@ impl Walker {
             return Err(Reported);
         };
         self.same_spelling(scope, expression, &column, cast);
-        Ok(key.name)
+        Ok(key.name.clone())
     }
 
     /// `alias.column IS NULL` in a `WHERE` or `FILTER (WHERE ..)` counts
@@ -415,7 +410,7 @@ impl Walker {
         };
         self.same_spelling(scope, expression, &column, cast);
         Ok(Condition {
-            key: key.name,
+            key: key.name.clone(),
             values: vec![Literal::Bool(key.form == KeyForm::NullNess(test))],
         })
     }
@@ -502,15 +497,17 @@ pub(super) fn resolve(scope: &Scope, reference: Qualified) -> Resolved {
 
 /// The key over a FILTER's column, a null-ness key or not; `None` when
 /// SELECT has none, which the caller reports in its own words.
-fn filter_key(scope: &Scope, column: &Via, kind: KeyKind) -> Option<FilterKey> {
+// Borrows the key from the scope, which outlives the condition read.
+fn filter_key<'scope>(
+    scope: &'scope Scope,
+    column: &Via,
+    kind: KeyKind,
+) -> Option<&'scope ScopedKey> {
     let wants_null_ness = matches!(kind, KeyKind::NullNess);
     for key in &scope.keys {
         let reads_null_ness = matches!(key.form, KeyForm::NullNess(_));
         if key.column == *column && reads_null_ness == wants_null_ness {
-            return Some(FilterKey {
-                name: key.name.clone(),
-                form: key.form,
-            });
+            return Some(key);
         }
     }
     None
