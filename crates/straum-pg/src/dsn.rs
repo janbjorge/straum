@@ -70,6 +70,16 @@ impl Dsn {
         self.password.as_deref()
     }
 
+    /// The host and port as `host:port`. An IPv6 host goes in brackets,
+    /// so its colons stay its own.
+    pub(crate) fn place(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
     /// `postgres://user:password@host:port/database?sslmode=verify-full`.
     /// The port defaults to 5432 and the database to the user.
     ///
@@ -269,16 +279,12 @@ fn decode(text: &str) -> Result<String, DsnError> {
 /// Says what Straum does: `require` and `verify-ca` show as `verify-full`.
 impl fmt::Display for Dsn {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // An IPv6 address goes in brackets, so its colons stay its own.
-        let host = if self.host.contains(':') {
-            format!("[{}]", self.host)
-        } else {
-            self.host.clone()
-        };
         write!(
             formatter,
-            "postgres://{}@{host}:{}/{}",
-            self.user, self.port, self.database
+            "postgres://{}@{}/{}",
+            self.user,
+            self.place(),
+            self.database
         )?;
         match &self.tls {
             Tls::Off => formatter.write_str("?sslmode=disable"),
