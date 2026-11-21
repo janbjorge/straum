@@ -56,6 +56,18 @@ pub(super) struct Overlay<'a> {
     pub(super) rows: &'a [Box<[u32]>],
 }
 
+/// Where a ref's via key is read: a fact row, or the codes of a keyed
+/// cell.
+// Borrows the row or the cell for one read of its via keys.
+#[derive(Clone, Copy)]
+enum ViaSource<'a> {
+    Row(&'a [Datum]),
+    Cell {
+        keyed: &'a Rollup,
+        cell: KeyedCell<'a>,
+    },
+}
+
 /// One dim key as the codes a keyed cell holds it by, through one ref:
 /// comparing codes spares looking each cell's values up.
 pub(super) struct KeyCodes(Vec<PartCode>);
@@ -180,14 +192,7 @@ impl Bound {
     /// through the projections as they are now: the row, then the
     /// attributes read, null where a left join finds none.
     pub(super) fn rows(&self, projections: &[Projection], row: &[Datum], out: &mut Vec<Datum>) {
-        let mut via_keys = Vec::with_capacity(self.refs.len());
-        for reference in &self.refs {
-            let mut via_key = Vec::with_capacity(reference.via.len());
-            for column in &reference.via {
-                via_key.push(row[column.0].clone());
-            }
-            via_keys.push(via_key);
-        }
+        let via_keys = self.via_keys(ViaSource::Row(row));
         for join_row in self.join_rows(projections, &via_keys, None) {
             out.extend_from_slice(row);
             for (reference, found) in self.refs.iter().zip(&join_row) {
@@ -197,6 +202,25 @@ impl Bound {
                 }
             }
         }
+    }
+
+    /// Each ref's via key, read from `source`.
+    fn via_keys(&self, source: ViaSource<'_>) -> Vec<Vec<Datum>> {
+        let mut via_keys = Vec::with_capacity(self.refs.len());
+        for reference in &self.refs {
+            let mut via_key = Vec::with_capacity(reference.via.len());
+            for (column, &part) in reference.via.iter().zip(&reference.via_parts) {
+                let value = match source {
+                    ViaSource::Row(row) => &row[column.0],
+                    ViaSource::Cell { keyed, cell } => {
+                        keyed.value(part, cell.cells.code(cell.cell, part))
+                    }
+                };
+                via_key.push(value.clone());
+            }
+            via_keys.push(via_key);
+        }
+        via_keys
     }
 
     /// The join rows the refs resolve `via_keys` to. `overlay` stands in
@@ -275,14 +299,7 @@ impl Bound {
         projections: &[Projection],
         overlay: Option<Overlay<'_>>,
     ) -> Vec<Vec<u32>> {
-        let mut via_keys = Vec::with_capacity(self.refs.len());
-        for reference in &self.refs {
-            let mut via_key = Vec::with_capacity(reference.via_parts.len());
-            for &part in &reference.via_parts {
-                via_key.push(keyed.value(part, cell.cells.code(cell.cell, part)).clone());
-            }
-            via_keys.push(via_key);
-        }
+        let via_keys = self.via_keys(ViaSource::Cell { keyed, cell });
         let join_rows = self.join_rows(projections, &via_keys, overlay);
         let mut keys = Vec::with_capacity(join_rows.len());
         for join_row in &join_rows {
