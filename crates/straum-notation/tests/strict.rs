@@ -434,6 +434,33 @@ fn a_view_condition_comes_once() {
     assert!(parse(&canon(paid, other)).is_ok());
 }
 
+/// A refused aggregate and its FILTER are both walked, so a measure
+/// wrong in each reports both at once.
+#[test]
+fn a_refused_aggregate_still_reads_its_filter() {
+    let paid = "count(*) FILTER (WHERE orders.status = 'paid')";
+    let both =
+        "variance(orders.id) FILTER (WHERE orders.status = 'paid' AND orders.status = 'paid')";
+    assert_eq!(
+        error_lines(&canon(paid, both)),
+        [
+            "line 9: variance, write var_samp, `variance(orders.id) FILTER (WHERE \
+             orders.status = 'paid' AND...` is not in Straum SQL, the PostgreSQL subset \
+             made only for Straum",
+            "line 9: orders.status = 'paid' given twice",
+        ]
+    );
+    let aggregate_only = "variance(orders.id) FILTER (WHERE orders.status = 'paid')";
+    assert_eq!(
+        error_lines(&canon(paid, aggregate_only)),
+        [
+            "line 9: variance, write var_samp, `variance(orders.id) FILTER (WHERE \
+             orders.status = 'paid')` is not in Straum SQL, the PostgreSQL subset made only \
+             for Straum"
+        ]
+    );
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {

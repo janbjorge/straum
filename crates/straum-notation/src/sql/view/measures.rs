@@ -125,36 +125,37 @@ impl Walker {
         let at = line(function);
         let name = function_name(function).map(str::to_ascii_lowercase);
         let call = self.ordered_call(function)?;
-        let filter_condition = function.filter.as_deref();
-        match name.as_deref() {
-            Some("percentile_disc") => {
-                let aggregate = self.percentile_disc(scope, function, &call);
-                let filter =
-                    self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
-                return Ok(Aggregated {
-                    aggregate: aggregate?,
-                    filter,
-                });
-            }
-            Some("mode") => {
-                let aggregate = self.mode(scope, function, &call);
-                let filter =
-                    self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
-                return Ok(Aggregated {
-                    aggregate: aggregate?,
-                    filter,
-                });
-            }
+        // Both sides are walked before either error ends the measure, so
+        // a bad aggregate and a bad FILTER are reported in one pass.
+        let aggregate = match name.as_deref() {
+            Some("percentile_disc") => self.percentile_disc(scope, function, &call),
+            Some("mode") => self.mode(scope, function, &call),
             Some("percentile_cont") => {
                 self.refuse(at, "percentile_cont, use percentile_disc,", function);
-                return Err(Reported);
+                Err(Reported)
             }
-            _ => {
-                self.reject_if_present(at, !call.within_group.is_empty(), "WITHIN GROUP");
-            }
-        }
-        let aggregate = match self.over(function, name.as_deref(), &call)? {
-            Over::Rows => Aggregate::Count,
+            _ => self.plain_aggregate(scope, function, name.as_deref(), &call),
+        };
+        let filter_condition = function.filter.as_deref();
+        let filter = self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
+        Ok(Aggregated {
+            aggregate: aggregate?,
+            filter,
+        })
+    }
+
+    /// An aggregate with no WITHIN GROUP: `count(*)`, or one over a column.
+    fn plain_aggregate(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+        name: Option<&str>,
+        call: &Call,
+    ) -> Result<Aggregate, Reported> {
+        let at = line(function);
+        self.reject_if_present(at, !call.within_group.is_empty(), "WITHIN GROUP");
+        match self.over(function, name, call)? {
+            Over::Rows => Ok(Aggregate::Count),
             Over::Column(aggregate) => {
                 let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] =
                     call.arguments
@@ -163,11 +164,9 @@ impl Walker {
                     return Err(Reported);
                 };
                 let column = self.uncast_fact_column(scope, argument, "an aggregated column")?;
-                aggregate(column)
+                Ok(aggregate(column))
             }
-        };
-        let filter = self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
-        Ok(Aggregated { aggregate, filter })
+        }
     }
 
     /// Which aggregate a plain call names, by its name and DISTINCT.
