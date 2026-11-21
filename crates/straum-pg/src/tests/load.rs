@@ -2,7 +2,7 @@
 //! reader handles every way a fake server's copy can go wrong. A load
 //! after the stream started is refused.
 
-use straum_app::{Source, Step};
+use straum_app::Source;
 use straum_domain::{ColumnType, Datum, Store};
 
 use super::references::*;
@@ -157,7 +157,7 @@ fn loads_whatever_timeouts_the_database_sets() {
         db.run(&format!("ALTER DATABASE postgres SET {setting} = '1ms'"));
     }
     let mut writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     db.run(&Rng::new(1).trip(1));
     applied(&mut writer);
     // A session of its own takes the database's setting, and is cut.

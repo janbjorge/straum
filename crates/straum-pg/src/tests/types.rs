@@ -2,7 +2,7 @@
 //! binary, the logical stream as text and the physical stream off the
 //! heap pages, and every answer equals the view body PostgreSQL runs.
 
-use straum_app::{Step, Writer};
+use straum_app::Writer;
 use straum_domain::Literal;
 
 use super::references::*;
@@ -210,7 +210,7 @@ fn dates_and_uuids_match_postgresql() {
     }
     let mut writers: [Writer<Postgres>; 2] = [db.writer(SPEC), db.physical_writer(SPEC)];
     for writer in &mut writers {
-        assert!(matches!(writer.step(), Ok(Step::Started(_))));
+        started(writer);
     }
     let references = oracles();
     for writer in &writers {

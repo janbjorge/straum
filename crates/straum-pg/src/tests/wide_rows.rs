@@ -4,7 +4,6 @@
 //! grid shows on both sides of it. Each test loads, compares, then
 //! follows changes that move rows across day and week edges.
 
-use straum_app::Step;
 use straum_domain::{Ask, AskKey, Width};
 
 use super::references::*;
@@ -154,7 +153,7 @@ fn rows_a_day_or_a_week_apart_match_postgresql() {
     references.extend(logins_by_week());
 
     let mut writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &references).expect("ready after the load");
 
     let changes = [
@@ -204,7 +203,7 @@ fn wall_clock_days_match_postgresql() {
     let references = [tasks_by_day()];
 
     let mut writer = db.writer(TASKS_SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &references).expect("ready after the load");
 
     let changes = [

@@ -457,6 +457,14 @@ fn as_date_bin(body: &str) -> String {
     )
 }
 
+/// Loads every table and starts the stream; panics on anything else.
+pub(super) fn started(writer: &mut Writer<Postgres>) {
+    match writer.step() {
+        Ok(Step::Started(_)) => {}
+        other => panic!("expected a start, got {other:?}"),
+    }
+}
+
 /// Applies the next commit; panics on anything else.
 pub(super) fn applied(writer: &mut Writer<Postgres>) {
     match writer.step() {
@@ -473,7 +481,7 @@ pub(super) fn applied_or_started_again(db: &Db, spec: &str, writer: &mut Writer<
         Ok(Step::Applied(_)) => {}
         Err(straum_app::Error::Unfit { .. }) => {
             *writer = db.writer(spec);
-            assert!(matches!(writer.step(), Ok(Step::Started(_))));
+            started(writer);
         }
         other => panic!("expected a commit, got {other:?}"),
     }

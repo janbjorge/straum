@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use straum_app::{AnswerError, App, Source, Step, Writer};
+use straum_app::{AnswerError, App, Source, Writer};
 use straum_domain::{AnswerRow, Ask, AskError, ColumnType, Datum, Literal, Value};
 
 use super::references::*;
@@ -40,7 +40,7 @@ fn follows_the_database() {
     }
 
     let mut writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
 
     let mut compared = 0;
@@ -134,7 +134,7 @@ fn follows_the_task_tables() {
         "-- dim taskgroups: Straum holds its key and the columns the views read, and follows it."
     ));
     let mut writer = db.writer(TASKS_SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
     assert_edge_buckets(writer.app());
 
@@ -243,7 +243,7 @@ fn a_transaction_past_the_limit_stops_the_writer() {
         db.run(&rng.trip(id));
     }
     let mut writer = capped_writer(&db);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     db.run(&batch(&mut rng, 100, CAP));
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
@@ -271,7 +271,7 @@ fn a_transaction_past_the_limit_stops_the_writer() {
     );
     assert!(!writer.app().status().ready);
     let mut writer = capped_writer(&db);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run(&rng.trip(300));
     applied(&mut writer);
@@ -312,8 +312,8 @@ fn a_dim_change_shows_at_once() {
     insert_task_tables(&mut db, &mut rng);
     let mut picks = db.writer(PICKS_SPEC);
     let mut tasks = db.writer(TASKS_SPEC);
-    assert!(matches!(picks.step(), Ok(Step::Started(_))));
-    assert!(matches!(tasks.step(), Ok(Step::Started(_))));
+    started(&mut picks);
+    started(&mut tasks);
     compare(&mut db, picks.app(), &picks_oracles()).expect("picks ready");
     compare(&mut db, tasks.app(), &task_oracles()).expect("tasks ready");
 
@@ -413,7 +413,7 @@ fn a_poison_value_names_its_column() {
     assert!(!writer.app().status().ready);
     db.run("UPDATE $S.trips SET fare = 1.50 WHERE id = 1");
     writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
     // Streamed, the value comes as text.
@@ -425,7 +425,7 @@ fn a_poison_value_names_its_column() {
     );
     db.run("UPDATE $S.trips SET fare = 2.50 WHERE id = 1");
     writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the fix");
 }
 
@@ -442,7 +442,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
             thread::sleep(Duration::from_millis(1));
         }
         let mut writer = db.writer(SPEC);
-        assert!(matches!(writer.step(), Ok(Step::Started(_))));
+        started(&mut writer);
         assert!(
             !done.load(Ordering::Acquire),
             "round {round}: the writer finished before the load"
@@ -544,7 +544,7 @@ fn an_unfit_change_stops_the_writer() {
     );
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY FULL");
     writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
     applied(&mut writer);
@@ -572,7 +572,7 @@ fn an_unfit_change_stops_the_writer() {
     );
     db.run("ALTER TABLE $S.zones REPLICA IDENTITY FULL");
     writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the dim's new load");
 }
 
@@ -581,7 +581,7 @@ fn asks_take_values_of_the_types_the_load_read() {
     let pg = postgres();
     let db = Db::new(&pg, "types", TABLES);
     let mut writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     // text, the column a ref joins on (int), a dim's text; then
     // numeric(4, 1).
     let cases = [
@@ -679,7 +679,7 @@ fn follows_at_replica_from_19() {
         db.run(&rng.trip(id));
     }
     let mut writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
     for id in 20..30 {
         db.run(&rng.trip(id));

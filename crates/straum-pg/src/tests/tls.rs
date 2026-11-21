@@ -6,8 +6,6 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::Step;
-
 use super::references::*;
 use super::support::*;
 use crate::dsn::Dsn;
@@ -25,7 +23,7 @@ fn follows_the_database_over_tls() {
     }
     db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
     let mut writer = db.writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
     for id in 50..60 {
         db.run(&rng.trip(id));

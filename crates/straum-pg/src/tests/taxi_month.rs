@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use straum_app::{App, Step, Writer};
+use straum_app::{App, Writer};
 
 use super::references::*;
 use super::support::*;
@@ -44,7 +44,7 @@ fn taxi_month() {
         ),
     );
     let clock = Instant::now();
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     eprintln!("loaded in {:.1?}", clock.elapsed());
     check_taxi_month(&mut sql, writer.app(), &references, "after the load");
 

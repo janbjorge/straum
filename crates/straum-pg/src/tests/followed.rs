@@ -9,7 +9,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::{Change, Drift, Source, Step};
+use straum_app::{Change, Drift, Source};
 use straum_domain::{Ask, Store, Value};
 
 use super::references::{SPEC, TABLES, TASKS, TASKS_SPEC, compare, task_oracles};
@@ -116,7 +116,7 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
     let mut db = Db::new(&pg, "relabelled_physical", TASKS);
     db.run(SOME_TASKS);
     let mut writer = db.physical_writer(TASKS_SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     db.run("ALTER TYPE $S.kind ADD VALUE 'bin'");
     let written = db
         .run_committed("INSERT INTO $S.tasks VALUES (3, 1, 1, '2024-01-15 12:00', NULL, 5, 'bin')");

@@ -2,8 +2,6 @@
 //! EXISTS`), over a shop's orders: dim rows come, move, double and go,
 //! and each view still equals PostgreSQL's.
 
-use straum_app::Step;
-
 use super::references::*;
 use super::support::*;
 
@@ -157,8 +155,8 @@ fn every_join_kind_matches_postgresql() {
     fill_the_shop(&mut db, &mut rng);
     let mut paid = db.writer(PAID_SPEC);
     let mut offers = db.writer(OFFERS_SPEC);
-    assert!(matches!(paid.step(), Ok(Step::Started(_))));
-    assert!(matches!(offers.step(), Ok(Step::Started(_))));
+    started(&mut paid);
+    started(&mut offers);
     let references = shop_oracles();
     compare(&mut db, paid.app(), &references.paid).expect("ready");
     compare(&mut db, offers.app(), &references.offers).expect("ready");

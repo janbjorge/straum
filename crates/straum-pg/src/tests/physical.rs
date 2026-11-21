@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::{App, Lsn, Source, Step, Writer};
+use straum_app::{App, Lsn, Source, Writer};
 use straum_domain::Spec;
 
 use super::decoding::Pipeline;
@@ -165,7 +165,7 @@ fn follows_a_vacuum_on_19_without_checksums() {
         db.run(&rng.trip(id));
     }
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     db.run("CHECKPOINT");
     db.run("VACUUM $S.trips");
     db.run(&rng.trip(100));
@@ -200,7 +200,7 @@ fn follow(pg: &PostgresContainer, checksums: bool) {
     }
     thread::sleep(Duration::from_millis(200));
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     stop.store(true, Ordering::Relaxed);
     for writer in writers {
         writer.join().unwrap();
@@ -271,7 +271,7 @@ fn an_enum_column_added_while_streaming_reads_as_its_labels() {
     db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
     db.run(&rng.trip(1));
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     let mut next = 1;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
     db.run(
@@ -359,7 +359,7 @@ fn a_prepared_transaction_holds_the_start_back() {
     );
     db.run("COMMIT PREPARED 'held'");
     writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     let mut next = 1_000;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
@@ -429,7 +429,7 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     });
     drop(writer);
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     release.join().unwrap();
     committing.join().unwrap();
     let mut next = 1_000;
@@ -490,7 +490,7 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
         commit.join().unwrap();
     });
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     helper.join().unwrap();
     let mut next = 1_000;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
@@ -509,7 +509,7 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
     db.run(&rng.trip(1));
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     let mut next = 1;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
     let mut altering = db.another_connection();
@@ -667,7 +667,7 @@ fn stops_when_the_physical_stream_dies() {
         db.run(&rng.trip(id));
     }
     let mut writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     let mut next = 1_000;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
     let killed = db.rows("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_replication");
@@ -682,7 +682,7 @@ fn stops_when_the_physical_stream_dies() {
     }
     assert!(!writer.app().status().ready);
     writer = db.physical_writer(SPEC);
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    started(&mut writer);
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
