@@ -259,6 +259,10 @@ fn get_spec(definitions: &[Definition], view: &str) -> Reply {
             return text(StatusCode::OK, format!("{}\n", definition.text));
         }
     }
+    no_view(view)
+}
+
+fn no_view(view: &str) -> Reply {
     text(
         StatusCode::NOT_FOUND,
         format!("no view {view}; GET /views lists them\n"),
@@ -268,14 +272,11 @@ fn get_spec(definitions: &[Definition], view: &str) -> Reply {
 async fn get_rows(app: &App, describe: DescribeAskError, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
     let Some(asked) = app.rows_ask(view) else {
-        return text(
-            StatusCode::NOT_FOUND,
-            format!("no view {view}; GET /views lists them\n"),
-        );
+        return no_view(view);
     };
     let window = match rows_window(query.unwrap_or("")) {
         Ok(window) => window,
-        Err(error) => return text(StatusCode::BAD_REQUEST, format!("{error}\n")),
+        Err(error) => return Format::Text.errors(StatusCode::BAD_REQUEST, &[error]),
     };
     let writing = Writing {
         format: Format::Text,
@@ -468,11 +469,13 @@ fn get_status(app: &App, format: Format) -> Reply {
 fn get_readyz(app: &App) -> Reply {
     match status::why_not(&app.status()) {
         None => text(StatusCode::OK, "ready\n".into()),
-        Some(why) => text(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("not ready: {why}\n"),
-        ),
+        Some(why) => Format::Text.errors(StatusCode::SERVICE_UNAVAILABLE, &[not_ready(&why)]),
     }
+}
+
+/// Why `GET /readyz` and `GET /views` refuse, as they say it.
+fn not_ready(why: &str) -> String {
+    format!("not ready: {why}")
 }
 
 fn get_views(app: &App, format: Format) -> Reply {
@@ -483,8 +486,7 @@ fn get_views(app: &App, format: Format) -> Reply {
             Some(why) => why,
             None => "loading".to_owned(),
         };
-        let why = format!("not ready: {why}");
-        return format.errors(StatusCode::SERVICE_UNAVAILABLE, &[why]);
+        return format.errors(StatusCode::SERVICE_UNAVAILABLE, &[not_ready(&why)]);
     };
     match format {
         Format::Text => text(StatusCode::OK, views::write(&held)),
