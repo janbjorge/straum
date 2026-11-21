@@ -248,11 +248,12 @@ impl Bound {
 
     /// Whether a ref reads `dim`.
     pub(super) fn reads(&self, dim: DimIndex) -> bool {
-        let mut reads = false;
         for reference in &self.refs {
-            reads = reads || reference.dim == dim;
+            if reference.dim == dim {
+                return true;
+            }
         }
-        reads
+        false
     }
 
     /// The codes `key` of `dim` goes by in a cell, one per ref of `dim`
