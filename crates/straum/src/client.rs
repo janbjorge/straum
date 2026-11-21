@@ -369,23 +369,38 @@ pub(crate) fn ask(
 /// `false`, else a string. Quotes make a string of what would read as one
 /// of the others.
 pub(crate) fn parameter(text: &str) -> String {
-    if let Ok(integer) = text.parse::<i64>() {
-        return integer.to_string();
-    }
-    if is_decimal(text) || text == "true" || text == "false" {
+    // An integer goes as written, not through an `i64`, so one past it
+    // reaches Straum as the exact number it is rather than as text.
+    if is_integer(text) || is_decimal(text) || text == "true" || text == "false" {
         return text.to_owned();
+    }
+    if let Some(unsigned) = text.strip_prefix('+')
+        && is_whole(unsigned)
+    {
+        return unsigned.to_owned();
     }
     json_string(unquoted(text))
 }
 
-/// Digits, a point and digits, maybe after a minus, written as JSON
-/// writes a number: the whole part `0` or without a leading zero.
+/// Digits, maybe after a minus, written as JSON writes an integer.
+fn is_integer(text: &str) -> bool {
+    is_whole(text.strip_prefix('-').unwrap_or(text))
+}
+
+/// Digits, maybe after a minus, a point and digits, written as JSON
+/// writes a number.
 fn is_decimal(text: &str) -> bool {
     let unsigned = text.strip_prefix('-').unwrap_or(text);
     let Some((whole, fraction)) = unsigned.split_once('.') else {
         return false;
     };
-    all_digits(whole) && all_digits(fraction) && (whole == "0" || !whole.starts_with('0'))
+    is_whole(whole) && all_digits(fraction)
+}
+
+/// Digits as JSON writes the whole part of a number: `0` or without a
+/// leading zero.
+fn is_whole(text: &str) -> bool {
+    all_digits(text) && (text == "0" || !text.starts_with('0'))
 }
 
 /// At least one character, every one an ASCII digit.

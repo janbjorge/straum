@@ -277,11 +277,11 @@ A parameter's type is read from how it is written:
 
 | Written | Sent as |
 | --- | --- |
-| `7`, `-7` | An integer. |
+| `7`, `-7`, `9223372036854775808` | A number, exactly as written, however many digits. |
 | `20.5`, `-0.05` | A number, exactly as written: digits on both sides of the point. |
 | `true`, `false` | A boolean. |
 | `'7'`, `'20.5'`, `'true'` | The string inside the single quotes. |
-| Anything else | A string, such as `Queens`, `2024-01-17T05:00:00Z` or `.5`. |
+| Anything else | A string, such as `Queens`, `2024-01-17T05:00:00Z`, `.5` or `007`. |
 
 The string 7 is written `"'7'"`. An ask Straum can't answer prints the
 reply's first line and each error, and exits with 1:
