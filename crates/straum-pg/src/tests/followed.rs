@@ -15,7 +15,7 @@ use straum_domain::{Ask, Store, Value};
 use super::references::{SPEC, TABLES, TASKS, TASKS_SPEC, compare, task_oracles};
 use super::support::*;
 use crate::catalog;
-use crate::source::{AfterRead, Replication, hold_tables, read_in_time};
+use crate::source::{AfterRead, Replication, Settings, hold_tables, read_in_time};
 use crate::wire::{Connection, ConnectionKind};
 
 /// The table made again under its name: the same columns as the one
@@ -233,15 +233,9 @@ fn a_table_locked_away_fails_the_start_in_time() {
     connection.set_read_timeout(hang).unwrap();
     let begin = "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ";
     connection.execute(begin).unwrap();
-    let logical = Replication::Logical;
+    let settings = Settings::new(db.dsn.clone(), &db.name, ROW_LIMIT, Replication::Logical);
     let clock = Instant::now();
-    let read = read_in_time(
-        &mut connection,
-        &spec,
-        &db.name,
-        logical,
-        AfterRead::HoldTables,
-    );
+    let read = read_in_time(&mut connection, &spec, &settings, AfterRead::HoldTables);
     assert!(clock.elapsed() < hang, "the start waited out the lock");
     assert_eq!(
         read.err().unwrap().to_string(),
@@ -252,14 +246,7 @@ fn a_table_locked_away_fails_the_start_in_time() {
     );
     locker.run("ROLLBACK");
     connection.execute(begin).unwrap();
-    read_in_time(
-        &mut connection,
-        &spec,
-        &db.name,
-        logical,
-        AfterRead::HoldTables,
-    )
-    .unwrap();
+    read_in_time(&mut connection, &spec, &settings, AfterRead::HoldTables).unwrap();
     let shown = connection.rows("SHOW lock_timeout").unwrap();
     assert_eq!(shown, [[Some("0".to_owned())]]);
 }

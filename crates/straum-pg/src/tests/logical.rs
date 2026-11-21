@@ -795,7 +795,7 @@ fn a_start_says_which_transactions_hold_it_back() {
         .clone()
         .unwrap();
     let mut source = db.pg();
-    source.consistent_wait = Duration::from_secs(2);
+    source.settings.consistent_wait = Duration::from_secs(2);
     let error = source.open(&spec).unwrap_err().to_string();
     assert_eq!(
         error,
