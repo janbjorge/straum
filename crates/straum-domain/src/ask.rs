@@ -470,8 +470,6 @@ pub enum AskError {
 /// As an answer names its column.
 impl fmt::Display for AskKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AskKey::Key(_) | AskKey::WiderBucket { .. } => write!(f, "{}", self.name()),
-        }
+        f.write_str(self.name().as_str())
     }
 }
