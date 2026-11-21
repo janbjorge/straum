@@ -334,10 +334,14 @@ pub(super) fn id(name: &str) -> Identifier {
 /// An ask for `measures` of view `fact` by the keys `by`, over every
 /// bucket.
 pub(super) fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
+    let mut keys = Vec::new();
+    for key in by {
+        keys.push(AskKey::Key(id(key)));
+    }
     Ask {
         view: id(fact),
         measures: measures.iter().copied().map(id).collect(),
-        keys: by.iter().copied().map(ask_key).collect(),
+        keys,
         filter: Vec::new(),
         having: Vec::new(),
         from: Some(0),
@@ -380,14 +384,6 @@ pub(super) fn compared(measure: &str, comparison: Comparison, value: Literal) ->
         measure: id(measure),
         comparison,
         value,
-    }
-}
-
-/// The key named `key`: `bucket` is the time key.
-fn ask_key(key: &str) -> AskKey {
-    match key {
-        "bucket" => AskKey::Key(id("bucket")),
-        key => AskKey::Key(id(key)),
     }
 }
 
