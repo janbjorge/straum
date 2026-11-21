@@ -80,23 +80,17 @@ impl Store {
         }
         let mut cell_loop = self.cell_loop(fact, read, ask, &asked);
         let columns = answer_columns(ask, rollup, &cell_loop.by, &asked);
-        let expander = match read {
-            Read::Bound(_) => None,
-            Read::Keyed(_) => self.expander(fact),
-        };
-        match expander {
-            None => {
-                // The bound cells hold only what the joins keep.
-                let mut joins = match read {
-                    Read::Bound(_) => Vec::new(),
-                    Read::Keyed(_) => {
-                        let cells = cells_in(rollup, ask, cell_loop.cover);
-                        self.join_checks(fact, rollup, cells)
-                    }
-                };
-                cell_loop.ask_once(&mut joins, ask);
+        match read {
+            // The bound cells hold only what the joins keep.
+            Read::Bound(_) => cell_loop.ask_once(&mut Vec::new(), ask),
+            Read::Keyed(_) => {
+                if let Some(mut expander) = self.expander(fact) {
+                    cell_loop.ask_expanded(ask, &mut expander);
+                } else {
+                    let cells = cells_in(rollup, ask, cell_loop.cover);
+                    cell_loop.ask_once(&mut self.join_checks(fact, rollup, cells), ask);
+                }
             }
-            Some(mut expander) => cell_loop.ask_expanded(ask, &mut expander),
         }
         let checks = having_checks(ask, &columns);
         let Rows { rows, cut } = cell_loop.answer_rows(&checks, window);
