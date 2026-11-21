@@ -63,15 +63,9 @@ impl Walker {
             keys: Vec::new(),
         };
         for join in joins {
-            let Ok(joined) = self.join(&scope, join) else {
-                continue;
-            };
-            let alias = &joined.reference.alias;
-            if alias_taken(&scope, alias) {
-                self.error(line(join), format!("alias {alias} used twice"));
-                continue;
+            if let Ok(joined) = self.join(&scope, join) {
+                self.add_ref(&mut scope, line(join), joined);
             }
-            scope.refs.push(joined);
         }
         let mut parts = Vec::new();
         if let Some(selection) = selection {
@@ -88,21 +82,26 @@ impl Walker {
             } else {
                 RefKind::Semi
             };
-            let Ok(joined) = self.exists(&scope, part, subquery, kind) else {
-                continue;
-            };
-            let alias = &joined.reference.alias;
-            if alias_taken(&scope, alias) {
-                self.error(line(part), format!("alias {alias} used twice"));
-                continue;
+            if let Ok(joined) = self.exists(&scope, part, subquery, kind) {
+                self.add_ref(&mut scope, line(part), joined);
             }
-            scope.refs.push(joined);
         }
         Ok(FromClause {
             table,
             scope,
             conditions,
         })
+    }
+
+    /// Adds a join to the scope, unless the fact or a join before it
+    /// already goes by its alias.
+    fn add_ref(&mut self, scope: &mut Scope, at: u64, joined: JoinedRef) {
+        let alias = &joined.reference.alias;
+        if alias_taken(scope, alias) {
+            self.error(at, format!("alias {alias} used twice"));
+            return;
+        }
+        scope.refs.push(joined);
     }
 
     /// `EXISTS (SELECT 1 FROM schema.dim AS alias WHERE alias.key =
