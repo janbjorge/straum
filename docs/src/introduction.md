@@ -120,7 +120,7 @@ Two extensions keep such a summary inside PostgreSQL instead.
 [pg_ivm](https://github.com/sraoss/pg_ivm) changes it in the writer's
 transaction, so it is never behind and each write waits for it.
 TimescaleDB's [continuous
-aggregates](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/about-continuous-aggregates)
+aggregates](https://www.tigerdata.com/docs/learn/continuous-aggregates)
 change it when a refresh runs, over a table TimescaleDB partitions by
 time. Either leaves a table that any SQL can read and join, which
 Straum does not. Choose pg_ivm when the summary must be right inside
