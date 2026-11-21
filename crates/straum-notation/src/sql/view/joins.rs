@@ -8,7 +8,7 @@ use straum_domain::{Identifier, Ref, RefKind, Table, Via};
 
 use super::columns::{Resolved, resolve};
 use super::{JoinedRef, Scope};
-use crate::sql::{NamedTable, Reported, Walker, and_parts, line};
+use crate::sql::{NamedTable, Reported, Walker, and_parts, line, written_digits};
 
 /// `schema.table AS alias`, as read.
 struct AliasedTable {
@@ -345,16 +345,10 @@ impl Walker {
 
 /// `SELECT 1`, the one list an `EXISTS` takes.
 fn selects_one(projection: &[sql::SelectItem]) -> bool {
-    let [
-        sql::SelectItem::UnnamedExpr(sql::Expr::Value(sql::ValueWithSpan {
-            value: sql::Value::Number(number, false),
-            span: _,
-        })),
-    ] = projection
-    else {
+    let [sql::SelectItem::UnnamedExpr(expression)] = projection else {
         return false;
     };
-    number == "1"
+    written_digits(expression) == Some("1")
 }
 
 /// Whether a join side is a literal value, such as `1` or `true`.

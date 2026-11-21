@@ -8,7 +8,7 @@ use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Time};
 
 use super::Scope;
 use crate::sql::calls::{Call, function_name};
-use crate::sql::{Clause, Reported, Walker, line};
+use crate::sql::{Clause, Reported, Walker, all_digits, line, written_digits};
 
 /// What DISTINCT on any other aggregate is refused as.
 const DISTINCT_OUTSIDE: &str = "DISTINCT outside count, sum and avg";
@@ -322,13 +322,7 @@ impl Walker {
     /// each, the shortest, so `0.50` and `1.0` say what to write.
     fn fraction(&mut self, expression: &sql::Expr) -> Result<Fraction, Reported> {
         let at = line(expression);
-        let text = match expression {
-            sql::Expr::Value(sql::ValueWithSpan {
-                value: sql::Value::Number(text, false),
-                span: _,
-            }) => text.as_str(),
-            _ => "",
-        };
+        let text = written_digits(expression).unwrap_or_default();
         let Decimal { whole, places } = split_decimal(text);
         if whole.is_empty() || !all_digits(whole) || !all_digits(places) || text.ends_with('.') {
             self.refuse(at, "fraction, write a number from 0 to 1,", expression);
@@ -377,15 +371,6 @@ fn written_decimal(decimal: &Decimal<'_>) -> String {
         return decimal.whole.to_owned();
     }
     format!("{}.{}", decimal.whole, decimal.places)
-}
-
-fn all_digits(text: &str) -> bool {
-    for byte in text.bytes() {
-        if !byte.is_ascii_digit() {
-            return false;
-        }
-    }
-    true
 }
 
 fn fraction_of(whole: &str, places: &str) -> Option<Fraction> {

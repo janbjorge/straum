@@ -9,7 +9,7 @@ use straum_domain::{Attribute, ByKey, Condition, Identifier, Literal, RefKind, V
 
 use super::joins::{key_position, ref_position};
 use super::{Cast, KeyForm, Qualified, Scope, ScopedKey, SelectedKeys};
-use crate::sql::{Clause, NullTest, Reported, Walker, line};
+use crate::sql::{Clause, NullTest, Reported, Walker, line, written_digits};
 
 /// `alias.column` and whether it is cast, before the alias is resolved.
 struct Reference {
@@ -550,13 +550,7 @@ fn plain_literal(expression: &sql::Expr) -> Option<Literal> {
 
 /// `-` and an integer; nothing else takes a sign.
 fn negative_literal(expression: &sql::Expr) -> Option<Literal> {
-    let sql::Expr::Value(sql::ValueWithSpan {
-        value: sql::Value::Number(digits, false),
-        span: _,
-    }) = expression
-    else {
-        return None;
-    };
+    let digits = written_digits(expression)?;
     Some(Literal::Int(format!("-{digits}").parse().ok()?))
 }
 
@@ -569,18 +563,6 @@ fn written_integer(expression: &sql::Expr) -> Option<String> {
         } => Some(format!("-{}", written_digits(inner)?)),
         other => Some(written_digits(other)?.to_owned()),
     }
-}
-
-/// A number's digits as written, with no sign.
-fn written_digits(expression: &sql::Expr) -> Option<&str> {
-    let sql::Expr::Value(sql::ValueWithSpan {
-        value: sql::Value::Number(digits, false),
-        span: _,
-    }) = expression
-    else {
-        return None;
-    };
-    Some(digits)
 }
 
 /// A column reference as Straum SQL spells it: `sqlparser` prints the cast

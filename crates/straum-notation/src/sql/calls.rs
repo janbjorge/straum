@@ -8,7 +8,7 @@
 use sqlparser::ast as sql;
 use straum_domain::{UNITS, Width};
 
-use super::{Reported, Walker, line};
+use super::{Reported, Walker, all_digits, line};
 
 /// The function a view's time is written with, and an ask's wider width.
 pub(super) const BUCKETS: &str = "buckets";
@@ -187,7 +187,7 @@ fn parse_width(text: &str) -> Result<Width, String> {
             scale = Some(candidate.seconds);
         }
     }
-    let (Some(scale), true) = (scale, plain_digits(count)) else {
+    let (Some(scale), true) = (scale, !count.is_empty() && all_digits(count)) else {
         return Err(WIDTH_FORM.into());
     };
     let Ok(count) = count.parse::<u32>() else {
@@ -202,14 +202,4 @@ fn parse_width(text: &str) -> Result<Width, String> {
         return Err(format!("write '{written}'"));
     }
     Ok(width)
-}
-
-/// Whether `text` is one or more ASCII digits, with no sign.
-fn plain_digits(text: &str) -> bool {
-    for byte in text.bytes() {
-        if !byte.is_ascii_digit() {
-            return false;
-        }
-    }
-    !text.is_empty()
 }

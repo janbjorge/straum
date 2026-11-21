@@ -648,6 +648,28 @@ fn without_leading_zeros(digits: &str) -> Option<&str> {
     Some(trimmed)
 }
 
+/// A number as written, its digits and any point, with no sign.
+fn written_digits(expression: &sql::Expr) -> Option<&str> {
+    let sql::Expr::Value(sql::ValueWithSpan {
+        value: sql::Value::Number(digits, false),
+        span: _,
+    }) = expression
+    else {
+        return None;
+    };
+    Some(digits)
+}
+
+/// Whether `text` is ASCII digits only, with no sign; an empty text is.
+fn all_digits(text: &str) -> bool {
+    for byte in text.bytes() {
+        if !byte.is_ascii_digit() {
+            return false;
+        }
+    }
+    true
+}
+
 /// A table reference's name and alias, as written.
 // Borrows both from the tree, which outlives the walk; a copy would clone
 // them for nothing.
