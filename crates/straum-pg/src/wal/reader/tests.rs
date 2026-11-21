@@ -35,8 +35,7 @@ fn reads_back_every_record_however_the_bytes_come() {
         let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
         let laid_out = lay_out(major, start, &assembled);
         let first = rng.below_usize(specs.len());
-        let records =
-            read(&mut rng, major, &laid_out.wal, start, laid_out.lsns[first]).unwrap();
+        let records = read(&mut rng, major, &laid_out.wal, start, laid_out.lsns[first]).unwrap();
         assert_eq!(records.len(), specs.len() - first, "seed {seed}");
         for (index, record) in records.iter().enumerate() {
             check(record, &specs[first + index], laid_out.lsns[first + index]);
@@ -263,11 +262,7 @@ fn heap_record(relation: Oid) -> LaidOut {
 }
 
 /// The first record past `wal` to a reader of `files`.
-fn first_read(
-    wal: &[u8],
-    start: u64,
-    files: &[RelationFile],
-) -> Result<Option<Record>, WalError> {
+fn first_read(wal: &[u8], start: u64, files: &[RelationFile]) -> Result<Option<Record>, WalError> {
     let mut records = Records::new(start, SEGMENT, MAJOR);
     records.pass_by_other_files(files.iter().copied().collect());
     records.feed(SEGMENT, wal).unwrap();

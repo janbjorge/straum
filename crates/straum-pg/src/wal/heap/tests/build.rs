@@ -95,7 +95,12 @@ pub(super) fn image(bytes: Vec<u8>) -> ImageSpec {
     }
 }
 
-pub(super) fn block(id: u8, number: BlockNumber, data: Vec<u8>, image: Option<ImageSpec>) -> BlockSpec {
+pub(super) fn block(
+    id: u8,
+    number: BlockNumber,
+    data: Vec<u8>,
+    image: Option<ImageSpec>,
+) -> BlockSpec {
     BlockSpec {
         id,
         fork: MAIN_FORK,
@@ -120,7 +125,12 @@ pub(super) fn imaged(number: BlockNumber, image: ImageSpec) -> BlockSpec {
     block(MAIN_BLOCK, number, Vec::new(), Some(image))
 }
 
-pub(super) fn record(resource_manager: u8, info: u8, main: Vec<u8>, blocks: Vec<BlockSpec>) -> Record {
+pub(super) fn record(
+    resource_manager: u8,
+    info: u8,
+    main: Vec<u8>,
+    blocks: Vec<BlockSpec>,
+) -> Record {
     decoded(&Spec {
         xid: 700,
         resource_manager,
@@ -134,12 +144,7 @@ pub(super) fn record(resource_manager: u8, info: u8, main: Vec<u8>, blocks: Vec<
 
 /// A full-page image record of `blocks`.
 pub(super) fn full_page_images(blocks: Vec<BlockSpec>) -> Record {
-    record(
-        RESOURCE_MANAGER_XLOG,
-        XLOG_FPI,
-        Vec::new(),
-        blocks,
-    )
+    record(RESOURCE_MANAGER_XLOG, XLOG_FPI, Vec::new(), blocks)
 }
 
 /// `xl_heap_header` and the row from its null bitmap on.

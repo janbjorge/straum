@@ -610,7 +610,9 @@ mod tests {
             let lsn = self.lsn;
             assert_eq!(self.transactions.event(event, lsn, lsn + 4), Ok(None));
             self.dropped.sort_unstable();
-            let unseen = self.transactions.unseen_dropped(&TransactionSnapshot::seeing_nothing());
+            let unseen = self
+                .transactions
+                .unseen_dropped(&TransactionSnapshot::seeing_nothing());
             assert_eq!(unseen, self.dropped, "seed {seed}");
             self.first_whole.get_or_insert(self.started);
         }
@@ -689,7 +691,9 @@ mod tests {
             // The byte count stays true at every step.
             self.transactions.held_changes();
             self.dropped.sort_unstable();
-            let unseen = self.transactions.unseen_dropped(&TransactionSnapshot::seeing_nothing());
+            let unseen = self
+                .transactions
+                .unseen_dropped(&TransactionSnapshot::seeing_nothing());
             assert_eq!(unseen, self.dropped, "seed {seed}");
             assert!(!self.transactions.holds(script.top), "seed {seed}");
             for sub in &script.kept_subs {

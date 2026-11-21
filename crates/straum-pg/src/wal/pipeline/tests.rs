@@ -20,9 +20,7 @@ use crate::wal::xact::tests::{
     commit_with_subxacts, enum_commit, invalidating_commit, running_main, statistic_commit,
 };
 use crate::wal::xact::{STANDBY_RUNNING_XACTS, XACT_COMMIT, XACT_HAS_INFO};
-use crate::wal::{
-    RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION,
-};
+use crate::wal::{RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION};
 
 use crate::wal::heap::{HEAP_INSERT, INIT_PAGE};
 use crate::wal::record::RECORD_ALIGNMENT;
@@ -73,13 +71,7 @@ fn layouts() -> Layouts {
 }
 
 fn pipeline(max_bytes: usize) -> Pipeline {
-    Pipeline::new(
-        vec![reading_t("t")],
-        layouts(),
-        18,
-        2,
-        max_bytes,
-    )
+    Pipeline::new(vec![reading_t("t")], layouts(), 18, 2, max_bytes)
 }
 
 /// Records at increasing LSNs, as the stream reads them.

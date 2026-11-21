@@ -12,9 +12,9 @@ use super::super::BLOCK_SIZE;
 use super::edit::*;
 use super::page::*;
 use super::*;
-use build::*;
 use crate::wal::test_support::{BlockSpec, FILE, ImageSpec, ROW_HEADER, Spec, TEST_LSN, decoded};
 use crate::wal::{BlockNumber, Compression, Problem, Record, RelationFile, SlotNumber, WalError};
+use build::*;
 
 const OTHER: RelationFile = RelationFile {
     tablespace: 1663,
