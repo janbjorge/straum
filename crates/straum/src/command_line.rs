@@ -26,13 +26,27 @@ pub(crate) const ROLE: &str = "straum";
 /// Where the commands that talk to a running Straum find it unless told.
 const URL: &str = "http://127.0.0.1:8080";
 /// The switch that asks for JSON instead of a table.
-const JSON: &str = "--json";
+const JSON_FLAG: &str = "--json";
 /// The switch that makes `plan` print the spec's tables, not its SQL.
-const TABLES: &str = "--tables";
+const TABLES_FLAG: &str = "--tables";
 /// The flag that makes `plan` write the copy scripts into a directory.
-const COPY: &str = "--copy";
+const COPY_FLAG: &str = "--copy";
 /// Where `plan` writes the SQL or the tables instead of stdout.
-const OUT: &str = "--out";
+const OUT_FLAG: &str = "--out";
+// Each flag is written once, here: a misspelt name at a read site
+// fails to compile, where a literal would silently take the default.
+const LISTEN_FLAG: &str = "--listen";
+const WAL_FLAG: &str = "--wal";
+const PUBLICATION_FLAG: &str = "--publication";
+const ROLE_FLAG: &str = "--role";
+const DSN_FILE_FLAG: &str = "--dsn-file";
+const MAX_LAG_FLAG: &str = "--max-lag";
+const MAX_RETAINED_WAL_FLAG: &str = "--max-retained-wal";
+const MAX_TRANSACTION_ROWS_FLAG: &str = "--max-transaction-rows";
+const MAX_PAGE_MEMORY_FLAG: &str = "--max-page-memory";
+const MAX_MEMORY_FLAG: &str = "--max-memory";
+const URL_FLAG: &str = "--url";
+const TIMEOUT_FLAG: &str = "--timeout";
 /// The environment variable that names the URL when `--url` doesn't.
 pub(crate) const URL_VARIABLE: &str = "STRAUM_URL";
 const FOUR_GIBIBYTES: u64 = 4 << 30;
@@ -53,6 +67,9 @@ const MAX_PAGE_MEMORY: usize = 1 << 30;
 const MAX_TIMEOUT: Duration = Duration::from_hours(24);
 /// What `--timeout` takes, as its error says.
 const TIMEOUT_TAKES: &str = "whole seconds from 1 to 86400";
+/// What `--max-retained-wal` and `--max-memory` take, as their errors
+/// say.
+const BYTE_LIMIT_TAKES: &str = "bytes above 0, as 4294967296 or 4Gi";
 
 /// A command's name, the first word after `straum`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,26 +127,33 @@ impl Name {
     fn flags(self) -> &'static [&'static str] {
         match self {
             Name::Run => &[
-                "--listen",
-                "--wal",
-                "--publication",
-                "--dsn-file",
-                "--max-lag",
-                "--max-retained-wal",
-                "--max-transaction-rows",
-                "--max-page-memory",
-                "--max-memory",
+                LISTEN_FLAG,
+                WAL_FLAG,
+                PUBLICATION_FLAG,
+                DSN_FILE_FLAG,
+                MAX_LAG_FLAG,
+                MAX_RETAINED_WAL_FLAG,
+                MAX_TRANSACTION_ROWS_FLAG,
+                MAX_PAGE_MEMORY_FLAG,
+                MAX_MEMORY_FLAG,
             ],
-            Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", OUT, COPY],
-            Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
+            Name::Plan => &[
+                WAL_FLAG,
+                PUBLICATION_FLAG,
+                ROLE_FLAG,
+                DSN_FILE_FLAG,
+                OUT_FLAG,
+                COPY_FLAG,
+            ],
+            Name::Status | Name::Views | Name::Ask | Name::Shell => &[URL_FLAG, TIMEOUT_FLAG],
         }
     }
 
     /// The flags that take no value.
     fn switches(self) -> &'static [&'static str] {
         match self {
-            Name::Status | Name::Views | Name::Ask => &[JSON],
-            Name::Plan => &[TABLES],
+            Name::Status | Name::Views | Name::Ask => &[JSON_FLAG],
+            Name::Plan => &[TABLES_FLAG],
             Name::Run | Name::Shell => &[],
         }
     }
@@ -477,9 +501,9 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
     Ok(Command::Plan(Plan {
         specs: flags.specs.clone(),
         publication: flags.publication(),
-        role: flags.text("--role"),
-        dsn_file: flags.text("--dsn-file"),
-        out: flags.text(OUT),
+        role: flags.text(ROLE_FLAG),
+        dsn_file: flags.text(DSN_FILE_FLAG),
+        out: flags.text(OUT_FLAG),
         printed,
     }))
 }
@@ -487,8 +511,8 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
 /// What `plan` makes, from `--copy` and `--tables`. The copy scripts go
 /// into their directory, so `--out` has nothing to write.
 fn printed(flags: &Flags) -> Result<Printed, UsageError> {
-    let tables = flags.switch(TABLES);
-    let Some(directory) = flags.text(COPY) else {
+    let tables = flags.switch(TABLES_FLAG);
+    let Some(directory) = flags.text(COPY_FLAG) else {
         if tables {
             return Ok(Printed::Tables);
         }
@@ -500,14 +524,14 @@ fn printed(flags: &Flags) -> Result<Printed, UsageError> {
     };
     if tables {
         return Err(UsageError::Together {
-            flag: COPY,
-            other: TABLES,
+            flag: COPY_FLAG,
+            other: TABLES_FLAG,
         });
     }
-    if flags.value(OUT).is_some() {
+    if flags.value(OUT_FLAG).is_some() {
         return Err(UsageError::Together {
-            flag: COPY,
-            other: OUT,
+            flag: COPY_FLAG,
+            other: OUT_FLAG,
         });
     }
     Ok(Printed::Copy { directory })
@@ -519,43 +543,39 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     };
     let replication = flags.replication(Name::Run)?;
     let is_physical = matches!(replication, Replication::Physical { .. });
-    if flags.value("--max-page-memory").is_some() && !is_physical {
+    if flags.value(MAX_PAGE_MEMORY_FLAG).is_some() && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
     let max_lag = flags.parsed(
-        "--max-lag",
+        MAX_LAG_FLAG,
         LIMITS.max_lag,
         seconds,
         "whole seconds above 0",
     )?;
     let max_retained_wal = flags.parsed(
-        "--max-retained-wal",
+        MAX_RETAINED_WAL_FLAG,
         LIMITS.max_retained_wal,
         bytes,
-        "bytes above 0, as 4294967296 or 4Gi",
+        BYTE_LIMIT_TAKES,
     )?;
     let max_transaction_rows = flags.parsed(
-        "--max-transaction-rows",
+        MAX_TRANSACTION_ROWS_FLAG,
         MAX_TRANSACTION_ROWS,
         count,
         "a count of rows above 0",
     )?;
     Ok(Command::Run(Run {
         spec,
-        listen: flags.text_or("--listen", LISTEN),
+        listen: flags.text_or(LISTEN_FLAG, LISTEN),
         replication,
         publication: flags.publication(),
-        dsn_file: flags.text("--dsn-file"),
+        dsn_file: flags.text(DSN_FILE_FLAG),
         limits: Limits {
             max_lag,
             max_retained_wal,
         },
         max_transaction_rows,
-        max_memory: flags.parsed_if_given(
-            "--max-memory",
-            bytes,
-            "bytes above 0, as 4294967296 or 4Gi",
-        )?,
+        max_memory: flags.parsed_if_given(MAX_MEMORY_FLAG, bytes, BYTE_LIMIT_TAKES)?,
     }))
 }
 
@@ -716,7 +736,7 @@ impl Flags {
     }
 
     fn publication(&self) -> String {
-        self.text_or("--publication", PUBLICATION)
+        self.text_or(PUBLICATION_FLAG, PUBLICATION)
     }
 
     /// Whether the switch `flag` is on the line.
@@ -731,7 +751,7 @@ impl Flags {
 
     /// JSON with `--json`, else a table.
     fn output(&self) -> Output {
-        if self.switch(JSON) {
+        if self.switch(JSON_FLAG) {
             Output::Json
         } else {
             Output::Text
@@ -742,18 +762,18 @@ impl Flags {
     /// `--timeout`.
     fn server(&self, default: &str) -> Result<Server, UsageError> {
         Ok(Server {
-            url: self.text_or("--url", default),
-            timeout: self.parsed("--timeout", TIMEOUT, timeout, TIMEOUT_TAKES)?,
+            url: self.text_or(URL_FLAG, default),
+            timeout: self.parsed(TIMEOUT_FLAG, TIMEOUT, timeout, TIMEOUT_TAKES)?,
         })
     }
 
     fn replication(&self, command: Name) -> Result<Replication, UsageError> {
-        match self.value("--wal") {
+        match self.value(WAL_FLAG) {
             None => Err(UsageError::NeedsWal(command)),
             Some("logical") => Ok(Replication::Logical),
             Some("physical") => {
                 let max_page_memory = self.parsed(
-                    "--max-page-memory",
+                    MAX_PAGE_MEMORY_FLAG,
                     MAX_PAGE_MEMORY,
                     memory,
                     "bytes above 0, as 1073741824 or 1Gi",
