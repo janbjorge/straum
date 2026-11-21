@@ -179,7 +179,7 @@ unites them by reference, without copying.
 
 Other systems answer with a sketch, a small summary that merges and
 gives an approximate answer: t-digest, KLL and DDSketch for percentiles,
-HyperLogLog for distinct counts. The common sketches can't take a delete.
+HyperLogLog for distinct counts. Of these only DDSketch takes a delete.
 Straum's answers are exact and follow deletes, so it has no sketch
 ([architecture decision record
 ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
