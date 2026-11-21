@@ -45,12 +45,35 @@ impl Hosts {
             return None;
         }
         let host = String::from_utf8_lossy(host.unwrap_or_default());
-        let port = address.port();
+        let answered = answered_names(address);
         Some(format!(
-            "Straum on {address} answers Host localhost:{port}, 127.0.0.1:{port} or \
-             [::1]:{port}, not {host:?}\n"
+            "Straum on {address} answers Host {answered}, not {host:?}\n"
         ))
     }
+}
+
+/// The names Straum on loopback at `address` answers, each with its
+/// port, listed as "a, b or c": those of `LOOPBACK_NAMES`, then the
+/// address it listens on when that is none of them.
+fn answered_names(address: SocketAddr) -> String {
+    let port = address.port();
+    let mut names = Vec::new();
+    for loopback in LOOPBACK_NAMES {
+        names.push(format!("{loopback}:{port}"));
+    }
+    let listen = format!("{}:{port}", listen_name(address));
+    if !names.contains(&listen) {
+        names.push(listen);
+    }
+    let mut answered = String::new();
+    for (index, name) in names.iter().enumerate() {
+        if index > 0 {
+            let is_last = index + 1 == names.len();
+            answered.push_str(if is_last { " or " } else { ", " });
+        }
+        answered.push_str(name);
+    }
+    answered
 }
 
 /// Whether Straum on loopback at `address` answers a request naming
@@ -168,5 +191,23 @@ mod tests {
         );
         assert_eq!(hosts.refusal(Some(b"localhost:8080")), None);
         assert_eq!(Hosts::Any.refusal(Some(b"evil.example")), None);
+    }
+
+    #[test]
+    fn a_refusal_names_the_listen_address_once() {
+        let hosts = loopback("127.0.0.5:8080");
+        assert_eq!(
+            hosts.refusal(Some(b"evil.example:8080")).unwrap(),
+            "Straum on 127.0.0.5:8080 answers Host localhost:8080, 127.0.0.1:8080, \
+             [::1]:8080 or 127.0.0.5:8080, not \"evil.example:8080\"\n"
+        );
+        assert!(answers(hosts, Some(b"127.0.0.5:8080")));
+        assert_eq!(
+            loopback("[::1]:8080")
+                .refusal(Some(b"evil.example:8080"))
+                .unwrap(),
+            "Straum on [::1]:8080 answers Host localhost:8080, 127.0.0.1:8080 or \
+             [::1]:8080, not \"evil.example:8080\"\n"
+        );
     }
 }
