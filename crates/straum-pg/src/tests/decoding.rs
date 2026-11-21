@@ -1,7 +1,6 @@
 //! The physical stream against logical decoding on one server: both read
 //! the same WAL, and the commits the physical stream yields equal a
 //! logical slot's byte for byte, for fixed and random workloads.
-//! `Pipeline` runs the physical stream's path from records to commits.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,15 +8,12 @@ use std::thread;
 use std::time::Duration;
 
 use straum_app::{Commit, Lsn, Source, Step};
-use straum_domain::Spec;
 
-use super::physical::catch_up;
 use super::references::*;
+use super::streams::*;
 use super::support::*;
-use crate::catalog::{self, Checked};
-use crate::physical::{self, Physical};
+use crate::physical::Physical;
 use crate::source::Postgres;
-use crate::wal::transactions::TransactionSnapshot;
 use crate::wire::{Connection, ConnectionKind};
 
 /// On one server with logical decoding, the physical stream yields the
@@ -560,73 +556,5 @@ fn random_update(rng: &mut Rng, session: u64, residue: u64) -> String {
             "UPDATE $S.zones SET toll = toll + 0.5, borough = borough || '.' WHERE id = {};",
             session + 1
         ),
-    }
-}
-
-/// The physical stream's path from records to commits, with a snapshot
-/// that sees nothing, so every whole commit comes, and layouts read again
-/// on a plain connection.
-pub(super) struct Pipeline {
-    pub(super) connection: Connection,
-    pub(super) checked: Vec<Checked>,
-    pub(super) inner: crate::wal::pipeline::Pipeline,
-    /// How many times the layouts were read again.
-    pub(super) layouts_read: usize,
-}
-
-impl Pipeline {
-    /// The pipeline for `spec`'s tables in `publication`'s schema, read
-    /// from the WAL of a server at `major`.
-    pub(super) fn new(
-        pg: &PostgresContainer,
-        spec: &Spec,
-        publication: &str,
-        major: u32,
-    ) -> Pipeline {
-        let mut connection = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
-        let tables = catalog::read(&mut connection, spec, publication, PHYSICAL).unwrap();
-        let checked: Vec<Checked> = tables.facts.into_iter().chain(tables.dims).collect();
-        let layouts = physical::read_layouts(&mut connection, &checked).unwrap();
-        let mut inner = crate::wal::pipeline::Pipeline::new(
-            checked.clone(),
-            layouts,
-            major,
-            ROW_LIMIT,
-            PAGE_MEMORY,
-        );
-        let nothing = TransactionSnapshot::parse("1:1:").unwrap();
-        assert_eq!(inner.see(nothing, Lsn(0)).unwrap().1, []);
-        Pipeline {
-            connection,
-            checked,
-            inner,
-            layouts_read: 0,
-        }
-    }
-
-    /// The commits `record` completes.
-    pub(super) fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
-        let connection = &mut self.connection;
-        let checked = &self.checked;
-        let layouts_read = &mut self.layouts_read;
-        (self.inner)
-            .record(record, |_| {
-                *layouts_read += 1;
-                physical::read_layouts(connection, checked)
-            })
-            .unwrap()
-    }
-
-    /// The commits of all WAL written so far.
-    pub(super) fn through_now(&mut self, db: &mut Db, stream: &mut Physical) -> Vec<Commit> {
-        let mut commits = Vec::new();
-        for record in &records_to_switch(db, stream).records {
-            commits.extend(self.record(record));
-        }
-        assert_eq!(
-            self.inner.consistency(),
-            crate::wal::transactions::Consistency::Consistent
-        );
-        commits
     }
 }

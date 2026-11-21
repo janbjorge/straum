@@ -12,8 +12,8 @@ use std::time::Duration;
 use straum_app::{Commit, Drift};
 use straum_domain::{ColumnType, Datum};
 
-use super::decoding::Pipeline;
 use super::references::*;
+use super::streams::*;
 use super::support::*;
 use crate::physical::Physical;
 use crate::source::parse_lsn;

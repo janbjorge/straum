@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use super::streams::*;
 use super::support::*;
 use crate::physical::Physical;
 use crate::wal::heap::fixture::{self, Fixture, FixtureRow, LoggedRecord};

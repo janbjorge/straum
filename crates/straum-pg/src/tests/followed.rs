@@ -13,6 +13,7 @@ use straum_app::{Change, Drift, Source};
 use straum_domain::{Ask, Value};
 
 use super::references::{SPEC, TABLES, TASKS, TASKS_SPEC, compare, task_oracles};
+use super::streams::*;
 use super::support::*;
 use crate::catalog;
 use crate::source::{AfterRead, Replication, Settings, hold_tables, read_in_time};
@@ -120,9 +121,11 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
     db.run("ALTER TYPE $S.kind ADD VALUE 'bin'");
     let written = db
         .run_committed("INSERT INTO $S.tasks VALUES (3, 1, 1, '2024-01-15 12:00', NULL, 5, 'bin')");
-    while writer.app().status().applied < Some(written) {
-        applied(&mut writer);
-    }
+    apply_through(
+        &mut writer,
+        written,
+        &Wait::new(&format!("{written} applied")),
+    );
     compare(&mut db, writer.app(), &task_oracles()).expect("the added label reads as itself");
 
     db.run(

@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use straum_app::Lsn;
 use straum_domain::{ColumnType, Datum};
 
+use super::streams::*;
 use super::support::*;
 use crate::catalog::Checked;
 use crate::dsn::Dsn;

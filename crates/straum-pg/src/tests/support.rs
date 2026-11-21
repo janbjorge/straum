@@ -23,11 +23,10 @@ use straum_domain::{
 use crate::catalog::{self, Catalog};
 use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::physical::Physical;
 use crate::source::{Postgres, Replication, parse_lsn};
 pub(crate) use crate::tests::compose::{Service, Stack};
+use crate::wal::RelationFile;
 use crate::wal::test_support::Rng as SplitMix;
-use crate::wal::{Record, RelationFile};
 use crate::wire::{Connection, ConnectionKind};
 
 /// The password of the `postgres` role in every container.
@@ -572,34 +571,6 @@ pub(super) fn wait_for(connection: &mut Connection, query: &str) {
     let wait = Wait::new(&format!("a row from {query}"));
     while connection.rows(query).unwrap().is_empty() {
         wait.poll();
-    }
-}
-
-/// The records a physical stream read up to a switch to the next WAL
-/// file, and where WAL stood just before the switch.
-pub(super) struct ReadToSwitch {
-    pub(super) last: Lsn,
-    pub(super) records: Vec<Record>,
-}
-
-/// Every record of the WAL written so far: switches to the next WAL file,
-/// then reads up to the switch record at or past where WAL stood, that
-/// record too.
-pub(super) fn records_to_switch(db: &mut Db, physical: &mut Physical) -> ReadToSwitch {
-    let last = db.insert_lsn();
-    db.run("SELECT pg_switch_wal()");
-    let wait = Wait::new(&format!("a switch record past {last}"));
-    let mut records = Vec::new();
-    loop {
-        wait.check();
-        let Some(record) = physical.next_record().unwrap() else {
-            continue;
-        };
-        let switched = record.is_switch() && record.lsn >= last.0;
-        records.push(record);
-        if switched {
-            return ReadToSwitch { last, records };
-        }
     }
 }
 

@@ -8,14 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::{App, Lsn, Source, Writer};
+use straum_app::{App, Source, Writer};
 
-use super::decoding::Pipeline;
 use super::references::*;
+use super::streams::*;
 use super::support::*;
 use crate::catalog::Checked;
 use crate::physical::{Physical, read_layouts_seeing};
-use crate::source::{Postgres, Replication};
+use crate::source::Replication;
 use crate::wire::{Connection, ConnectionKind};
 
 /// The physical stream holds the pages changed since the last
@@ -506,11 +506,11 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     let written = db.run_committed(&format!(
         "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
     ));
-    let applying = wait.then(&format!("{written} applied"));
-    while !applied_through(&writer, written) {
-        applying.check();
-        applied(&mut writer);
-    }
+    apply_through(
+        &mut writer,
+        written,
+        &wait.then(&format!("{written} applied")),
+    );
     // Gone if it released the standby when Straum waited.
     let _ = applied_later.send(());
     release.join().unwrap();
@@ -696,31 +696,4 @@ fn says_what_a_physical_start_waits_for() {
         "{:?}",
         started.elapsed()
     );
-}
-
-/// Applies commits until Straum is ready and its views equal SQL's. A
-/// trip goes in each round, so there is a commit to wait for.
-pub(super) fn catch_up(db: &mut Db, writer: &mut Writer<Postgres>, rng: &mut Rng, next: &mut u64) {
-    let wait = Wait::new("Straum to catch up");
-    loop {
-        wait.check();
-        *next += 1;
-        let written = db.run_committed(&rng.trip(*next));
-        let applying = wait.then(&format!("{written} applied"));
-        while !applied_through(writer, written) {
-            applying.check();
-            applied(writer);
-        }
-        if compare(db, writer.app(), &taxi_oracles(2)).is_some() {
-            return;
-        }
-    }
-}
-
-/// Whether `writer` has applied every commit up to `written`.
-fn applied_through(writer: &Writer<Postgres>, written: Lsn) -> bool {
-    match writer.app().status().applied {
-        Some(applied) => applied >= written,
-        None => false,
-    }
 }
