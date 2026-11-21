@@ -89,7 +89,7 @@ fn variance(deviation: U256, divisor: u128) -> Value {
     let (places, left) = U256::product(rest, VARIANCE_FACTOR.into()).div_rem(divisor);
     let (shifted, _) = whole.overflowing_mul(VARIANCE_FACTOR);
     let mut units = shifted.wrapping_add(places);
-    if rounds_up(left, divisor, is_odd(units)) {
+    if rounds_up(left, divisor, units.is_odd()) {
         units = units.wrapping_add(U256::from(1));
     }
     value_of(units)
@@ -128,23 +128,16 @@ fn rounds_up(rest: u128, divisor: u128, odd: bool) -> bool {
     rest > other || (rest == other && odd)
 }
 
-fn is_odd(units: U256) -> bool {
-    let (_, last) = units.div_rem(2);
-    last == 1
-}
-
 /// `units` as an `i128` where it fits, as nearly every answer does; wider
 /// only for a variance of values near the ends of `bigint`.
 fn value_of(units: U256) -> Value {
-    let narrow = units.to_u128().and_then(fitting_i128);
-    match narrow {
-        Some(units) => Value::Int(units),
-        None => Value::Wide(units),
+    let Some(low) = units.to_u128() else {
+        return Value::Wide(units);
+    };
+    match i128::try_from(low) {
+        Ok(narrow) => Value::Int(narrow),
+        Err(_) => Value::Wide(units),
     }
-}
-
-fn fitting_i128(units: u128) -> Option<i128> {
-    i128::try_from(units).ok()
 }
 
 #[cfg(test)]

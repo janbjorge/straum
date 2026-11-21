@@ -117,6 +117,11 @@ impl U256 {
         (quotient, rest)
     }
 
+    /// Whether the number is odd: its lowest bit is set.
+    pub(crate) fn is_odd(self) -> bool {
+        self.low & 1 == 1
+    }
+
     /// The largest whole number whose square is at most `self`.
     pub fn sqrt(self) -> u128 {
         if self.high == 0 {
