@@ -50,10 +50,13 @@ fn binary_copies_read_as_text_does() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(texts.len(), 6);
+    assert_eq!(texts.len(), 7);
     assert_eq!(binaries, texts);
     // The infinities read as a null time, both ways.
     assert_eq!(&texts[5][10..], [Datum::Null, Datum::Null]);
+    // The earliest time, before Christ, reads as a time, not a null.
+    assert_ne!(texts[6][10], Datum::Null);
+    assert_ne!(texts[6][11], Datum::Null);
 }
 
 /// Table `every`, a column of each type Straum reads, with the extremes
@@ -77,7 +80,9 @@ fn create_every_type(connection: &mut Connection) {
             '0001-01-01 00:00:00'),
            (2, 2, 2, 99999999.99, 10000, 100000000, false, 'y', 'y', 'y',
             '294276-12-31 23:59:59+00', '294276-12-31 23:59:59'),
-           (3, 3, 3, 1, 1, 1, true, 'z', 'z', 'z', 'infinity', '-infinity');
+           (3, 3, 3, 1, 1, 1, true, 'z', 'z', 'z', 'infinity', '-infinity'),
+           (4, 4, 4, 2, 2, 2, false, 'w', 'w', 'w', '4714-11-24 00:00:00+00 BC',
+            '4714-11-24 00:00:00 BC');
          SET TIME ZONE 'UTC';",
         )
         .unwrap();
