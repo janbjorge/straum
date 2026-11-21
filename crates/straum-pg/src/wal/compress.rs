@@ -5,6 +5,8 @@
 //! reads. Compressed bytes go in, the page or value comes out. Both refuse
 //! input that does not come out at exactly `size` bytes.
 
+use super::u16_at;
+
 /// A pglz copy tag's first byte: the high nibble is the top of a 12-bit
 /// offset, the low one the length less 3. A nibble of 15 (a length of 18)
 /// says a third byte adds to the length (`pglz_decompress`).
@@ -81,8 +83,7 @@ pub(crate) fn lz4(source: &[u8], size: usize) -> Option<Vec<u8>> {
         if at == source.len() {
             break;
         }
-        let offset = source.get(at..at + LZ4_OFFSET_SIZE)?;
-        let offset = usize::from(u16::from_le_bytes([offset[0], offset[1]]));
+        let offset = usize::from(u16_at(source, at)?);
         at += LZ4_OFFSET_SIZE;
         let nibble = usize::from(token & LZ4_MATCH_LENGTH);
         let length = lz4_length(source, &mut at, nibble)? + LZ4_SHORTEST_MATCH;

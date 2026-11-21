@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::super::{
-    Block, Problem, Record, RelationFile, SlotNumber, WalError, read_u16, read_u32,
+    Block, Problem, Record, RelationFile, SlotNumber, WalError, read_u16, read_u32, u16_at,
 };
 use super::page::{HEADER_HOFF, HEAP_HEADER, TUPLE_HEADER, tuple_from_header};
 use super::{Heap, HeapChange, HeapTuple, INIT_PAGE, Page, PageId, page_id};
@@ -456,8 +456,7 @@ fn prune_slots(data: &[u8], flags: u8) -> Option<Vec<SlotNumber>> {
 
 /// The `uint16` count at `at`.
 fn count_at(data: &[u8], at: usize) -> Option<usize> {
-    let count = data.get(at..at + 2)?;
-    Some(usize::from(read_u16(count)))
+    Some(usize::from(u16_at(data, at)?))
 }
 
 /// `xl_heap_header` then the row from its null bitmap on.

@@ -15,7 +15,7 @@ use straum_domain::{ColumnType, Datum};
 
 use super::compress;
 use super::heap::HeapTuple;
-use super::{Oid, Problem};
+use super::{Oid, Problem, u32_at};
 use crate::value::{scaled, time};
 
 /// `HEAP_HASNULL` in `t_infomask`: the row has a null bitmap.
@@ -241,15 +241,9 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
     if first & VARLENA_COMPRESSED == 0 {
         return Ok(Some(Cow::Borrowed(&bytes[FOUR_BYTE_HEADER..])));
     }
-    let Some(size_and_method) = bytes.get(TCINFO) else {
+    let Some(size_and_method) = u32_at(bytes, TCINFO.start) else {
         return Err(Problem::CompressedWithoutSize);
     };
-    let size_and_method = u32::from_le_bytes([
-        size_and_method[0],
-        size_and_method[1],
-        size_and_method[2],
-        size_and_method[3],
-    ]);
     let Ok(size) = usize::try_from(size_and_method & RAW_SIZE_MASK) else {
         return Err(Problem::ValueTooBig);
     };
@@ -354,7 +348,7 @@ fn numeric(bytes: &[u8], scale: u32) -> Option<i64> {
         }
         sign => {
             let weight = bytes.get(NUMERIC_LONG_WEIGHT..NUMERIC_LONG_DIGITS)?;
-            let weight = i16::from_le_bytes([weight[0], weight[1]]);
+            let weight = i16::from_le_bytes(*weight.first_chunk()?);
             (
                 sign == NUMERIC_NEG,
                 weight.into(),

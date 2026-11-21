@@ -78,6 +78,12 @@ fn read_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+/// The two bytes at `at`, little-endian, if `bytes` reach that far.
+pub(crate) fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+    let bytes = bytes.get(at..)?.first_chunk()?;
+    Some(u16::from_le_bytes(*bytes))
+}
+
 /// The four bytes at `at`, little-endian, if `bytes` reach that far.
 pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     let bytes = bytes.get(at..)?.first_chunk()?;
