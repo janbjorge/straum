@@ -177,7 +177,7 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
             continue;
         }
         // A name SELECT lists but GROUP BY doesn't reads as a measure.
-        if fact.resolve(measure).is_some() || *measure == fact.time.name {
+        if fact.names_key(measure) {
             errors.push(AskError::KeyNotGrouped(measure.clone()));
         } else {
             errors.push(unknown_measure(fact, measure));
@@ -186,27 +186,30 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
 }
 
 fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
-    let mut bucket = false;
+    let mut time_read = false;
     for key in &ask.keys {
-        match key {
-            AskKey::Key(name) if *name == fact.time.name => {}
+        let reads_time = match key {
+            AskKey::Key(name) if *name == fact.time.name => true,
             AskKey::Key(name) => {
                 if fact.resolve(name).is_none() {
                     errors.push(unknown_key(fact, name));
                 }
-                continue;
+                false
             }
             AskKey::WiderBucket { name, width } => {
-                if !check_is_time(fact, name, errors) {
-                    continue;
+                let is_time = check_is_time(fact, name, errors);
+                if is_time {
+                    check_row_width(fact, *width, errors);
                 }
-                check_row_width(fact, *width, errors);
+                is_time
             }
+        };
+        if reads_time {
+            if time_read {
+                errors.push(AskError::TimeKeyTwice);
+            }
+            time_read = true;
         }
-        if bucket {
-            errors.push(AskError::TimeKeyTwice);
-        }
-        bucket = true;
     }
 }
 
@@ -268,7 +271,7 @@ fn unknown_key(fact: &Fact, name: &Identifier) -> AskError {
 fn check_having(fact: &Fact, ask: &Ask, condition: &MeasureCondition, errors: &mut Vec<AskError>) {
     let name = &condition.measure;
     let Some(measure) = fact.measure(name.as_str()) else {
-        if fact.resolve(name).is_some() || *name == fact.time.name {
+        if fact.names_key(name) {
             errors.push(AskError::KeyInHaving(name.clone()));
         } else {
             errors.push(unknown_measure(fact, name));

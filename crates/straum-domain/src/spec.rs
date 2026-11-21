@@ -376,6 +376,12 @@ impl Fact {
         }
         names
     }
+
+    /// Whether `name` is a key an ask may group by: one of
+    /// [`Fact::keys`], or the view's time.
+    pub(crate) fn names_key(&self, name: &Identifier) -> bool {
+        self.resolve(name).is_some() || *name == self.time.name
+    }
 }
 
 /// A view's `CREATE VIEW` statement as the spec's text wrote it, the
