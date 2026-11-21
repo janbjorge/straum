@@ -24,7 +24,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use straum_app::Lsn;
 
-use crate::wire::{Closer, Connection, ConnectionKind, first_row_value};
+use crate::wire::{Closer, Connection, first_row_value, plain_connection};
 
 /// How often the reader reads what the slot holds.
 const ROUND: Duration = Duration::from_secs(1);
@@ -276,11 +276,8 @@ fn read_slot(
     connection: &mut Option<Connection>,
     watch: &Watch,
 ) -> Result<Option<SlotReading>, Error> {
-    let opened = match connection.take() {
-        Some(opened) => opened,
-        None => open(&watch.dsn)?,
-    };
-    let connection = connection.insert(opened);
+    // Its queries can't hang the reader.
+    let connection = plain_connection(connection, &watch.dsn, QUERY_TIMEOUT)?;
     // GREATEST passes a NULL restart_lsn by, so the CASE keeps it NULL.
     let rows = connection.rows(&format!(
         "SELECT active_pid, pg_wal_lsn_diff(pg_current_wal_lsn(), \
@@ -301,13 +298,6 @@ fn read_slot(
         owner,
         retained: u64::try_from(retained).unwrap_or(0),
     }))
-}
-
-/// A plain connection whose queries can't hang the reader.
-fn open(dsn: &Dsn) -> Result<Connection, Error> {
-    let connection = Connection::connect(dsn, ConnectionKind::Sql)?;
-    connection.set_read_timeout(QUERY_TIMEOUT)?;
-    Ok(connection)
 }
 
 /// Has PostgreSQL end the session that owns the slot, which drops the

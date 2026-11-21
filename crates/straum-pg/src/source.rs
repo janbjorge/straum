@@ -29,7 +29,7 @@ use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::record_end;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::watchdog::{SlotGuard, UNWATCHED, Watching};
-use crate::wire::{Connection, ConnectionKind, first_row_value, timed_out};
+use crate::wire::{Connection, ConnectionKind, first_row_value, plain_connection, timed_out};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
 /// or the physical WAL, which `wal_level = replica` writes (ADR-0008).
@@ -504,20 +504,16 @@ pub(crate) fn slot_name() -> String {
     )
 }
 
-/// The plain connection, made on first use and after a failure.
+/// The plain connection the WAL is read on, made on first use and after a
+/// failure.
 // 'c: the connection returned is the one held in `plain`.
 pub(crate) fn plain<'c>(
     plain: &'c mut Option<Connection>,
     dsn: &Dsn,
 ) -> Result<&'c mut Connection, Error> {
-    if let Some(connection) = plain.take() {
-        return Ok(plain.insert(connection));
-    }
-    let connection = Connection::connect(dsn, ConnectionKind::Sql)?;
     // A server that stops answering must fail the reading, so the lag it
     // no longer moves can grow.
-    connection.set_read_timeout(WAL_READ_TIMEOUT)?;
-    Ok(plain.insert(connection))
+    plain_connection(plain, dsn, WAL_READ_TIMEOUT)
 }
 
 impl Source for Postgres {

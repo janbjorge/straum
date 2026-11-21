@@ -437,6 +437,23 @@ impl Drop for Connection {
     }
 }
 
+/// The plain connection kept in `kept`, connecting first when it is empty;
+/// a new one waits at most `read_timeout` on each read. Emptying `kept`
+/// after a failure makes the next call connect again.
+// 'c: the connection returned is the one held in `kept`.
+pub(crate) fn plain_connection<'c>(
+    kept: &'c mut Option<Connection>,
+    dsn: &Dsn,
+    read_timeout: Duration,
+) -> Result<&'c mut Connection, Error> {
+    if let Some(connection) = kept {
+        return Ok(connection);
+    }
+    let connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    connection.set_read_timeout(read_timeout)?;
+    Ok(kept.insert(connection))
+}
+
 /// Closes a connection's socket from another thread, which wakes a read
 /// blocked on it.
 pub(crate) struct Closer(TcpStream);
