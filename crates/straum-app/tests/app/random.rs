@@ -11,7 +11,7 @@ use straum_app::{AnswerError, App, Error, Lsn, Step, Writer};
 use straum_domain::{Ask, Condition, Datum, Literal};
 
 use crate::common::{
-    BOROUGHS, DAY, Harness, LIMITS, RANGE, RIDERS, aside, ask, int, spec, text, watched, watching,
+    BOROUGHS, DAY, Harness, LIMITS, RANGE, RIDERS, aside, ask, database, int, spec, text, watching,
     zone,
 };
 use crate::fake::{Database, Fake, Row, Write, id};
@@ -347,11 +347,9 @@ struct Followed {
 
 fn followed() -> Followed {
     let aside = Rc::new(RefCell::new(0));
-    let count = Rc::clone(&aside);
-    let app = App::new(spec(), LIMITS);
-    let harness = watched(app, move |app, _| {
-        *count.borrow_mut() += check_aside(app);
-    });
+    let database = database();
+    let writer = checking_aside(&database, &aside);
+    let harness = Harness { database, writer };
     let mut zones = Vec::new();
     for key in 1..=6 {
         let borough = BOROUGHS[usize::try_from(key).unwrap() % BOROUGHS.len()];

@@ -7,7 +7,7 @@ use straum_domain::{AnswerRow, Datum, Value};
 
 use crate::common::{
     DAY, Harness, again, ask, by_borough, count, insert, int, login, reference_answer, row, setup,
-    text, trip, zone,
+    text, trip, update, zone,
 };
 use crate::fake::{Row, Write, id};
 
@@ -46,12 +46,11 @@ fn fact_rows_change_through_the_old_row() {
         .commit(vec![trip(1, 1, 1, 10), trip(2, 1, 1, 20)]);
     writer.step().unwrap();
     database.borrow_mut().commit(vec![
-        Write::Update {
-            table: "trips",
-            key: int(1),
-            new_key: int(1),
-            row: vec![int(0), int(2), int(1), int(30), text("bo")],
-        },
+        update(
+            "trips",
+            1,
+            vec![int(0), int(2), int(1), int(30), text("bo")],
+        ),
         Write::Delete {
             table: "trips",
             key: int(2),
@@ -100,12 +99,9 @@ fn fact_change_without_the_old_row_stops_the_writer() {
     assert_eq!(database.borrow().loads[3..], ["zones", "trips", "logins"]);
     assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
 
-    database.borrow_mut().commit(vec![Write::Update {
-        table: "logins",
-        key: int(2),
-        new_key: int(2),
-        row: vec![int(DAY), int(2)],
-    }]);
+    database
+        .borrow_mut()
+        .commit(vec![update("logins", 2, vec![int(DAY), int(2)])]);
     assert!(writer.step().is_err());
     writer = again(&database);
     writer.step().unwrap();
@@ -131,12 +127,9 @@ fn dim_changes_show_at_once() {
     writer.step().unwrap();
     assert_eq!(by_borough(writer.app(), "trips"), [row(text("Bronx"), 2)]);
 
-    let lsn = database.borrow_mut().commit(vec![Write::Update {
-        table: "zones",
-        key: int(1),
-        new_key: int(1),
-        row: vec![int(1), text("Queens")],
-    }]);
+    let lsn = database
+        .borrow_mut()
+        .commit(vec![update("zones", 1, vec![int(1), text("Queens")])]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
     assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 2)]);
     assert_eq!(
@@ -152,12 +145,11 @@ fn dim_changes_show_at_once() {
     database.borrow_mut().commit(vec![trip(3, 1, 1, 30)]);
     writer.step().unwrap();
     assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 3)]);
-    let lsn = database.borrow_mut().commit(vec![Write::Update {
-        table: "trips",
-        key: int(1),
-        new_key: int(1),
-        row: vec![int(0), int(1), int(1), int(11), text("ann")],
-    }]);
+    let lsn = database.borrow_mut().commit(vec![update(
+        "trips",
+        1,
+        vec![int(0), int(1), int(1), int(11), text("ann")],
+    )]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
     assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 3)]);
     assert_eq!(database.borrow().loads.len(), 3, "no reload");
@@ -362,12 +354,7 @@ fn a_row_that_does_not_fit_stops_straum() {
 
     // Once the row is fixed, Straum starts again.
     row[3] = int(10);
-    let lsn = database.borrow_mut().commit(vec![Write::Update {
-        table: "trips",
-        key: int(1),
-        new_key: int(1),
-        row,
-    }]);
+    let lsn = database.borrow_mut().commit(vec![update("trips", 1, row)]);
     writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));

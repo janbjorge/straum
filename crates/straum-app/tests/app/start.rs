@@ -11,7 +11,8 @@ use straum_domain::{
 };
 
 use crate::common::{
-    Harness, LIMITS, again, aside, ask, count, int, login, setup, spec, text, trip, watched, zone,
+    Harness, LIMITS, again, ask, count, count_aside, int, login, setup, spec, text, trip, watched,
+    zone,
 };
 use crate::fake::id;
 
@@ -262,11 +263,6 @@ fn not_ready(table: &str) -> DuringLoad {
         trips: Err(AnswerError::NotReady),
         logins: Err(AnswerError::NotReady),
     }
-}
-
-fn count_aside(app: &App, fact: &str) -> Result<Value, AnswerError> {
-    let answered = aside(app, ask(fact, &[fact], &[]))?;
-    Ok(answered.answer.rows[0].values[0].clone())
 }
 
 thread_local! {

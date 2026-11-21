@@ -97,15 +97,15 @@ pub fn text(value: &str) -> Datum {
     Datum::Text(value.into())
 }
 
-/// A writer over the empty tables.
-pub fn setup() -> Harness {
-    harness(App::new(spec(), LIMITS))
+/// The published tables, empty, shared between a case and its writers.
+pub fn database() -> Rc<RefCell<Database>> {
+    Database::new(&TABLES).shared()
 }
 
-/// A writer for the app over the empty tables.
-pub fn harness(app: App) -> Harness {
-    let database = Database::new(&TABLES).shared();
-    let writer = Writer::new(app, Fake::new(&database));
+/// A writer over the empty tables.
+pub fn setup() -> Harness {
+    let database = database();
+    let writer = Writer::new(App::new(spec(), LIMITS), Fake::new(&database));
     Harness { database, writer }
 }
 
@@ -120,7 +120,7 @@ pub fn again(database: &Rc<RefCell<Database>>) -> Writer<Fake> {
 // Takes the case's own closure, so it may capture what the case checks
 // after; `'static` because the fake keeps it.
 pub fn watched(app: App, on_load: impl FnMut(&App, &str) + 'static) -> Harness {
-    let database = Database::new(&TABLES).shared();
+    let database = database();
     let writer = watching(app, &database, on_load);
     Harness { database, writer }
 }
@@ -147,6 +147,16 @@ pub fn insert(table: &'static str, key: i64, row: Row) -> Write {
     }
 }
 
+/// The row under primary key `key`, changed in place.
+pub fn update(table: &'static str, key: i64, row: Row) -> Write {
+    Write::Update {
+        table,
+        key: int(key),
+        new_key: int(key),
+        row,
+    }
+}
+
 /// A zone row, `[id, borough]`.
 pub fn zone(key: i64, borough: &str) -> Write {
     insert("zones", key, vec![int(key), text(borough)])
@@ -168,10 +178,14 @@ pub fn login(key: i64, zone: i64) -> Write {
 
 /// An ask of the fact's measures by these keys, over the whole range.
 pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
+    let mut keys = Vec::new();
+    for name in by {
+        keys.push(AskKey::Key(id(name)));
+    }
     Ask {
         view: id(fact),
         measures: measures.iter().copied().map(id).collect(),
-        keys: by.iter().copied().map(ask_key).collect(),
+        keys,
         filter: Vec::new(),
         having: Vec::new(),
         from: Some(0),
@@ -180,17 +194,15 @@ pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     }
 }
 
-/// `bucket`, or a key by its name.
-pub fn ask_key(name: &str) -> AskKey {
-    match name {
-        "bucket" => AskKey::Key(id("bucket")),
-        _ => AskKey::Key(id(name)),
-    }
-}
-
 /// The fact's row count over the whole range.
 pub fn count(app: &App, fact: &str) -> Result<Value, AnswerError> {
     let answered = app.ask(&ask(fact, &[fact], &[]))?;
+    Ok(answered.answer.rows[0].values[0].clone())
+}
+
+/// As [`count`], asked from another thread as [`aside`] asks.
+pub fn count_aside(app: &App, fact: &str) -> Result<Value, AnswerError> {
+    let answered = aside(app, ask(fact, &[fact], &[]))?;
     Ok(answered.answer.rows[0].values[0].clone())
 }
 
