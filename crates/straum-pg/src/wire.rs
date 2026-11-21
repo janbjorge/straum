@@ -33,6 +33,9 @@ const TRANSACTION_TIMEOUT_MAJOR: u32 = 17;
 /// `CopyBothResponse`, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
 
+/// One row of a query's result, each value as text; `None` for a null.
+pub(crate) type Row = Vec<Option<String>>;
+
 /// What a connection takes: SQL, or replication commands as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionKind {
@@ -244,7 +247,7 @@ impl Connection {
     /// Runs one simple query and returns every row of its result, owned,
     /// so it suits a small result. The rest of the result is read even
     /// after an error, so the connection stays usable.
-    pub(crate) fn rows(&mut self, sql: &str) -> Result<Vec<Vec<Option<String>>>, Error> {
+    pub(crate) fn rows(&mut self, sql: &str) -> Result<Vec<Row>, Error> {
         frontend::query(sql, &mut self.output)?;
         self.flush()?;
         let mut rows = Vec::new();
@@ -483,7 +486,7 @@ fn naming_the_place(dsn: &Dsn, error: &io::Error) -> io::Error {
 }
 
 /// A row's values as text; `None` for a null.
-fn row_fields(row: &DataRowBody) -> Result<Vec<Option<String>>, Error> {
+fn row_fields(row: &DataRowBody) -> Result<Row, Error> {
     let buffer = row.buffer();
     let mut fields = Vec::new();
     let mut ranges = row.ranges();
@@ -500,7 +503,7 @@ fn row_fields(row: &DataRowBody) -> Result<Vec<Option<String>>, Error> {
 }
 
 /// The value in `column` of the first of `rows`, if there is one.
-pub(crate) fn first_row_value(rows: &[Vec<Option<String>>], column: usize) -> Option<&str> {
+pub(crate) fn first_row_value(rows: &[Row], column: usize) -> Option<&str> {
     let row = rows.first()?;
     row.get(column)?.as_deref()
 }
