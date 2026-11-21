@@ -54,8 +54,15 @@ pub(crate) struct Publisher {
     /// Tables whose `Relation` the decoder has.
     announced: FastSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
-    unfit: Vec<(Oid, Drift)>,
+    unfit: Vec<Unfit>,
     scratch: Scratch,
+}
+
+/// A table made unfit, by OID, and how it drifted.
+#[derive(PartialEq)]
+struct Unfit {
+    oid: Oid,
+    drift: Drift,
 }
 
 /// Lists a message borrows and gives back, so a row costs no allocation
@@ -127,7 +134,10 @@ impl Publisher {
                     self.tables.insert(file, table.clone());
                     self.announced.remove(&file);
                 }
-                _ => self.unfit.push((oid, Drift::Altered)),
+                _ => self.unfit.push(Unfit {
+                    oid,
+                    drift: Drift::Altered,
+                }),
             }
         }
         for (oid, label) in fresh.labels {
@@ -146,8 +156,12 @@ impl Publisher {
     fn unfit_reading(&mut self, enum_type: Oid) {
         for table in self.tables.values() {
             let oid = table.relation.id;
-            if reads_enum(table, enum_type) && !self.unfit.contains(&(oid, Drift::Renamed)) {
-                self.unfit.push((oid, Drift::Renamed));
+            let renamed = Unfit {
+                oid,
+                drift: Drift::Renamed,
+            };
+            if reads_enum(table, enum_type) && !self.unfit.contains(&renamed) {
+                self.unfit.push(renamed);
             }
         }
     }
@@ -198,7 +212,7 @@ impl Publisher {
         decoder.feed(&Message::Begin {
             final_lsn: committed.lsn,
         })?;
-        for (oid, drift) in std::mem::take(&mut self.unfit) {
+        for Unfit { oid, drift } in std::mem::take(&mut self.unfit) {
             // The decoder knows a table by its Relation.
             if let Some(file) = self.file_with_oid(oid)
                 && let Some(table) = self.tables.get(&file)
