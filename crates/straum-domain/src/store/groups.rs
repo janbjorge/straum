@@ -215,7 +215,7 @@ pub(super) struct Groups {
     /// Each group's by-key numbers, `by.len()` a group, group 1's first.
     made_numbers: Vec<u32>,
     /// Groups so far, not counting group 0.
-    pub(super) made: usize,
+    made: usize,
     /// The by-key numbers of the group at hand.
     pub(super) numbers: Vec<u32>,
     /// Per cell of a bucket, its place in the dense table.
@@ -230,7 +230,8 @@ enum GroupIndex {
 }
 
 impl Groups {
-    /// No groups yet, for the by keys `by`.
+    /// No groups yet, for the by keys `by`; without by keys, the one
+    /// group.
     pub(super) fn new(by: &[Grouping<'_>]) -> Groups {
         let mut strides = Vec::with_capacity(by.len());
         let mut size = Some(1_usize);
@@ -250,7 +251,7 @@ impl Groups {
             Some(size) if size <= DENSE => GroupIndex::Dense(vec![0; size]),
             _ => GroupIndex::Sparse(FastMap::default()),
         };
-        Groups {
+        let mut groups = Groups {
             index,
             strides,
             before: 0,
@@ -258,7 +259,12 @@ impl Groups {
             made: 0,
             numbers: Vec::with_capacity(by.len()),
             at: Vec::new(),
+        };
+        if by.is_empty() {
+            // As in SQL without GROUP BY: one row even when nothing matches.
+            groups.insert();
         }
+        groups
     }
 
     /// Groups so far, counting group 0.

@@ -138,7 +138,7 @@ impl Store {
                 None => Grouping::lookup(self.lookup(fact, read, key.name(), cells), rollup),
             });
         }
-        let mut groups = Groups::new(&by);
+        let groups = Groups::new(&by);
         let mut filter = self.condition_checks(fact, read, &fact.filter, cells);
         filter.extend(self.condition_checks(fact, read, &ask.filter, cells));
         let mut measures = Vec::with_capacity(asked.len());
@@ -151,11 +151,6 @@ impl Store {
             };
             next.share_tally(&mut measures, asked, position);
             measures.push(next);
-        }
-        if by.is_empty() {
-            // As in SQL without GROUP BY: one row even when nothing matches.
-            groups.numbers.clear();
-            groups.insert();
         }
         CellLoop {
             rollup,
