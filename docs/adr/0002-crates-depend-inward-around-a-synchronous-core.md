@@ -1,6 +1,6 @@
 # ADR-0002: Crates depend inward around a synchronous core
 
-Status: Accepted 2026-11-10; revised 2026-11-19
+Status: Accepted 2026-11-10; revised 2026-11-21
 
 ## Context
 
@@ -62,6 +62,8 @@ the last two are the next step if the lock ever matters.
   during a load.
 - A panic aborts the process, since the store may be half written. A
   failed step ends it with exit 1 (ADR-0009).
-- A long ask delays the writer, which shows as lag, and `/readyz` waits
-  behind it: an ask over every 15-minute bucket of the taxi month holds
-  the lock 2.4 to 3.0 s.
+- A long ask delays the writer, which shows as lag: an ask over every
+  15-minute bucket of the taxi month holds the lock 2.4 to 3.0 s.
+  `/readyz` and `/status` don't wait behind it. They read only the
+  progress, which the writer never holds while it waits for the
+  store's lock.

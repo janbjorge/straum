@@ -98,7 +98,6 @@ spec:
               sleep:
                 seconds: 5
           # Off while the tables load and while straum lags past maxLag.
-          # A long ask can hold /readyz up, hence the timeout.
           readinessProbe:
             httpGet:
               path: /readyz
