@@ -670,6 +670,16 @@ fn all_digits(text: &str) -> bool {
     true
 }
 
+/// The items printed and joined by `, `.
+// Any printable list: names, SELECT positions or widths.
+pub(crate) fn comma_list(items: &[impl fmt::Display]) -> String {
+    let mut texts = Vec::with_capacity(items.len());
+    for item in items {
+        texts.push(item.to_string());
+    }
+    texts.join(", ")
+}
+
 /// A table reference's name and alias, as written.
 // Borrows both from the tree, which outlives the walk; a copy would clone
 // them for nothing.

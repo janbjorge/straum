@@ -9,6 +9,8 @@ use straum_domain::{
     AskError, ColumnType, Comparison, Identifier, Instead, Literal, MAX_SCALE, Width, decimal,
 };
 
+use crate::sql::comma_list;
+
 /// The line a client reads for `error`.
 pub fn describe_ask_error(error: &AskError) -> String {
     Described { error }.to_string()
@@ -122,16 +124,8 @@ fn write_instead(formatter: &mut fmt::Formatter<'_>, instead: &Instead, kind: &s
     match instead {
         Instead::Closest(name) => write!(formatter, "; did you mean {name}?"),
         Instead::Every(names) if names.is_empty() => Ok(()),
-        Instead::Every(names) => write!(formatter, "; the {kind} are {}", joined(names)),
+        Instead::Every(names) => write!(formatter, "; the {kind} are {}", comma_list(names)),
     }
-}
-
-fn joined(names: &[Identifier]) -> String {
-    let mut texts = Vec::with_capacity(names.len());
-    for name in names {
-        texts.push(name.as_str());
-    }
-    texts.join(", ")
 }
 
 /// A HAVING value of another kind than its measure's.
@@ -150,14 +144,10 @@ fn write_incomparable(
 
 /// [`AskError::WidthNotKept`], naming every width the view keeps.
 fn write_not_kept(formatter: &mut fmt::Formatter<'_>, width: Width, kept: &[Width]) -> fmt::Result {
-    let mut texts = Vec::with_capacity(kept.len());
-    for kept_width in kept {
-        texts.push(kept_width.to_string());
-    }
     write!(
         formatter,
         "bucket width '{width}' is not kept by the view; it keeps {}",
-        texts.join(", ")
+        comma_list(kept)
     )
 }
 

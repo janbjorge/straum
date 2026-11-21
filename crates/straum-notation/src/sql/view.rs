@@ -7,8 +7,6 @@
 //! aggregates and the `buckets` item, and `dims` merges each view's joins into
 //! the dims of the spec.
 
-use std::fmt;
-
 use sqlparser::ast as sql;
 use straum_domain::{
     Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Via,
@@ -16,7 +14,7 @@ use straum_domain::{
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
-    Clause, Names, NullTest, Reported, SqlError, Walker, and_parts, line, statements,
+    Clause, Names, NullTest, Reported, SqlError, Walker, and_parts, comma_list, line, statements,
     without_leading_zeros, written_digits,
 };
 
@@ -477,13 +475,4 @@ fn measures_share_filter(measures: &[Measure]) -> bool {
         }
     }
     true
-}
-
-// Any printable list: column names or SELECT positions.
-fn comma_list(items: &[impl fmt::Display]) -> String {
-    let mut texts = Vec::new();
-    for item in items {
-        texts.push(item.to_string());
-    }
-    texts.join(", ")
 }
