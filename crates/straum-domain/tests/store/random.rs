@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::common::{Rng, condition, dim_row, id, lit, text};
 use crate::reference::measure_scale;
-use crate::{DAY, DRO, DimRows, Dims, END, HOME, HOUR, KEYS, START, WEEK, WIDTH};
+use crate::{DAY, DRO, DimRows, Dims, END, HOME, HOUR, KEYS, START, WEEK, WIDTH, trips_ask};
 use straum_domain::{
     Aggregate, Answer, Ask, AskKey, Comparison, Condition, Datum, Fact, Identifier, Literal,
     MeasureCondition, Spec, Store, Value, Width,
@@ -255,14 +255,12 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let from = first + step * rng.int(-10, buckets);
     let to = from + step * rng.int(1, buckets + 20);
     Ask {
-        view: id("trips"),
         measures,
-        keys: by,
         filter,
         having,
         from: maybe_open(rng, from),
         to: maybe_open(rng, to),
-        bounded: None,
+        ..trips_ask(&[], by)
     }
 }
 

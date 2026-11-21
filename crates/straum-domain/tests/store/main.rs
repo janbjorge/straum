@@ -3,7 +3,8 @@
 //! inserts, updates and deletes of trips and dim rows, and hand-made cases
 //! for joins, ranges and errors. Rows hold the fact's columns only;
 //! a dim's values come through its projection when asked. This file holds
-//! the row layout and the modules, one per subject.
+//! the row layout, the ask of the trips the modules start from, and the
+//! modules, one per subject.
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -21,7 +22,9 @@ mod views;
 mod workload;
 
 use std::collections::BTreeMap;
-use straum_domain::{ColumnType, Datum};
+use straum_domain::{Ask, AskKey, ColumnType, Datum, Store, Value};
+
+use common::id;
 
 /// The `date_bin` width of every view here, a quarter hour, in seconds.
 const WIDTH: u32 = 900;
@@ -106,3 +109,27 @@ const KEYS: [&str; 14] = [
     "vend_label",
     "home_borough",
 ];
+
+/// An ask of the trips view for `measures` by `keys` over every bucket
+/// the tests fill, with no filter or HAVING.
+fn trips_ask(measures: &[&str], keys: Vec<AskKey>) -> Ask {
+    let mut names = Vec::with_capacity(measures.len());
+    for name in measures {
+        names.push(id(name));
+    }
+    Ask {
+        view: id("trips"),
+        measures: names,
+        keys,
+        filter: Vec::new(),
+        having: Vec::new(),
+        from: Some(START),
+        to: Some(END),
+        bounded: None,
+    }
+}
+
+/// The measures of the first row of the answer to `ask`.
+fn first_values(store: &Store, ask: &Ask) -> Vec<Value> {
+    store.ask(ask).unwrap().rows[0].values.clone()
+}

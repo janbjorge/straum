@@ -6,7 +6,7 @@
 use crate::common::{Rng, id};
 use crate::random::trip;
 use crate::views::{Widths, spec, typed, zones_spec};
-use crate::{AT, END, HOUR, START, WEEK, WIDTH};
+use crate::{AT, END, HOUR, START, WEEK, WIDTH, first_values, trips_ask};
 use straum_domain::{AnswerRow, Ask, AskKey, Datum, RowError, Store, Value, Width};
 
 /// A row of the zones view without its join: a time and pay 1.
@@ -170,30 +170,20 @@ fn trips_reaching(store: &Store, from: Option<i64>, to: Option<i64>) -> Value {
         to,
         ..trips_over(START, END, Vec::new())
     };
-    first_value(store, &ask)
-}
-
-/// The first measure of the first row of the answer.
-pub(crate) fn first_value(store: &Store, ask: &Ask) -> Value {
-    store.ask(ask).unwrap().rows[0].values[0].clone()
+    first_values(store, &ask)[0].clone()
 }
 
 /// The trips over `from..to`.
 fn trips_counted(store: &Store, from: i64, to: i64) -> Value {
-    first_value(store, &trips_over(from, to, Vec::new()))
+    first_values(store, &trips_over(from, to, Vec::new()))[0].clone()
 }
 
 /// The count of trips, by bucket or not, over a range.
 fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
     Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys,
-        filter: Vec::new(),
-        having: Vec::new(),
         from: Some(from),
         to: Some(to),
-        bounded: None,
+        ..trips_ask(&["trips"], keys)
     }
 }
 

@@ -6,9 +6,9 @@
 use crate::common::id;
 use crate::rows::base_trip_with;
 use crate::views::{spec, trip_types, typed};
-use crate::{AT, END, FARE, PAY, START, TIP, TOLLED};
+use crate::{AT, FARE, PAY, START, TIP, TOLLED, trips_ask};
 use straum_domain::{
-    Ask, AskError, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Identifier, Literal,
+    Ask, AskError, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Literal,
     MeasureCondition, Start, Store, Window,
 };
 
@@ -60,19 +60,10 @@ fn decimal(units: i128, scale: u32) -> Literal {
 
 /// The ask of [`MEASURES`] by `keys`, kept by `conditions`.
 fn ask(keys: Vec<AskKey>, filter: Vec<Condition>, conditions: Vec<MeasureCondition>) -> Ask {
-    let mut measures: Vec<Identifier> = Vec::new();
-    for name in MEASURES {
-        measures.push(id(name));
-    }
     Ask {
-        view: id("trips"),
-        measures,
-        keys,
         filter,
         having: conditions,
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
+        ..trips_ask(&MEASURES, keys)
     }
 }
 

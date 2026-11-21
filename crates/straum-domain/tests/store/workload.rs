@@ -9,8 +9,8 @@ use crate::random::{
 };
 use crate::reference::reference;
 use crate::views::{spec, spec_joining, trip_types, typed};
-use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, END, KEYS, ROW_COLUMNS, SEEDS, START, STEPS};
-use straum_domain::{Ask, AskKey, Datum, Identifier, RefKind, Spec, Store};
+use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, KEYS, ROW_COLUMNS, SEEDS, STEPS, trips_ask};
+use straum_domain::{AskKey, Datum, Identifier, RefKind, Spec, Store};
 
 /// The second view of [`Views::Two`], a copy of the trips view.
 const TWIN: &str = "twins";
@@ -291,16 +291,7 @@ fn every_key_at_once_uses_the_sparse_index() {
     for key in KEYS {
         keys.push(AskKey::Key(id(key)));
     }
-    let ask = Ask {
-        view: id("trips"),
-        measures: vec![id("trips"), id("riders")],
-        keys,
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let ask = trips_ask(&["trips", "riders"], keys);
     assert_eq!(
         store.ask(&ask).unwrap(),
         reference(&spec, &ask, &rows, &dims)

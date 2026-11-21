@@ -5,9 +5,8 @@
 
 use crate::common::{Rng, attribute, by_key, condition, id, lit, table, text};
 use crate::random::trip;
-use crate::ranges::first_value;
 use crate::views::{new_measure, spec, typed};
-use crate::{AT, DRO, END, FARE, PU, SHARED, START, VENDOR, WIDTH};
+use crate::{AT, DRO, FARE, PU, SHARED, START, VENDOR, WIDTH, first_values, trips_ask};
 use straum_domain::{
     Aggregate, Ask, AskKey, ColumnType, Datum, Dim, Fact, Ref, RefKind, RowError, Spec, Store,
     Time, Value, Via, Width,
@@ -98,16 +97,7 @@ fn a_dim_change_moves_the_answer_at_once() {
     row[AT] = Datum::Int(START);
     row[VENDOR] = Datum::Int(1);
     store.add_row("trips", &row).unwrap();
-    let by_label = Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: vec![AskKey::Key(id("vend_label"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let by_label = trips_ask(&["trips"], vec![AskKey::Key(id("vend_label"))]);
     assert_eq!(first_keys(&store, &by_label), [text("v1")]);
     let cells = store.cells("trips");
     assert_eq!(store.bound_cells("trips"), cells);
@@ -190,16 +180,7 @@ fn a_short_dim_update_leaves_every_answer_as_it_was() {
     row[AT] = Datum::Int(START);
     row[VENDOR] = Datum::Int(1);
     store.add_row("trips", &row).unwrap();
-    let by_label = Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: vec![AskKey::Key(id("vend_label"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let by_label = trips_ask(&["trips"], vec![AskKey::Key(id("vend_label"))]);
     let before = store.ask(&by_label).unwrap();
     // Same key, one column short, then one column long. Each must fail
     // before the old row leaves.
@@ -249,20 +230,6 @@ fn trip_at_start_from(rng: &mut Rng, pu: Datum, vendor: Datum) -> Vec<Datum> {
     row
 }
 
-/// The trips by combo label over every bucket the tests fill.
-fn by_combo_label() -> Ask {
-    Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: vec![AskKey::Key(id("combo_label"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    }
-}
-
 /// A dim keyed by several columns matches on all of them; a via that is
 /// null joins nothing, even when a dim row has a null there.
 #[test]
@@ -279,7 +246,8 @@ fn a_composite_key_matches_every_column() {
         store.add_rows("combos", &two_combos()).unwrap();
         let row = trip_at_start_from(&mut rng, pu, vendor);
         store.add_row("trips", &row).unwrap();
-        let answer = store.ask(&by_combo_label()).unwrap();
+        let by_label = trips_ask(&["trips"], vec![AskKey::Key(id("combo_label"))]);
+        let answer = store.ask(&by_label).unwrap();
         assert_eq!(answer.rows[0].keys, [label]);
     }
 }
@@ -294,9 +262,10 @@ fn a_filter_on_a_composite_key_attribute_reads_the_dim() {
     // A row with a null in its key is never held: nothing could join it.
     assert_eq!(store.dim_rows("combos"), Some(2));
     // Filtered on the attribute too.
-    let mut by_label = by_combo_label();
-    by_label.filter = vec![condition("combo_label", vec![lit("x")])];
-    by_label.keys.clear();
+    let by_label = Ask {
+        filter: vec![condition("combo_label", vec![lit("x")])],
+        ..trips_ask(&["trips"], Vec::new())
+    };
     let row = trip_at_start_from(&mut Rng(4), Datum::Int(1), Datum::Int(1));
     store.add_row("trips", &row).unwrap();
     assert_eq!(
@@ -326,24 +295,15 @@ fn a_filter_on_an_attribute_reads_the_dim() {
     row[VENDOR] = Datum::Int(2);
     row[FARE] = Datum::Int(100);
     store.add_row("trips", &row).unwrap();
-    let mq_fare = Ask {
-        view: id("trips"),
-        measures: vec![id("mq_fare")],
-        keys: Vec::new(),
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
-    assert_eq!(first_value(&store, &mq_fare), Value::Int(100));
+    let mq_fare = trips_ask(&["mq_fare"], Vec::new());
+    assert_eq!(first_values(&store, &mq_fare), [Value::Int(100)]);
     store
         .remove_row("zones", &[Datum::Int(2), text("m"), text("a")])
         .unwrap();
     store
         .add_row("zones", &[Datum::Int(2), text("b"), text("a")])
         .unwrap();
-    assert_eq!(first_value(&store, &mq_fare), Value::Null);
+    assert_eq!(first_values(&store, &mq_fare), [Value::Null]);
 }
 
 #[test]
@@ -465,16 +425,7 @@ fn a_key_of_two_columns_read_through_the_projection_matches_on_both() {
         }
         store.add_row("trips", &row).unwrap();
     }
-    let ask = Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: vec![AskKey::Key(id("combo_label"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let ask = trips_ask(&["trips"], vec![AskKey::Key(id("combo_label"))]);
     let mut counted = Vec::new();
     for row in store.ask(&ask).unwrap().rows {
         counted.push((row.keys[0].clone(), row.values[0].clone()));

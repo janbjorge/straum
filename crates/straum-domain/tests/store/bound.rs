@@ -4,7 +4,7 @@
 
 use crate::common::{id, text};
 use crate::views::{Widths, zones_spec};
-use crate::{END, START};
+use crate::{START, trips_ask};
 use straum_domain::{Ask, AskKey, Attribute, Datum, RefKind, Spec, Store, Value};
 
 /// Zones 1 to 3 in borough m, 4 to 6 in q, and a trip from each at
@@ -30,21 +30,7 @@ fn zoned_store() -> Store {
 
 /// The trips by borough over every bucket the tests fill.
 fn by_borough() -> Ask {
-    by_borough_over(START, END)
-}
-
-/// The trips by borough over `from..to`.
-fn by_borough_over(from: i64, to: i64) -> Ask {
-    Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: vec![AskKey::Key(id("borough"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(from),
-        to: Some(to),
-        bounded: None,
-    }
+    trips_ask(&["trips"], vec![AskKey::Key(id("borough"))])
 }
 
 /// The bound cells are keyed by the dim's column, so the zones' boroughs

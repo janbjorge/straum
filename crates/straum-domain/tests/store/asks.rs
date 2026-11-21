@@ -5,7 +5,7 @@
 use crate::common::{Rng, condition, id, lit};
 use crate::random::trip;
 use crate::views::{spec, trip_types, typed};
-use crate::{AT, END, FARE, PAY, ROW_COLUMNS, START, TIP};
+use crate::{AT, FARE, PAY, ROW_COLUMNS, START, TIP, first_values, trips_ask};
 use straum_domain::{
     AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Instead, Literal,
     Store, Value,
@@ -14,14 +14,8 @@ use straum_domain::{
 /// The trips over every bucket the tests fill, filtered.
 fn trips_filtered(filter: Vec<Condition>) -> Ask {
     Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: Vec::new(),
         filter,
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
+        ..trips_ask(&["trips"], Vec::new())
     }
 }
 
@@ -142,16 +136,10 @@ fn answer_scales(store: &Store, ask: &Ask) -> Vec<u32> {
 #[test]
 fn types_stay_through_clear() {
     let mut store = Store::new(spec());
-    let ask = Ask {
-        view: id("trips"),
-        measures: vec![id("trips"), id("fare"), id("tip_max")],
-        keys: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let ask = trips_ask(
+        &["trips", "fare", "tip_max"],
+        vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
+    );
     assert_eq!(answer_scales(&store, &ask), [0, 0, 0, 0, 0]);
     let mut types = vec![ColumnType::Int; ROW_COLUMNS];
     types[PAY] = ColumnType::Numeric { scale: 3 };
@@ -171,16 +159,10 @@ fn types_stay_through_clear() {
 #[test]
 fn columns_name_keys_and_measures_as_asked() {
     let store = Store::new(spec());
-    let ask = Ask {
-        view: id("trips"),
-        measures: vec![id("fare"), id("trips")],
-        keys: vec![AskKey::Key(id("pickup_zone")), AskKey::Key(id("bucket"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let ask = trips_ask(
+        &["fare", "trips"],
+        vec![AskKey::Key(id("pickup_zone")), AskKey::Key(id("bucket"))],
+    );
     let columns = store.ask(&ask).unwrap().columns;
     let mut names = Vec::new();
     let mut times = Vec::new();
@@ -201,14 +183,8 @@ fn ask_without_by_answers_one_row() {
         measures.push(measure.name.clone());
     }
     let ask = Ask {
-        view: id("trips"),
         measures,
-        keys: Vec::new(),
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
+        ..trips_ask(&[], Vec::new())
     };
     let zero = Value::Int(0);
     let null = Value::Null;
@@ -267,13 +243,7 @@ fn unknown_names() {
     assert!(store.cells("zones").is_none());
     let ask = Ask {
         view: id("zones"),
-        measures: vec![id("trips")],
-        keys: Vec::new(),
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
+        ..trips_ask(&["trips"], Vec::new())
     };
     assert_eq!(
         store.ask(&ask),
@@ -295,7 +265,7 @@ fn pay_in(values: &[i64]) -> Condition {
 
 /// The trips `filter` keeps.
 fn trips_kept(store: &Store, filter: Vec<Condition>) -> Value {
-    store.ask(&trips_filtered(filter)).unwrap().rows[0].values[0].clone()
+    first_values(store, &trips_filtered(filter))[0].clone()
 }
 
 /// Conditions on one key all hold: the values they share, as SQL's AND

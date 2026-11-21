@@ -7,7 +7,7 @@ use crate::common::{Rng, by_key, id, table, text};
 use crate::random::trip;
 use crate::rows::base_trip_with;
 use crate::views::{new_measure, percentile_spec, spec, typed};
-use crate::{AT, END, FARE, HOUR, PU, RIDER, START, TIP, TOLLED, WIDTH};
+use crate::{AT, FARE, HOUR, PU, RIDER, START, TIP, TOLLED, WIDTH, first_values, trips_ask};
 use straum_domain::{
     Aggregate, Answer, Ask, AskKey, Datum, Fact, RowError, Spec, Store, Time, Value, Width,
 };
@@ -23,20 +23,7 @@ fn values_of(answer: Answer) -> Vec<Vec<Value>> {
 
 /// The named measures by pay over every bucket the tests fill.
 fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
-    let mut names = Vec::with_capacity(measures.len());
-    for name in measures {
-        names.push(id(name));
-    }
-    let ask = Ask {
-        view: id("trips"),
-        measures: names,
-        keys: vec![AskKey::Key(id("pay"))],
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let ask = trips_ask(measures, vec![AskKey::Key(id("pay"))]);
     values_of(store.ask(&ask).unwrap())
 }
 
@@ -123,23 +110,10 @@ fn rows_collapse_into_cells() {
     assert_eq!(store.cells("trips"), Some(3));
 }
 
-fn first_values(store: &Store, ask: &Ask) -> Vec<Value> {
-    store.ask(ask).unwrap().rows[0].values.clone()
-}
-
 #[test]
 fn removing_an_extreme_reveals_the_next() {
     let mut store = Store::new(spec());
-    let ask = Ask {
-        view: id("trips"),
-        measures: vec![id("tip_min"), id("tip_max")],
-        keys: Vec::new(),
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
-        to: Some(END),
-        bounded: None,
-    };
+    let ask = trips_ask(&["tip_min", "tip_max"], Vec::new());
     let mut row = trip(&mut Rng(11));
     row[AT] = Datum::Int(START);
     let mut rows = Vec::new();
@@ -174,14 +148,8 @@ fn tip_row(pay: i64, tip: Datum) -> Vec<Datum> {
 /// The trips and those tipped, by `keys`, over the first hour.
 fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
     let ask = Ask {
-        view: id("trips"),
-        measures: vec![id("trips"), id("tipped")],
-        keys,
-        filter: Vec::new(),
-        having: Vec::new(),
-        from: Some(START),
         to: Some(START + i64::from(HOUR)),
-        bounded: None,
+        ..trips_ask(&["trips", "tipped"], keys)
     };
     values_of(store.ask(&ask).unwrap())
 }
