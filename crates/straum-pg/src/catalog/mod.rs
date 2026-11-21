@@ -775,7 +775,6 @@ fn check_joins(fact: &Fact, tables: &Tables, problems: &mut Vec<Problem>) {
 
 /// Each filter's literals fit their column, and an enum's are its labels.
 fn check_filters(fact: &Fact, tables: &Tables, catalog: &Catalog, problems: &mut Vec<Problem>) {
-    let facts = tables.fact(&fact.name);
     let mut filters = Vec::new();
     for measure in &fact.measures {
         filters.push((Filter::Measure(measure.name.clone()), &measure.filter));
@@ -783,20 +782,10 @@ fn check_filters(fact: &Fact, tables: &Tables, catalog: &Catalog, problems: &mut
     filters.push((Filter::Where, &fact.filter));
     for (what, filter) in filters {
         for condition in filter {
-            let (table, column, column_type) = match fact
-                .resolve(&condition.key)
-                .expect("checked by Spec::new")
-            {
-                Key::ByKey(ByKey::Column { column, .. }) => {
-                    (facts, column, facts.column_type(column))
-                }
-                Key::ByKey(ByKey::IsNull { .. }) => (facts, &fact.time.column, ColumnType::Bool),
-                Key::Attribute(reference, attribute) => {
-                    let dim = tables.dim(&reference.dim);
-                    (dim, &attribute.column, dim.column_type(&attribute.column))
-                }
-            };
-            let labels = catalog.labels(table, column);
+            let FilterColumn {
+                column_type,
+                labels,
+            } = filter_column(fact, &condition.key, tables, catalog);
             for value in &condition.values {
                 // The rule asks follow too.
                 let problem = if !column_type.fits(value) {
@@ -806,14 +795,14 @@ fn check_filters(fact: &Fact, tables: &Tables, catalog: &Catalog, problems: &mut
                         column_type,
                         literal: literal(value),
                     }
-                } else if let (Some((type_name, labels)), Literal::Text(text)) = (&labels, value)
-                    && !labels.contains(&text.as_str())
+                } else if let (Some(labels), Literal::Text(text)) = (&labels, value)
+                    && !labels.labels.contains(text)
                 {
                     ViewProblem::NotALabel {
                         filter: what.clone(),
                         key: condition.key.clone(),
                         literal: literal(value),
-                        type_name: (*type_name).to_owned(),
+                        type_name: labels.type_name.clone(),
                     }
                 } else {
                     continue;
@@ -827,9 +816,51 @@ fn check_filters(fact: &Fact, tables: &Tables, catalog: &Catalog, problems: &mut
     }
 }
 
+/// What a filter's key compares its literals with.
+struct FilterColumn {
+    column_type: ColumnType,
+    /// The labels of its column's enum; `None` when it is no enum.
+    labels: Option<EnumLabels>,
+}
+
+/// The type a filter on `key` compares, and the labels of its column when
+/// that is an enum.
+fn filter_column(
+    fact: &Fact,
+    key: &Identifier,
+    tables: &Tables,
+    catalog: &Catalog,
+) -> FilterColumn {
+    let facts = tables.fact(&fact.name);
+    match fact.resolve(key).expect("checked by Spec::new") {
+        Key::ByKey(ByKey::Column { column, .. }) => FilterColumn {
+            column_type: facts.column_type(column),
+            labels: catalog.labels(facts, column),
+        },
+        // A null test is true or false, whatever its column.
+        Key::ByKey(ByKey::IsNull { .. }) => FilterColumn {
+            column_type: ColumnType::Bool,
+            labels: None,
+        },
+        Key::Attribute(reference, attribute) => {
+            let dim = tables.dim(&reference.dim);
+            FilterColumn {
+                column_type: dim.column_type(&attribute.column),
+                labels: catalog.labels(dim, &attribute.column),
+            }
+        }
+    }
+}
+
+/// An enum type's name, as `format_type` prints it, and its labels.
+struct EnumLabels {
+    type_name: String,
+    labels: Vec<String>,
+}
+
 impl Catalog {
     /// An enum column's type name and labels; `None` for any other column.
-    fn labels(&self, table: &Checked, column: &Identifier) -> Option<(&str, Vec<&str>)> {
+    fn labels(&self, table: &Checked, column: &Identifier) -> Option<EnumLabels> {
         let class = self.class(table.schema.as_str(), table.table_name.as_str())?;
         let column = class.column(column)?;
         if column.typtype != "e" {
@@ -838,10 +869,13 @@ impl Catalog {
         let mut labels = Vec::new();
         for label in &self.labels {
             if label.type_oid == column.type_oid {
-                labels.push(label.label.as_str());
+                labels.push(label.label.clone());
             }
         }
-        Some((&column.type_name, labels))
+        Some(EnumLabels {
+            type_name: column.type_name.clone(),
+            labels,
+        })
     }
 
     fn class(&self, schema: &str, name: &str) -> Option<&Class> {
