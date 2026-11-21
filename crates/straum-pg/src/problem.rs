@@ -125,10 +125,17 @@ pub(crate) enum TableProblem {
     /// TYPE` rewrites the rows, even to the same type, and the logical
     /// stream sends none of it.
     Altered,
-    /// No `REPLICA IDENTITY FULL`; `kind` is "fact" or "dim".
+    /// No `REPLICA IDENTITY FULL`.
     ReplicaIdentity {
-        kind: &'static str,
+        kind: TableKind,
     },
+}
+
+/// Which of the spec's two kinds of table a table is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableKind {
+    Fact,
+    Dim,
 }
 
 /// What is wrong with one column of a spec table.
@@ -420,6 +427,15 @@ impl fmt::Display for ViewProblem {
                 formatter,
                 "{filter} compares {key} with {literal}, which is no label of {type_name}"
             ),
+        }
+    }
+}
+
+impl fmt::Display for TableKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TableKind::Fact => formatter.write_str("fact"),
+            TableKind::Dim => formatter.write_str("dim"),
         }
     }
 }

@@ -14,7 +14,8 @@ use straum_domain::{
 
 use crate::error::Error;
 use crate::problem::{
-    ColumnFix, ColumnProblem, Filter, Problem, ServerProblem, TableNames, TableProblem, ViewProblem,
+    ColumnFix, ColumnProblem, Filter, Problem, ServerProblem, TableKind, TableNames, TableProblem,
+    ViewProblem,
 };
 use crate::source::Replication;
 use crate::unexpected::Unexpected;
@@ -346,7 +347,7 @@ pub(crate) fn check(
     for dim in spec.dims() {
         let member = Member {
             name: dim.name.clone(),
-            kind: "dim",
+            kind: TableKind::Dim,
             table: dim.table.clone(),
             uses: dim_uses(dim),
             as_text: dim.as_text.clone(),
@@ -357,7 +358,7 @@ pub(crate) fn check(
     for fact in spec.facts() {
         let member = Member {
             name: fact.name.clone(),
-            kind: "fact",
+            kind: TableKind::Fact,
             table: fact.table.clone(),
             uses: fact_uses(fact),
             as_text: fact.as_text.clone(),
@@ -530,8 +531,7 @@ fn fact_uses(fact: &Fact) -> Vec<ColumnUse> {
 /// reads for what, and which of them are written `::text`.
 struct Member {
     name: Identifier,
-    /// "fact" or "dim", for problems.
-    kind: &'static str,
+    kind: TableKind,
     table: straum_domain::Table,
     /// Every column read, with what it is for; a column may come twice.
     uses: Vec<ColumnUse>,
