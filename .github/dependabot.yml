@@ -1,0 +1,19 @@
+# Weekly pull requests for the pinned actions and the Cargo dependencies,
+# one per ecosystem. The tools ci.yml downloads by URL (mdBook,
+# helm-unittest, kubeconform) and the Rust pin are bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]

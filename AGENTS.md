@@ -46,7 +46,8 @@ docs, ADR-0014 says which pages use the taxi trips and which the
 - Change to the Dockerfile or `compose.yaml`: run `just image`.
 
 `just audit` checks `Cargo.lock` against the RustSec advisories; it
-needs cargo-audit.
+needs cargo-audit. Dependabot opens weekly pull requests for the
+pinned actions and the Cargo dependencies.
 
 `just --list` names every recipe: the checks above, `just correctness`,
 `just heap-fixtures`, `just image`, `just taxi
