@@ -310,19 +310,19 @@ fn check_having(fact: &Fact, ask: &Ask, condition: &MeasureCondition, errors: &m
 /// An answer's columns go by name, so two can't share one. The time
 /// twice is [`AskError::TimeKeyTwice`].
 fn check_names(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
-    let mut asked: Vec<&str> = Vec::new();
+    let mut asked: Vec<&Identifier> = Vec::new();
     for key in &ask.keys {
         if fact.time_width(key).is_none() {
-            asked.push(key.name().as_str());
+            asked.push(key.name());
         }
     }
     for measure in &ask.measures {
-        asked.push(measure.as_str());
+        asked.push(measure);
     }
     let mut names = HashSet::new();
     for name in asked {
         if !names.insert(name) {
-            errors.push(AskError::AskedTwice(name.to_owned()));
+            errors.push(AskError::AskedTwice(name.clone()));
         }
     }
 }
@@ -420,7 +420,7 @@ pub enum AskError {
         kept: Vec<Width>,
     },
     /// A key or measure named twice, or a key and a measure of one name.
-    AskedTwice(String),
+    AskedTwice(Identifier),
     /// A measure in WHERE, which filters rows; HAVING compares measures.
     MeasureInWhere(Identifier),
     /// A key in HAVING, which compares measures; WHERE filters keys.

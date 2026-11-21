@@ -714,8 +714,8 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
                 instead: Instead::Every(vec![id("bucket"), id("a"), id("z_id"), id("name")])
             },
             AskError::TimeKeyTwice,
-            AskError::AskedTwice("name".into()),
-            AskError::AskedTwice("n".into()),
+            AskError::AskedTwice(id("name")),
+            AskError::AskedTwice(id("n")),
             AskError::RangeUnaligned {
                 at: 60,
                 width: Width { seconds: 3_600 },

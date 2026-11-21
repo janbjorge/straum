@@ -47,7 +47,7 @@ fn ask_errors_display() {
         ),
         (AskError::NoMeasures, "no measures asked"),
         (AskError::TimeKeyTwice, "more than one time key"),
-        (AskError::AskedTwice("n".into()), "n asked twice"),
+        (AskError::AskedTwice(id("n")), "n asked twice"),
         (
             AskError::RangeEmpty { from: 2, to: 1 },
             "empty range [2, 1)",
