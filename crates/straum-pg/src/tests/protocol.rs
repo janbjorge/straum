@@ -272,9 +272,13 @@ fn query_errors() {
         "{error}"
     );
 
-    // The server hangs up mid-query.
+    // The server hangs up mid-query, between messages and inside one.
     let mut connection = connect(vec![now(signed_in())], ConnectionKind::Sql).unwrap();
-    drop(connection.execute("SELECT 1"));
+    let error = connection.execute("SELECT 1").unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "connection to PostgreSQL: PostgreSQL closed the connection"
+    );
     let mut connection = connect(
         vec![now(signed_in()), now(b"D".to_vec())],
         ConnectionKind::Sql,
