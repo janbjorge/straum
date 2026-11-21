@@ -115,7 +115,7 @@ pub fn format_date(days: i32) -> String {
 /// Days since 1970-01-01, after Howard Hinnant's `days_from_civil`.
 /// `None` for a month or day the calendar lacks, such as 2023-02-29, and
 /// for a year too far out to count in days.
-pub fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }

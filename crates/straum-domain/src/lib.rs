@@ -39,7 +39,7 @@ mod width;
 pub use aggregate::{Aggregate, Fraction, Reads};
 pub use ask::{Ask, AskError, AskKey, Comparison, Instead, MeasureCondition};
 pub use closest::closest;
-pub use date::{Era, days_from_civil, format_date, parse_calendar_day, parse_date};
+pub use date::{Era, format_date, parse_calendar_day, parse_date};
 pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;
