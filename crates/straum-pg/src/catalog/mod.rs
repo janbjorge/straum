@@ -37,8 +37,10 @@ const OLDEST_VERSION_NUM: u32 = OLDEST_MAJOR * VERSION_NUM_PER_MAJOR;
 /// records are parsed by its own layout, and a newer one's are unknown.
 pub(crate) const NEWEST_PHYSICAL_MAJOR: u32 = 19;
 const NEWER_THAN_PHYSICAL_VERSION_NUM: u32 = (NEWEST_PHYSICAL_MAJOR + 1) * VERSION_NUM_PER_MAJOR;
-/// From 19, a logical slot turns logical decoding on under `replica`.
-const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = 190_000;
+/// The first major in which a logical slot turns logical decoding on
+/// under `replica`.
+const LOGICAL_UNDER_REPLICA_MAJOR: u32 = 19;
+const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = LOGICAL_UNDER_REPLICA_MAJOR * VERSION_NUM_PER_MAJOR;
 
 /// A spec table as PostgreSQL has it, ready to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
