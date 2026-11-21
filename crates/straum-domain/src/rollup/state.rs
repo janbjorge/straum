@@ -214,9 +214,7 @@ impl State {
             (State::Extent { mins, maxs, counts }, &Datum::Int(number)) => {
                 held(counts[cell].sub(number, 1))?;
                 if number == mins[cell] || number == maxs[cell] {
-                    let ends = counts[cell].ends();
-                    mins[cell] = ends.least;
-                    maxs[cell] = ends.greatest;
+                    refresh_ends(cell, mins, maxs, counts);
                 }
             }
             (State::Distinct(cells), _) => held(cells.remove(cell, value))?,
@@ -341,9 +339,7 @@ impl State {
                 },
             ) => {
                 counts[cell].add_counts(&source_counts[source_cell]);
-                let ends = counts[cell].ends();
-                mins[cell] = ends.least;
-                maxs[cell] = ends.greatest;
+                refresh_ends(cell, mins, maxs, counts);
             }
             (State::Distinct(cells), State::Distinct(source_cells)) => {
                 cells.add_from(cell, source_cells, source_cell);
@@ -399,9 +395,7 @@ impl State {
                 },
             ) => {
                 counts[cell].sub_counts(&source_counts[source_cell]);
-                let ends = counts[cell].ends();
-                mins[cell] = ends.least;
-                maxs[cell] = ends.greatest;
+                refresh_ends(cell, mins, maxs, counts);
             }
             (State::Distinct(cells), State::Distinct(source_cells)) => {
                 cells.sub_from(cell, source_cells, source_cell);
@@ -419,6 +413,14 @@ impl State {
             _ => unreachable!("Cells::release checks the column kinds"),
         }
     }
+}
+
+/// Sets an `Extent` cell's mirrored min and max to the ends its counts
+/// hold now.
+fn refresh_ends(cell: usize, mins: &mut [i64], maxs: &mut [i64], counts: &[ValueCounts]) {
+    let ends = counts[cell].ends();
+    mins[cell] = ends.least;
+    maxs[cell] = ends.greatest;
 }
 
 /// `number` squared, below 2^126 for any `i64`.
