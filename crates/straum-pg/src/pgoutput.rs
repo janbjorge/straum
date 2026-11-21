@@ -1,8 +1,12 @@
 //! pgoutput protocol version 1, the logical replication messages inside
 //! `XLogData`, the copy message that carries WAL on a replication
 //! connection. `copy_message` splits a copy message, `decode` reads a
-//! pgoutput message from its bytes for `decode.rs`. Text tuples only:
-//! Straum never asks for `binary`.
+//! pgoutput message from its bytes for `decode.rs`. Straum never asks
+//! pgoutput for `binary`, so its values arrive as text.
+//!
+//! `Message` and its parts are also how the physical stream hands
+//! `decode.rs` a change: `wal/messages.rs` builds them from the records
+//! it reads, with each value already typed, as `Field::Datum`.
 //! <https://www.postgresql.org/docs/18/protocol-logicalrep-message-formats.html>
 
 use std::fmt;
