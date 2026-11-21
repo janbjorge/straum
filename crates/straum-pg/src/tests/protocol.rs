@@ -13,7 +13,7 @@ use super::references::*;
 use super::support::*;
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
-use crate::source::{Postgres, Replication, WAL_READ_TIMEOUT, plain, read_wal};
+use crate::source::{Replication, WAL_READ_TIMEOUT, plain, read_wal};
 use crate::stream::{Reader, Stream};
 use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
 
@@ -31,12 +31,9 @@ fn connection_errors() {
 
 /// A wrong password, and a DSN with none, fail to sign in.
 fn sign_in_needs_the_right_password(pg: &PostgresContainer, spec: &Spec) {
-    let wrong = pg.dsn.to_string().replace("postgres@", "postgres:wrong@");
-    let mut source = Postgres::new(
-        Dsn::parse(&wrong).unwrap(),
+    let mut source = source_over(
+        dsn_as(&pg.dsn, "postgres", "wrong"),
         "p",
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     let error = source.open(spec).unwrap_err().to_string();
@@ -46,16 +43,10 @@ fn sign_in_needs_the_right_password(pg: &PostgresContainer, spec: &Spec) {
     );
 
     let bare = Dsn::parse(&pg.dsn.to_string()).unwrap();
-    let error = Postgres::new(
-        bare,
-        "p",
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
-        Replication::Logical,
-    )
-    .open(spec)
-    .unwrap_err()
-    .to_string();
+    let error = source_over(bare, "p", Replication::Logical)
+        .open(spec)
+        .unwrap_err()
+        .to_string();
     assert_eq!(
         error,
         "PostgreSQL sent a password request; the DSN has none"
@@ -85,16 +76,10 @@ fn nothing_listens_on_port_1(spec: &Spec) {
             "nowhere.invalid:5432",
         ),
     ] {
-        let error = Postgres::new(
-            Dsn::parse(dsn).unwrap(),
-            "p",
-            ROW_LIMIT,
-            MAX_RETAINED_WAL_BYTES,
-            Replication::Logical,
-        )
-        .open(spec)
-        .unwrap_err()
-        .to_string();
+        let error = source_over(Dsn::parse(dsn).unwrap(), "p", Replication::Logical)
+            .open(spec)
+            .unwrap_err()
+            .to_string();
         let start = format!("connection to PostgreSQL: {place}: ");
         assert!(error.starts_with(&start), "{error}");
     }

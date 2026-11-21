@@ -344,13 +344,7 @@ enum Reconnect {
 /// not, and checks the stream ends only when the watchdog can't come back.
 fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
     let mut db = Db::new(pg, name, TABLES);
-    let mut source = Postgres::new(
-        reader(&mut db, pg),
-        name,
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
-        PHYSICAL,
-    );
+    let mut source = source_over(reader(&mut db, pg), name, PHYSICAL);
     source.guard.watching.unwatched = SHORT_UNWATCHED;
     let spec = db.spec(SPEC);
     source.open(&spec).unwrap();
@@ -425,7 +419,7 @@ fn reader(db: &mut Db, pg: &PostgresContainer) -> Dsn {
          GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO reader;
          CHECKPOINT",
     );
-    Dsn::parse(&pg.dsn.to_string().replace("postgres@", "reader:r@")).unwrap()
+    dsn_as(&pg.dsn, "reader", "r")
 }
 
 /// PostgreSQL at `wal_level = replica` with [`SMALL_SEND_BUFFERS`].

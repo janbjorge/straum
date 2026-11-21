@@ -299,13 +299,7 @@ impl Db {
 
     /// A source that streams pgoutput from the test's publication.
     pub(super) fn pg(&self) -> Postgres {
-        Postgres::new(
-            self.dsn.clone(),
-            &self.name,
-            ROW_LIMIT,
-            MAX_RETAINED_WAL_BYTES,
-            Replication::Logical,
-        )
+        source_over(self.dsn.clone(), &self.name, Replication::Logical)
     }
 
     /// A writer for `spec` over [`Db::pg`].
@@ -315,15 +309,33 @@ impl Db {
 
     /// A writer that reads the physical WAL (ADR-0008).
     pub(super) fn physical_writer(&self, spec: &str) -> Writer<Postgres> {
-        let source = Postgres::new(
-            self.dsn.clone(),
-            &self.name,
-            ROW_LIMIT,
-            MAX_RETAINED_WAL_BYTES,
-            PHYSICAL,
-        );
+        let source = source_over(self.dsn.clone(), &self.name, PHYSICAL);
         Writer::new(App::new(self.spec(spec), LIMITS), source)
     }
+}
+
+/// The text of `dsn` signed in as `role` with `password`. A `Dsn` prints
+/// itself without its password, so this puts one back.
+pub(super) fn dsn_text(dsn: &Dsn, role: &str, password: &str) -> String {
+    dsn.to_string()
+        .replace("postgres@", &format!("{role}:{password}@"))
+}
+
+/// `dsn` signed in as `role` with `password`.
+pub(super) fn dsn_as(dsn: &Dsn, role: &str, password: &str) -> Dsn {
+    Dsn::parse(&dsn_text(dsn, role, password)).unwrap()
+}
+
+/// A source over `dsn` that streams the publication `publication` by
+/// `replication`, under the tests' row and retained-WAL limits.
+pub(super) fn source_over(dsn: Dsn, publication: &str, replication: Replication) -> Postgres {
+    Postgres::new(
+        dsn,
+        publication,
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        replication,
+    )
 }
 
 /// `name` as an identifier.

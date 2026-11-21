@@ -69,8 +69,7 @@ fn ssl(dsn: &str) -> Result<String, Error> {
 #[test]
 fn tls_trusts_only_its_roots() {
     let pg = postgres_tls();
-    // Display leaves the password out.
-    let dsn = (pg.dsn.to_string()).replace("postgres@", &format!("postgres:{PASSWORD}@"));
+    let dsn = dsn_text(&pg.dsn, "postgres", PASSWORD);
     assert_eq!(ssl(&dsn).unwrap(), "t");
     let (plain, _) = dsn.split_once('?').unwrap();
     assert_eq!(ssl(&format!("{plain}?sslmode=disable")).unwrap(), "f");

@@ -7,9 +7,8 @@ use straum_app::{App, Lsn, Source, SourceError, Writer};
 
 use super::references::*;
 use super::support::*;
-use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::source::{Postgres, Replication};
+use crate::source::Replication;
 use crate::wire::{Connection, ConnectionKind};
 
 #[test]
@@ -48,12 +47,9 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
         }
     }
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
-    let dsn = pg.dsn.to_string().replace("postgres@", "straum_plan:plan@");
-    let pg = Postgres::new(
-        Dsn::parse(&dsn).unwrap(),
+    let pg = source_over(
+        dsn_as(&pg.dsn, "straum_plan", "plan"),
         "plan",
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     let mut writer = Writer::new(App::new(spec, LIMITS), pg);
@@ -695,17 +691,7 @@ fn dim_role_problems(pg: &PostgresContainer) {
              GRANT SELECT ON $S.f TO $S; CREATE PUBLICATION",
     );
     let db = Db::new(pg, name, &tables);
-    let dsn = pg
-        .dsn
-        .to_string()
-        .replace("postgres@", &format!("{name}:r@"));
-    let mut source = Postgres::new(
-        Dsn::parse(&dsn).unwrap(),
-        name,
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
-        Replication::Logical,
-    );
+    let mut source = source_over(dsn_as(&pg.dsn, name, "r"), name, Replication::Logical);
     assert_eq!(
         setup_problems(name, source.open(&db.spec(DIM_SPEC))),
         ["d: Straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
@@ -726,40 +712,28 @@ fn row_security_problems(pg: &PostgresContainer) {
          CREATE POLICY positive ON $S.f USING (x > 0);"
     );
     let mut db = Db::new(pg, name, &tables);
-    let dsn = pg
-        .dsn
-        .to_string()
-        .replace("postgres@", &format!("{name}:r@"));
+    let dsn = dsn_as(&pg.dsn, name, "r");
     let spec = db.spec(&spec);
     assert_eq!(
-        setup_problems(name, logical_source(&dsn, name).open(&spec)),
+        setup_problems(
+            name,
+            source_over(dsn.clone(), name, Replication::Logical).open(&spec)
+        ),
         [
             "f: row-level security filters what policed reads of policed.f; \
              Straum needs every row: ALTER ROLE policed BYPASSRLS, as a superuser"
         ],
     );
     // Past the check, a read the policy would cut fails whole.
-    let mut connection =
-        Connection::connect(&Dsn::parse(&dsn).unwrap(), ConnectionKind::Sql).unwrap();
+    let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
     let error = connection
         .rows(&db.sql("SELECT count(*) FROM $S.f"))
         .unwrap_err()
         .to_string();
     assert!(error.contains("row-level security"), "{error}");
     db.run("ALTER ROLE $S BYPASSRLS");
-    let opened = logical_source(&dsn, name).open(&spec);
+    let opened = source_over(dsn, name, Replication::Logical).open(&spec);
     assert_eq!(setup_problems(name, opened), Vec::<String>::new());
-}
-
-/// A logical source over the publication `name`, signed in as `dsn` says.
-fn logical_source(dsn: &str, name: &str) -> Postgres {
-    Postgres::new(
-        Dsn::parse(dsn).unwrap(),
-        name,
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
-        Replication::Logical,
-    )
 }
 
 /// A dim keyed by two columns, with or without a key of its own.
@@ -910,12 +884,9 @@ fn the_role_must_read_every_table() {
     let mut db = Db::new(&pg, "access", TABLES);
     let spec = db.spec(SPEC);
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
-    let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
-    let mut reader = Postgres::new(
-        Dsn::parse(&dsn).unwrap(),
+    let mut reader = source_over(
+        dsn_as(&pg.dsn, "reader", "r"),
         "access",
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     let error = reader.open(&spec).unwrap_err().to_string();
