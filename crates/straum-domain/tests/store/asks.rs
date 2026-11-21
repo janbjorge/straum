@@ -7,7 +7,7 @@ use crate::random::trip;
 use crate::views::{spec, trip_types, typed};
 use crate::{AT, FARE, PAY, ROW_COLUMNS, START, TIP, first_values, trips_ask};
 use straum_domain::{
-    AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Instead, Literal,
+    Aggregate, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Instead, Literal,
     Store, Value,
 };
 
@@ -178,61 +178,29 @@ fn columns_name_keys_and_measures_as_asked() {
 fn ask_without_by_answers_one_row() {
     let store = Store::new(spec());
     let fact = spec();
-    let mut measures: Vec<Identifier> = Vec::new();
+    let mut measures = Vec::new();
+    let mut values = Vec::new();
     for measure in &fact.fact("trips").unwrap().measures {
         measures.push(measure.name.clone());
+        // Of no rows, a count counts none; every other aggregate, a
+        // percentile, mode, variance or one of distinct values among
+        // them, has no value to answer.
+        values.push(match measure.aggregate {
+            Aggregate::Count | Aggregate::CountNotNull(_) | Aggregate::CountDistinct(_) => {
+                Value::Int(0)
+            }
+            _ => Value::Null,
+        });
     }
     let ask = Ask {
         measures,
         ..trips_ask(&[], Vec::new())
     };
-    let zero = Value::Int(0);
-    let null = Value::Null;
     assert_eq!(
         store.ask(&ask).unwrap().rows,
         [AnswerRow {
             keys: Vec::new(),
-            values: vec![
-                zero.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                // The five percentiles and the two modes: of no values,
-                // none.
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                // A sum of distinct values, two counts of them, an
-                // average of them and the four variances and deviations:
-                // of no values, none, or none counted.
-                null.clone(),
-                zero.clone(),
-                zero.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                null.clone(),
-                zero.clone(),
-                zero.clone(),
-                zero.clone(),
-                null.clone(),
-                null.clone(),
-                zero.clone(),
-                null.clone(),
-                null.clone(),
-                zero.clone(),
-                zero,
-                null.clone(),
-                null.clone(),
-                null,
-            ]
+            values,
         }]
     );
 }
