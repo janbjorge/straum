@@ -536,6 +536,7 @@ fn assign_known(
 #[cfg(test)]
 mod tests {
     use super::{in_place_order, packed_order};
+    use crate::test_rng::Rng;
 
     /// Groups 1 to `made` sorted by their places, then by number.
     fn reference(places: &[u32], key_count: usize, made: u32) -> Vec<u32> {
@@ -552,24 +553,17 @@ mod tests {
         order
     }
 
-    /// The next of a fixed sequence of numbers below `below`.
-    fn next(state: &mut u64, below: u32) -> u32 {
-        *state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1);
-        u32::try_from((*state >> 33) % u64::from(below)).unwrap()
-    }
-
     #[test]
     fn both_orders_sort_groups_by_their_places() {
-        let mut state = 7;
+        let mut rng = Rng::new(7);
         for widths in [vec![1], vec![3, 2], vec![2, 1, 3], vec![32, 32, 32]] {
             let made = 200;
             let mut places = Vec::new();
             for _ in 0..made {
                 for &width in &widths {
                     // Small places, so that groups tie on some keys.
-                    places.push(next(&mut state, 1 << width.min(3)));
+                    let place = rng.below(1 << width.min(3));
+                    places.push(u32::try_from(place).unwrap());
                 }
             }
             let wanted = reference(&places, widths.len(), made);
