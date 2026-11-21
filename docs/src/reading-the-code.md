@@ -20,9 +20,10 @@ it.
    and the asks, into the domain's types. The walker is in `sql/`;
    `ask_error.rs` words an ask error.
 3. `straum-app`: the use cases. `app.rs` holds `App`, which answers
-   asks, and `Writer`, the loop that loads the tables and applies the
-   stream. `source.rs` is the one trait PostgreSQL sits behind;
-   `lag.rs` keeps the write-ahead log (WAL) readings `as_of` comes from.
+   asks; `writer.rs` holds `Writer`, the loop that loads the tables and
+   applies the stream; `held.rs` reports what the store holds.
+   `source.rs` is the one trait PostgreSQL sits behind; `lag.rs` keeps
+   the write-ahead log (WAL) readings `as_of` comes from.
 4. `straum-pg`: talks to PostgreSQL. `source.rs` is where it meets
    `straum-app`: it checks the setup (`catalog/`), loads each table
    (`load.rs`), then hands a thread the stream (`stream.rs`), which

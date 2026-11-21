@@ -7,11 +7,12 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod held;
 mod lag;
 mod source;
+mod writer;
 
-pub use app::{
-    AnswerError, Answered, App, Error, Held, HeldDim, HeldKey, HeldView, Limits, Status, Step,
-    Unfitting, ViewKey, Writer, format_mebibytes,
-};
+pub use app::{AnswerError, Answered, App, Limits, Status};
+pub use held::{Held, HeldDim, HeldKey, HeldView, ViewKey};
 pub use source::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};
+pub use writer::{Error, Step, Unfitting, Writer, format_mebibytes};
