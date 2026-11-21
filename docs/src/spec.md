@@ -290,7 +290,8 @@ WHERE e.kind IN ('purchase', 'refund') AND a.region = 'eu'
 
 The view's conditions are those of a `FILTER`, below, on columns
 the view selects as keys, so a condition on a dim column follows the
-dim. A `FILTER` that every measure repeats is refused: write it here.
+dim. A `FILTER` that every measure repeats, its conditions and `IN`
+values in any order, is refused: write it here.
 
 ## Null-ness keys
 

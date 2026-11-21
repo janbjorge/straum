@@ -845,6 +845,21 @@ GROUP BY 1, 2, 3";
             "GROUP BY 1, 2, 3",
             "every measure has the same FILTER; write it as the view's WHERE",
         ),
+        // In another order too.
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS n, \
+             sum(f.x) FILTER (WHERE z.name = 'x' AND f.a = 1) AS m",
+            "GROUP BY 1, 2, 3",
+            "every measure has the same FILTER; write it as the view's WHERE",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a IN (1, 2)) AS n, \
+             sum(f.x) FILTER (WHERE f.a IN (2, 1)) AS m",
+            "GROUP BY 1, 2, 3",
+            "every measure has the same FILTER; write it as the view's WHERE",
+        ),
     ] {
         let text = edit(base, from, to).replace("GROUP BY 1, 2, 3", group_by);
         let errors = error_lines(&text);
@@ -856,6 +871,19 @@ GROUP BY 1, 2, 3";
     // One FILTER on the one measure is fine: there is nothing to share.
     let one = base.replace("count(*) AS n", "count(*) FILTER (WHERE f.a = 1) AS n");
     assert!(parse(&one).is_ok());
+    // Filters that differ in a condition or a value are each the measure's own.
+    for measures in [
+        "count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS n, \
+         count(*) FILTER (WHERE z.name = 'y' AND f.a = 1) AS m",
+        "count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS n, \
+         count(*) FILTER (WHERE f.a = 1) AS m",
+        "count(*) FILTER (WHERE f.a = 1) AS n, \
+         count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS m",
+        "count(*) FILTER (WHERE f.a IN (1, 2)) AS n, count(*) FILTER (WHERE f.a IN (2, 3)) AS m",
+    ] {
+        let text = edit(base, "count(*) AS n", measures);
+        assert!(parse(&text).is_ok(), "{measures}");
+    }
 }
 
 /// Clauses few would write, each rejected by name on its own line.
