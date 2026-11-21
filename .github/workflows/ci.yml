@@ -71,6 +71,22 @@ jobs:
           tool: just,uv
       - run: just scripts
 
+  # A published advisory against a locked dependency fails the run, and
+  # with it a release.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST }}
+      # The release binary, checked against the sum in the action's manifest,
+      # instead of a build from source.
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: just,cargo-audit@0.23.0
+      - run: just audit
+
   # The workspace tests on each major. 18, the tests' default, runs them
   # under coverage instead, so no major runs them twice.
   test:
@@ -239,7 +255,7 @@ jobs:
   # index annotations come from the repository's description and license;
   # provenance and SBOM attestations are signed through GitHub OIDC.
   publish:
-    needs: [gate, format, lint, architecture, test, correctness, chart, image, docs]
+    needs: [gate, format, lint, architecture, audit, test, correctness, chart, image, docs]
     if: needs.gate.outputs.publish == 'true'
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:

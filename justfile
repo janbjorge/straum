@@ -75,6 +75,11 @@ scripts:
     scripts/test-checks.py
     bench/test-stack.py
 
+# Cargo.lock against the RustSec advisories; needs cargo-audit
+[group('check')]
+audit:
+    cargo audit
+
 # Physical stream against random workloads, as CI's correctness job
 [group('check')]
 correctness: (test "straum-pg" "--" "tests::commits_what_logical_decoding_commits_at_random" "tests::follows_random_workloads_from_a_random_start")

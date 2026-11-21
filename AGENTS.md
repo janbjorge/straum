@@ -45,6 +45,9 @@ docs, ADR-0014 says which pages use the taxi trips and which the
   previews. CI uses mdBook 0.5.4.
 - Change to the Dockerfile or `compose.yaml`: run `just image`.
 
+`just audit` checks `Cargo.lock` against the RustSec advisories; it
+needs cargo-audit.
+
 `just --list` names every recipe: the checks above, `just correctness`,
 `just heap-fixtures`, `just image`, `just taxi
 [asks|transactions|materialized|shell]` (`wal=physical` for the
