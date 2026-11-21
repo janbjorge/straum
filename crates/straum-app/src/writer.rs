@@ -8,7 +8,7 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use straum_domain::{Identifier, RowError, Store};
+use straum_domain::{Identifier, RowError, Spec, Store};
 
 use crate::app::{App, Following, Progress, State};
 use crate::lag::Lag;
@@ -169,7 +169,7 @@ impl<S: Source> Writer<S> {
     /// Loads every dim and fact into a new store outside the lock, then
     /// swaps it in.
     fn start(&mut self) -> Result<Lsn, Error> {
-        let spec = self.app.read().store.spec().clone();
+        let spec = Spec::clone(&self.app.spec);
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
         let start = self.source.open(&spec)?;
