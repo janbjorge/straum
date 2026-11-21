@@ -398,15 +398,24 @@ fn selected_keys(view: Option<&View>, all: &[String]) -> Vec<String> {
     let Some(view) = view else {
         return Vec::new();
     };
+    let mut selected = Vec::new();
+    for word in selected_words(all) {
+        if view.key(&word).is_some() {
+            selected.push(word);
+        }
+    }
+    selected
+}
+
+/// The words between `SELECT` and `FROM`.
+fn selected_words(all: &[String]) -> Vec<String> {
     let listed = after(all, "SELECT").unwrap_or_default();
     let mut selected = Vec::new();
     for word in listed {
         if is(&word, "FROM") {
             break;
         }
-        if view.key(&word).is_some() {
-            selected.push(word);
-        }
+        selected.push(word);
     }
     selected
 }
@@ -497,12 +506,8 @@ fn having_candidates(view: Option<&View>, all: &[String], conditions: &[String])
 /// The measures between `SELECT` and `FROM`, the ones HAVING may compare,
 /// each with the space after it.
 fn selected_measures(view: &View, all: &[String]) -> Vec<String> {
-    let listed = after(all, "SELECT").unwrap_or_default();
     let mut selected = Vec::new();
-    for word in listed {
-        if is(&word, "FROM") {
-            break;
-        }
+    for word in selected_words(all) {
         if view.has_measure(&word) {
             selected.push(format!("{word} "));
         }
