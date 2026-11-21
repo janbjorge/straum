@@ -1,8 +1,9 @@
 //! JSON in and out. `Json::parse` hands the bytes of a request body to
 //! `serde_json`, which calls `JsonVisitor` for each value it meets; the
 //! visitor builds a `Json` tree that keeps every key as sent, so a key
-//! given twice is an error instead of a value dropped. `quoted` writes a
-//! string the other way, for the answers `answer.rs` and `views.rs` build.
+//! given twice is an error instead of a value dropped. The other way,
+//! `quoted` writes a string as a JSON string with its quotes, and
+//! `quoted_or_null` writes null where there is no string.
 
 use std::fmt;
 

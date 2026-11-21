@@ -2,7 +2,9 @@
 //! `serve` accepts connections until told to stop, hands each request to
 //! `routes.rs`, and on shutdown finishes the requests in flight. The other
 //! files each write one kind of reply: `answer.rs` an answer, `views.rs`
-//! the views, `status.rs` the status; `ask.rs` and `json.rs` read an ask.
+//! the views, `status.rs` the status. `ask.rs` reads an ask; `json.rs`
+//! parses JSON for it and writes the strings and nulls of every reply;
+//! `time.rs` writes times as RFC 3339.
 //!
 //! On loopback a request whose `Host` names another machine or port gets
 //! 421 (see `host.rs`).
