@@ -160,25 +160,27 @@ impl App {
     /// How Straum stands now: loaded or not, how far behind.
     pub fn status(&self) -> Status {
         let progress = self.progress();
-        let mut status = Status {
-            ready: false,
-            applied: None,
-            committed: None,
-            as_of: None,
-            lag: None,
-            wal: None,
-            limits: self.limits,
+        let Some(following) = &progress.following else {
+            return Status {
+                ready: false,
+                applied: None,
+                committed: None,
+                as_of: None,
+                lag: None,
+                wal: None,
+                limits: self.limits,
+            };
         };
-        if let Some(following) = &progress.following {
-            let lag = following.lag.behind(Instant::now());
-            status.ready = lag <= self.limits.max_lag;
-            status.applied = Some(following.applied);
-            status.committed = following.committed;
-            status.as_of = Some(following.as_of());
-            status.lag = Some(lag);
-            status.wal = Some(following.wal);
+        let lag = following.lag.behind(Instant::now());
+        Status {
+            ready: lag <= self.limits.max_lag,
+            applied: Some(following.applied),
+            committed: following.committed,
+            as_of: Some(following.as_of()),
+            lag: Some(lag),
+            wal: Some(following.wal),
+            limits: self.limits,
         }
-        status
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {
