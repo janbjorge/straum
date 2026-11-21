@@ -212,7 +212,7 @@ pub(super) fn multi_insert_data(rows: &[HeapTuple]) -> Vec<u8> {
 /// horizon after it.
 pub(super) fn prune_main(major: u32, flags: u8) -> Vec<u8> {
     let mut main = vec![0; PRUNE_SIZE];
-    if major >= 19 {
+    if major >= PRUNE_FLAGS_FIRST_MAJOR {
         main[PRUNE_FLAGS_FIRST] = flags;
         main[PRUNE_VISIBILITY_FLAGS_AT] = PRUNE_SETS_VISIBILITY;
     } else {

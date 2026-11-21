@@ -72,6 +72,8 @@ const ENUM_BY_TYPE_AND_LABEL_CACHE: i8 = 24;
 /// bits from 18.
 const DROPPED_STAT_17: usize = 12;
 const DROPPED_STAT_18: usize = 16;
+/// The first major whose `xl_xact_stats_item` object is 64 bits.
+const DROPPED_STAT_WIDENED_MAJOR: u32 = 18;
 /// `xl_running_xacts`: `xcnt`, `subxcnt`, `subxid_overflow`, `nextXid`,
 /// `oldestRunningXid` and `latestCompletedXid`, then the xids.
 const RUNNING_COUNT: usize = 0;
@@ -246,7 +248,7 @@ fn read_count(data: &[u8], at: &mut usize) -> Option<usize> {
 }
 
 fn dropped_stat_size(major: u32) -> usize {
-    if major >= 18 {
+    if major >= DROPPED_STAT_WIDENED_MAJOR {
         DROPPED_STAT_18
     } else {
         DROPPED_STAT_17

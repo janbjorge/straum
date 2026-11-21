@@ -56,6 +56,9 @@ pub(super) const PRUNE_FLAGS_AFTER_REASON: usize = 1;
 /// `xl_heap_prune.flags` first, from 19; its second byte is for the
 /// visibility map.
 pub(super) const PRUNE_FLAGS_FIRST: usize = 0;
+/// The first major whose `xl_heap_prune` opens with its flags, dropping
+/// the reason byte.
+pub(super) const PRUNE_FLAGS_FIRST_MAJOR: u32 = 19;
 
 /// `xl_heap_insert`: `offnum`, then `flags`.
 pub(super) const INSERT_SIZE: usize = 3;
@@ -143,7 +146,7 @@ pub(super) enum PruneLayout {
 impl PruneLayout {
     /// The layout PostgreSQL `major` writes.
     pub(super) fn of_major(major: u32) -> PruneLayout {
-        if major >= 19 {
+        if major >= PRUNE_FLAGS_FIRST_MAJOR {
             PruneLayout::FlagsFirst
         } else {
             PruneLayout::ReasonThenFlags
