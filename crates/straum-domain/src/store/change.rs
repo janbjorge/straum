@@ -130,10 +130,23 @@ impl Store {
         old: &[Datum],
         new: &[Datum],
     ) -> Result<(), RowError> {
+        if let Some(dim) = self.dim_index(table)
+            && old == new
+        {
+            return self.projections[dim.0].check(old);
+        }
+        let updated = self.update_row_coded(table, old, new);
+        self.reclaim_codes();
+        updated
+    }
+
+    fn update_row_coded(
+        &mut self,
+        table: &str,
+        old: &[Datum],
+        new: &[Datum],
+    ) -> Result<(), RowError> {
         if let Some(dim) = self.dim_index(table) {
-            if old == new {
-                return self.projections[dim.0].check(old);
-            }
             let key_columns = self.projections[dim.0].key_column_count();
             if old.get(..key_columns) == new.get(..key_columns) {
                 // Add checks the width. A failure after the remove would
@@ -149,13 +162,11 @@ impl Store {
                         change: Projection::add,
                     },
                 ];
-                let result = self.change_dim(dim, &changes);
-                self.reclaim_codes();
-                return result;
+                return self.change_dim(dim, &changes);
             }
         }
-        self.remove_row(table, old)?;
-        self.add_row(table, new)
+        self.remove_row_coded(table, old)?;
+        self.add_row_coded(table, new)
     }
 
     /// Drops the codes no cell or dim row holds any more, wherever they
