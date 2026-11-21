@@ -43,6 +43,8 @@ const NEWER_THAN_PHYSICAL_VERSION_NUM: u32 = (NEWEST_PHYSICAL_MAJOR + 1) * VERSI
 /// under `replica`.
 const LOGICAL_UNDER_REPLICA_MAJOR: u32 = 19;
 const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = LOGICAL_UNDER_REPLICA_MAJOR * VERSION_NUM_PER_MAJOR;
+/// The first major whose pgoutput publishes a stored generated column.
+pub(crate) const PUBLISHED_GENERATED_MAJOR: u32 = 18;
 
 /// A spec table as PostgreSQL has it, ready to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,6 +579,7 @@ fn check_table(
     };
     let reader = ColumnReader {
         table: &names,
+        major: catalog.server_version / VERSION_NUM_PER_MAJOR,
         replication,
         publication,
         class,
@@ -643,6 +646,8 @@ fn check_reads(
 // which nothing outlives.
 struct ColumnReader<'a> {
     table: &'a TableNames,
+    /// The server's major, which says what may publish a generated column.
+    major: u32,
     replication: Replication,
     publication: &'a str,
     class: &'a Class,
@@ -701,7 +706,14 @@ impl ColumnReader<'_> {
             && !published.contains(&column.name)
         {
             let publication = self.publication.to_owned();
-            let problem = ColumnProblem::NotPublished { publication };
+            let problem = if column.generated == "s" {
+                ColumnProblem::GeneratedNotPublished {
+                    publication,
+                    major: self.major,
+                }
+            } else {
+                ColumnProblem::NotPublished { publication }
+            };
             return Err(self.problem(column_name, problem));
         }
         let column_type = match (self.as_text.contains(column_name), column.typtype == "e") {

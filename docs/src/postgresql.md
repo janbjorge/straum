@@ -29,6 +29,7 @@ What else each stream needs:
 | --- | --- | --- |
 | Setup SQL | A role, `SELECT`, a publication and `REPLICA IDENTITY FULL` | A role, `SELECT` and one `GRANT EXECUTE` |
 | Where | Any server, managed ones included | Not RDS, Aurora or Cloud SQL, which don't hand out the physical stream |
+| Generated columns | Stored ones from 18, once the publication sets `publish_generated_columns = stored`; none on 17 | Stored ones |
 
 Both give the same commits; the tests check that on a server running
 both.
@@ -192,6 +193,8 @@ Logical decoding adds:
 wal_level is replica; Straum needs logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
 usage: publication straum leaves out public.events: ALTER PUBLICATION straum ADD TABLE public.events
+usage: column amount of public.events is generated, which pgoutput on PostgreSQL 17 can't publish: read the columns it is computed from, or follow it with --wal physical
+usage: publication straum leaves out generated column amount of public.events: ALTER PUBLICATION straum SET (publish_generated_columns = stored), or name it in the publication's column list
 fact usage: Straum needs the whole old row of every update and delete: ALTER TABLE public.events REPLICA IDENTITY FULL
 dim accounts: Straum needs the whole old row of every update and delete: ALTER TABLE public.accounts REPLICA IDENTITY FULL
 ```

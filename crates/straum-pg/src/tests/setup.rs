@@ -59,6 +59,63 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
+/// A fact whose `doubled` is a stored generated column, published whole.
+const GENERATED: &str = "
+CREATE TABLE $S.f (
+    id int PRIMARY KEY,
+    at timestamptz,
+    x int,
+    doubled int GENERATED ALWAYS AS (x * 2) STORED
+);
+ALTER TABLE $S.f REPLICA IDENTITY FULL;
+CREATE PUBLICATION $S FOR TABLE $S.f;
+";
+
+/// pgoutput publishes a stored generated column from 18 on, once the
+/// publication asks for it; until then the check says why it is left out
+/// and what to do on that major.
+#[test]
+fn a_stored_generated_column_is_followed_once_published() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "generated", GENERATED);
+    let Fact { spec, .. } = fact("", "count(*) AS n, sum(t.doubled) AS total");
+    let refused = if major() < 18 {
+        "f: column doubled of generated.f is generated, which pgoutput on PostgreSQL 17 \
+         can't publish: read the columns it is computed from, or follow it with --wal physical"
+    } else {
+        "f: publication generated leaves out generated column doubled of generated.f: \
+         ALTER PUBLICATION generated SET (publish_generated_columns = stored), \
+         or name it in the publication's column list"
+    };
+    let found = setup_problems("generated", db.pg().open(&db.spec(&spec)));
+    assert_eq!(found, [refused]);
+    if major() < 18 {
+        return;
+    }
+    db.run("ALTER PUBLICATION $S SET (publish_generated_columns = stored)");
+    db.run(&format!(
+        "INSERT INTO $S.f (id, at, x) VALUES (1, to_timestamp({START}), 2)"
+    ));
+    let mut writer = db.writer(&spec);
+    started(&mut writer);
+    let totals = [Reference {
+        sql: format!(
+            "SELECT extract(epoch FROM bucket)::int8, n, total FROM ({}) v",
+            body(&spec, "f")
+        ),
+        ask: ask("f", &["n", "total"], &["bucket"]),
+        scales: vec![0; 3],
+    }];
+    compare(&mut db, writer.app(), &totals).expect("ready after the load");
+    db.run(&format!(
+        "INSERT INTO $S.f (id, at, x) VALUES (2, to_timestamp({START}), 5)"
+    ));
+    applied(&mut writer);
+    db.run("UPDATE $S.f SET x = 7 WHERE id = 1");
+    applied(&mut writer);
+    compare_after(&mut db, writer.app(), &totals, "the insert and update");
+}
+
 /// The setup problems an open stopped at; none when it opened.
 fn setup_problems(name: &str, opened: Result<Lsn, SourceError>) -> Vec<String> {
     let Err(error) = opened else {

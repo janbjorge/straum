@@ -8,7 +8,7 @@ use std::fmt;
 
 use straum_domain::{ColumnType, Identifier};
 
-use crate::catalog::{NEWEST_PHYSICAL_MAJOR, OLDEST_MAJOR, Purpose};
+use crate::catalog::{NEWEST_PHYSICAL_MAJOR, OLDEST_MAJOR, PUBLISHED_GENERATED_MAJOR, Purpose};
 use crate::wire::APPLICATION_NAME;
 
 /// A transaction id, as PostgreSQL numbers transactions in its WAL.
@@ -150,6 +150,12 @@ pub(crate) enum ColumnProblem {
     Missing,
     NotPublished {
         publication: String,
+    },
+    /// A stored generated column the publication leaves out: pgoutput
+    /// publishes one only from `PUBLISHED_GENERATED_MAJOR`, when asked.
+    GeneratedNotPublished {
+        publication: String,
+        major: u32,
     },
     /// A type the spec can't read the column as. `type_name` is as
     /// `format_type` prints it.
@@ -373,6 +379,22 @@ fn write_column(
         ColumnProblem::NotPublished { publication } => write!(
             formatter,
             "{name}: publication {publication} leaves out column {column} of {qualified}"
+        ),
+        ColumnProblem::GeneratedNotPublished { major, .. }
+            if *major < PUBLISHED_GENERATED_MAJOR =>
+        {
+            write!(
+                formatter,
+                "{name}: column {column} of {qualified} is generated, which pgoutput on \
+                 PostgreSQL {major} can't publish: read the columns it is computed from, \
+                 or follow it with --wal physical"
+            )
+        }
+        ColumnProblem::GeneratedNotPublished { publication, .. } => write!(
+            formatter,
+            "{name}: publication {publication} leaves out generated column {column} of \
+             {qualified}: ALTER PUBLICATION {publication} SET (publish_generated_columns = \
+             stored), or name it in the publication's column list"
         ),
         ColumnProblem::Type { type_name, fix } => {
             let fix = match fix {
