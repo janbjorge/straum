@@ -11,7 +11,8 @@ use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, UNITS, Width,
+    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, UNITS, Via,
+    Width,
 };
 
 use super::{
@@ -78,7 +79,7 @@ pub(super) struct Scope {
 /// column's null-ness, or a dim column through its ref.
 struct ScopedKey {
     name: Identifier,
-    column: ResolvedColumn,
+    column: Via,
     form: KeyForm,
     cast: Cast,
     /// The column as written, so a second spelling can be named.
@@ -108,19 +109,6 @@ struct JoinedRef {
     key: Vec<Identifier>,
     /// The dim columns this view reads as `::text`.
     as_text: Vec<Identifier>,
-}
-
-/// What a column reference names. A dim's key column names the fact
-/// column joined to it, since that is where its value is.
-#[derive(PartialEq, Eq)]
-enum ResolvedColumn {
-    Fact(Identifier),
-    /// A dim column; `through` is its ref's place in `Scope::refs`, as in
-    /// the domain's `Via::Attribute`.
-    Attribute {
-        through: usize,
-        column: Identifier,
-    },
 }
 
 /// `alias.column`, as written.
@@ -522,8 +510,8 @@ fn cast_columns(scope: &mut Scope) -> Vec<Identifier> {
             continue;
         }
         match &key.column {
-            ResolvedColumn::Fact(column) => push_once(&mut as_text, column),
-            ResolvedColumn::Attribute { through, column } => {
+            Via::Fact(column) => push_once(&mut as_text, column),
+            Via::Attribute { through, column } => {
                 push_once(&mut scope.refs[*through].as_text, column);
             }
         }

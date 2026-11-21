@@ -8,7 +8,7 @@ use sqlparser::ast as sql;
 use straum_domain::{Attribute, ByKey, Condition, Identifier, Literal, RefKind, Via};
 
 use super::joins::{key_position, ref_position};
-use super::{Cast, KeyForm, Qualified, ResolvedColumn, Scope, ScopedKey, SelectedKeys};
+use super::{Cast, KeyForm, Qualified, Scope, ScopedKey, SelectedKeys};
 use crate::sql::{Clause, NullTest, Reported, Walker, line};
 
 /// `alias.column` and whether it is cast, before the alias is resolved.
@@ -21,14 +21,14 @@ struct Reference {
 /// What a key item reads: its column, the value or its null-ness, and
 /// how it is spelled.
 struct KeyRead {
-    column: ResolvedColumn,
+    column: Via,
     form: KeyForm,
     cast: Cast,
 }
 
 /// A column reference, resolved.
 struct ColumnRead {
-    column: ResolvedColumn,
+    column: Via,
     cast: Cast,
 }
 
@@ -43,6 +43,31 @@ struct FactColumnRead {
 enum KeyKind {
     Value,
     NullNess,
+}
+
+/// What `alias.column` resolves to.
+pub(super) enum Resolved {
+    /// A fact column, or a dim column through its ref.
+    Column(Via),
+    /// No table of the view goes by the alias.
+    UnknownAlias(Identifier),
+    Unreadable(Unreadable),
+}
+
+/// A column the view names but can't read.
+pub(super) enum Unreadable {
+    /// A column of a semi or anti join, which keeps no row to read.
+    Existential {
+        alias: Identifier,
+        column: Identifier,
+        kind: RefKind,
+    },
+    /// A key column of a `LEFT OUTER JOIN`, joined on `via`.
+    LeftKey {
+        alias: Identifier,
+        column: Identifier,
+        via: Via,
+    },
 }
 
 /// The key a FILTER's column reaches.
@@ -115,7 +140,7 @@ impl Walker {
             let FactColumnRead { column, cast } =
                 self.fact_column(scope, column, "the IS NULL column")?;
             return Ok(KeyRead {
-                column: ResolvedColumn::Fact(column),
+                column: Via::Fact(column),
                 form: KeyForm::NullNess(test),
                 cast,
             });
@@ -134,7 +159,7 @@ impl Walker {
         &mut self,
         scope: &Scope,
         expression: &sql::Expr,
-        column: &ResolvedColumn,
+        column: &Via,
         cast: Cast,
     ) {
         for other in &scope.keys {
@@ -282,43 +307,43 @@ impl Walker {
             column,
             cast,
         } = self.reference(expression)?;
-        if alias == scope.alias {
-            return Ok(ColumnRead {
-                column: ResolvedColumn::Fact(column),
-                cast,
-            });
-        }
-        let Some(through) = ref_position(scope, &alias) else {
-            self.error(line(expression), format!("unknown table alias {alias}"));
-            return Err(Reported);
-        };
-        let joined = &scope.refs[through];
-        let kind = joined.reference.kind;
-        if let RefKind::Semi | RefKind::Anti = kind {
-            let message = outside_exists_message(&alias, &column, kind);
-            self.error(line(expression), message);
-            return Err(Reported);
-        }
-        // Under INNER JOIN a dim's key column reads the column it was
-        // joined on, the fact's or, in a chain, a dim's joined before.
-        // Under LEFT OUTER JOIN it is null where no dim row matches, and
-        // that column is not, so it is refused.
-        if let Some(position) = key_position(joined, &column) {
-            let via = &joined.reference.via[position];
-            if joined.reference.kind == RefKind::Left {
-                let message = left_key_message(scope, &alias, &column, via);
-                self.error(line(expression), message);
+        let at = line(expression);
+        let column = match resolve(scope, Qualified { alias, column }) {
+            Resolved::Column(column) => column,
+            Resolved::UnknownAlias(alias) => {
+                self.error(at, format!("unknown table alias {alias}"));
                 return Err(Reported);
             }
-            return Ok(ColumnRead {
-                column: joined_column(via),
-                cast,
-            });
-        }
-        Ok(ColumnRead {
-            column: ResolvedColumn::Attribute { through, column },
-            cast,
-        })
+            Resolved::Unreadable(unreadable) => {
+                self.report_unreadable(at, scope, unreadable);
+                return Err(Reported);
+            }
+        };
+        Ok(ColumnRead { column, cast })
+    }
+
+    /// Says at `at` why the view can't read a column, and for a key
+    /// column of a `LEFT OUTER JOIN` the column to write instead, as the
+    /// view writes it.
+    pub(super) fn report_unreadable(&mut self, at: u64, scope: &Scope, unreadable: Unreadable) {
+        let message = match unreadable {
+            Unreadable::Existential {
+                alias,
+                column,
+                kind,
+            } => format!(
+                "{alias}.{column} is read outside its EXISTS; {alias} is {kind}, \
+                 which keeps no row to read"
+            ),
+            Unreadable::LeftKey { alias, column, via } => {
+                let near = written(scope, &via);
+                format!(
+                    "{alias}.{column} is null where no {alias} row matches, and {near} is not; \
+                     write {near}, or join {alias} with INNER JOIN"
+                )
+            }
+        };
+        self.error(at, message);
     }
 
     fn fact_column(
@@ -328,7 +353,7 @@ impl Walker {
         what: &str,
     ) -> Result<FactColumnRead, Reported> {
         let ColumnRead { column, cast } = self.column(scope, expression)?;
-        let ResolvedColumn::Fact(column) = column else {
+        let Via::Fact(column) = column else {
             self.error(
                 line(expression),
                 format!("{what} must be a {} column", scope.alias),
@@ -376,7 +401,7 @@ impl Walker {
     ) -> Result<Condition, Reported> {
         let FactColumnRead { column, cast } =
             self.fact_column(scope, expression, "the IS NULL column")?;
-        let column = ResolvedColumn::Fact(column);
+        let column = Via::Fact(column);
         let Some(key) = filter_key(scope, &column, KeyKind::NullNess) else {
             let written = match clause {
                 Clause::Where => format!("WHERE {whole_test}"),
@@ -401,11 +426,11 @@ impl Walker {
 fn record_key(
     selected: &mut SelectedKeys,
     name: &Identifier,
-    column: &ResolvedColumn,
+    column: &Via,
     form: KeyForm,
 ) {
     match column {
-        ResolvedColumn::Fact(fact_column) => {
+        Via::Fact(fact_column) => {
             let by_key = match form {
                 KeyForm::Value => ByKey::Column {
                     column: fact_column.clone(),
@@ -419,7 +444,7 @@ fn record_key(
             };
             selected.by_keys.push(by_key);
         }
-        ResolvedColumn::Attribute { through, column } => {
+        Via::Attribute { through, column } => {
             selected.attributes[*through].push(Attribute {
                 name: name.clone(),
                 column: column.clone(),
@@ -429,59 +454,55 @@ fn record_key(
 }
 
 /// A resolved column as the view writes it, `alias.column`.
-fn written(scope: &Scope, column: &ResolvedColumn) -> String {
+fn written(scope: &Scope, column: &Via) -> String {
     match column {
-        ResolvedColumn::Fact(column) => format!("{}.{column}", scope.alias),
-        ResolvedColumn::Attribute { through, column } => {
+        Via::Fact(column) => format!("{}.{column}", scope.alias),
+        Via::Attribute { through, column } => {
             format!("{}.{column}", scope.refs[*through].reference.alias)
         }
     }
 }
 
-/// The column a join's key column was joined to: the fact's or, in a
-/// chain, a dim's joined before.
-fn joined_column(via: &Via) -> ResolvedColumn {
-    match via {
-        Via::Fact(column) => ResolvedColumn::Fact(column.clone()),
-        Via::Attribute { through, column } => ResolvedColumn::Attribute {
-            through: *through,
-            column: column.clone(),
-        },
+/// What `alias.column` reads, resolved through the view's scope: a fact
+/// column, or a dim column through its ref, the near side of a join
+/// equality included.
+pub(super) fn resolve(scope: &Scope, reference: Qualified) -> Resolved {
+    let Qualified { alias, column } = reference;
+    if alias == scope.alias {
+        return Resolved::Column(Via::Fact(column));
     }
-}
-
-/// Why a column of a semi or anti join can't be read outside its
-/// `EXISTS`, selected or joined through alike.
-pub(super) fn outside_exists_message(
-    alias: &Identifier,
-    column: &Identifier,
-    kind: RefKind,
-) -> String {
-    format!(
-        "{alias}.{column} is read outside its EXISTS; {alias} is {kind}, \
-         which keeps no row to read"
-    )
-}
-
-/// Why a key column of a `LEFT OUTER JOIN` can't be read, and what to
-/// write instead: the column joined to it through `via`, as the view
-/// writes it.
-pub(super) fn left_key_message(
-    scope: &Scope,
-    alias: &Identifier,
-    column: &Identifier,
-    via: &Via,
-) -> String {
-    let near = written(scope, &joined_column(via));
-    format!(
-        "{alias}.{column} is null where no {alias} row matches, and {near} is not; \
-         write {near}, or join {alias} with INNER JOIN"
-    )
+    let Some(through) = ref_position(scope, &alias) else {
+        return Resolved::UnknownAlias(alias);
+    };
+    let joined = &scope.refs[through];
+    let kind = joined.reference.kind;
+    match kind {
+        RefKind::Left | RefKind::Inner => {}
+        RefKind::Semi | RefKind::Anti => {
+            return Resolved::Unreadable(Unreadable::Existential {
+                alias,
+                column,
+                kind,
+            });
+        }
+    }
+    // Under INNER JOIN a dim's key column reads the column it was joined
+    // on, the fact's or, in a chain, a dim's joined before. Under LEFT
+    // OUTER JOIN it is null where no dim row matches, and that column is
+    // not, so it is refused.
+    let Some(position) = key_position(joined, &column) else {
+        return Resolved::Column(Via::Attribute { through, column });
+    };
+    let via = joined.reference.via[position].clone();
+    if kind == RefKind::Left {
+        return Resolved::Unreadable(Unreadable::LeftKey { alias, column, via });
+    }
+    Resolved::Column(via)
 }
 
 /// The key over a FILTER's column, a null-ness key or not; `None` when
 /// SELECT has none, which the caller reports in its own words.
-fn filter_key(scope: &Scope, column: &ResolvedColumn, kind: KeyKind) -> Option<FilterKey> {
+fn filter_key(scope: &Scope, column: &Via, kind: KeyKind) -> Option<FilterKey> {
     let wants_null_ness = matches!(kind, KeyKind::NullNess);
     for key in &scope.keys {
         let reads_null_ness = matches!(key.form, KeyForm::NullNess(_));

@@ -6,8 +6,8 @@
 use sqlparser::ast as sql;
 use straum_domain::{Identifier, Ref, RefKind, Table, Via};
 
-use super::columns::{left_key_message, outside_exists_message};
-use super::{JoinedRef, Qualified, Scope};
+use super::columns::{Resolved, resolve};
+use super::{JoinedRef, Scope};
 use crate::sql::{NamedTable, Reported, Walker, and_parts, line};
 
 /// `schema.table AS alias`, as read.
@@ -34,25 +34,6 @@ enum NotEquality {
     Shape,
     /// The part's own error is reported already.
     Reported,
-}
-
-/// What the near side of a join equality reads.
-enum Near {
-    Via(Via),
-    /// No column a join can go through.
-    Unknown,
-    /// A column of a semi or anti join, which keeps no row to go through.
-    Existential {
-        alias: Identifier,
-        column: Identifier,
-        kind: RefKind,
-    },
-    /// A key column of a `LEFT OUTER JOIN`, joined on `via`.
-    LeftKey {
-        alias: Identifier,
-        column: Identifier,
-        via: Via,
-    },
 }
 
 /// FROM read: the fact table, the scope its joins make, and the WHERE
@@ -254,25 +235,11 @@ impl Walker {
         if joined_side.alias != *alias {
             return Err(NotEquality::Shape);
         }
-        let via = match near(scope, near_side) {
-            Near::Via(via) => via,
-            Near::Unknown => return Err(NotEquality::Shape),
-            Near::Existential {
-                alias: near_alias,
-                column,
-                kind,
-            } => {
-                let message = outside_exists_message(&near_alias, &column, kind);
-                self.error(line(right.as_ref()), message);
-                return Err(NotEquality::Reported);
-            }
-            Near::LeftKey {
-                alias: near_alias,
-                column,
-                via,
-            } => {
-                let message = left_key_message(scope, &near_alias, &column, &via);
-                self.error(line(right.as_ref()), message);
+        let via = match resolve(scope, near_side) {
+            Resolved::Column(via) => via,
+            Resolved::UnknownAlias(_) => return Err(NotEquality::Shape),
+            Resolved::Unreadable(unreadable) => {
+                self.report_unreadable(line(right.as_ref()), scope, unreadable);
                 return Err(NotEquality::Reported);
             }
         };
@@ -424,39 +391,4 @@ pub(super) fn key_position(joined: &JoinedRef, column: &Identifier) -> Option<us
         }
     }
     None
-}
-
-/// The near side of a join equality: a fact column, or a column of a
-/// dim joined before, which then carries it.
-fn near(scope: &Scope, near_side: Qualified) -> Near {
-    let Qualified { alias, column } = near_side;
-    if alias == scope.alias {
-        return Near::Via(Via::Fact(column));
-    }
-    let Some(through) = ref_position(scope, &alias) else {
-        return Near::Unknown;
-    };
-    let joined = &scope.refs[through];
-    let kind = joined.reference.kind;
-    match kind {
-        RefKind::Left | RefKind::Inner => {}
-        RefKind::Semi | RefKind::Anti => {
-            return Near::Existential {
-                alias,
-                column,
-                kind,
-            };
-        }
-    }
-    // A key column of an inner-joined dim is the column it was joined on,
-    // the fact's or, in a chain, a dim's joined before. Of a left-joined
-    // dim it is null where no row matches, and that column is not.
-    let Some(position) = key_position(joined, &column) else {
-        return Near::Via(Via::Attribute { through, column });
-    };
-    let via = joined.reference.via[position].clone();
-    if joined.reference.kind == RefKind::Left {
-        return Near::LeftKey { alias, column, via };
-    }
-    Near::Via(via)
 }
