@@ -249,9 +249,13 @@ reader is stuck on, it shuts the same sockets.
 ## Answering an ask
 
 An ask comes in through the HTTP handler in `straum-http`
-(`routes.rs`). On a blocking thread, it reads at most 1 MiB of body,
-parses the query with the parameters bound to `$n` and refuses a range
-jiff can't print. `App::ask` then takes the read lock and checks the
+(`routes.rs`). It takes a turn, of which there is one per core, or is
+503 busy when none is free, and holds it until its answer is written,
+so asks can't queue on the read lock without end and keep the writer
+from it. On a
+blocking thread, it reads at most 1 MiB of body, parses the query with
+the parameters bound to `$n` and refuses a range jiff can't print.
+`App::ask_window` then takes the read lock and checks the
 ask against the spec, refusing any ask it can't answer exactly; an
 invalid ask is 400 even while loading. Until a load is in, with no
 applied LSN in the `State`, the answer is 503 not ready.

@@ -17,6 +17,7 @@ use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderName
 use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Cut, Definition, Start, Window};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::json::quoted;
 use crate::{AskSyntax, DescribeAskError, Served, answer, ask, status, views};
@@ -128,6 +129,7 @@ pub(crate) async fn handle(
         syntax,
         definitions,
         hosts,
+        turns,
     } = &*served;
     let (parts, body) = request.into_parts();
     // 421, as for a name this server does not serve: the request was not
@@ -141,7 +143,7 @@ pub(crate) async fn handle(
         (&Method::POST, "/ask") => {
             let format = Format::of(accept, Format::Json);
             if is_json(parts.headers.get(CONTENT_TYPE)) {
-                post_ask(body, app, *syntax, format).await
+                post_ask(body, app, turns, *syntax, format).await
             } else {
                 let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
                 format.errors(StatusCode::UNSUPPORTED_MEDIA_TYPE, &[error])
@@ -152,13 +154,7 @@ pub(crate) async fn handle(
         (&Method::GET, "/status") => get_status(app, Format::of(accept, Format::Text)),
         (&Method::GET, "/views") => {
             let format = Format::of(accept, Format::Text);
-            let app = app.clone();
-            // The views are read under the store's lock, which a long ask
-            // or a writer can hold: the health routes don't queue behind.
-            match tokio::task::spawn_blocking(move || get_views(&app, format)).await {
-                Ok(reply) => reply,
-                Err(_) => failed(format),
-            }
+            views_off_async(app, turns, format).await
         }
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
@@ -166,13 +162,43 @@ pub(crate) async fn handle(
             let named = &path[ROWS_PREFIX.len()..];
             match named.strip_suffix(SPEC_SUFFIX) {
                 Some(view) => get_spec(definitions, view),
-                None => get_rows(app, syntax.describe, named, parts.uri.query()).await,
+                None => get_rows(app, turns, syntax.describe, named, parts.uri.query()).await,
             }
         }
         (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
     };
     Ok(reply)
+}
+
+/// A turn to read the store, if one is free. Waiting for one would let
+/// asks pile up without end; a client refused one can ask again.
+fn take_turn(turns: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    Arc::clone(turns).try_acquire_owned().ok()
+}
+
+/// The reply when every turn to read the store is taken.
+fn busy(format: Format) -> Reply {
+    let error = "busy: every core is answering an ask; ask again shortly";
+    format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
+}
+
+/// `GET /views` on a blocking thread, holding a turn till it is done.
+async fn views_off_async(app: &App, turns: &Arc<Semaphore>, format: Format) -> Reply {
+    let Some(turn) = take_turn(turns) else {
+        return busy(format);
+    };
+    let app = app.clone();
+    // The views are read under the store's lock, which a long ask or a
+    // writer can hold: the health routes don't queue behind.
+    let read = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        get_views(&app, format)
+    });
+    match read.await {
+        Ok(reply) => reply,
+        Err(_) => failed(format),
+    }
 }
 
 /// Whether `Content-Type` names JSON, whatever its parameters or case.
@@ -191,7 +217,13 @@ fn media_type(value: &str) -> &str {
     value.split(';').next().unwrap_or_default().trim()
 }
 
-async fn post_ask(body: Incoming, app: &App, syntax: AskSyntax, format: Format) -> Reply {
+async fn post_ask(
+    body: Incoming,
+    app: &App,
+    turns: &Arc<Semaphore>,
+    syntax: AskSyntax,
+    format: Format,
+) -> Reply {
     let start = Instant::now();
     let collected = Limited::new(body, MAX_ASK_BYTES).collect();
     let Ok(collected) = tokio::time::timeout(BODY_TIMEOUT, collected).await else {
@@ -212,26 +244,32 @@ async fn post_ask(body: Incoming, app: &App, syntax: AskSyntax, format: Format) 
             return format.errors(StatusCode::BAD_REQUEST, &[error]);
         }
     };
+    let Some(turn) = take_turn(turns) else {
+        return busy(format);
+    };
     let parsing = Instant::now();
     // Reading a 1 MiB ask takes time an async thread can't spare: the
-    // health routes queue behind it.
-    let read = tokio::task::spawn_blocking(move || read_body(&body, syntax)).await;
-    let asked = match read {
-        Ok(Ok(asked)) => asked,
-        Ok(Err(errors)) => return format.errors(StatusCode::BAD_REQUEST, &errors),
+    // health routes queue behind it. The turn goes along, so a client
+    // that hangs up frees it only once the read is done.
+    let read = tokio::task::spawn_blocking(move || (read_body(&body, syntax), turn)).await;
+    let (asked, turn) = match read {
+        Ok((Ok(asked), turn)) => (asked, turn),
+        Ok((Err(errors), _)) => return format.errors(StatusCode::BAD_REQUEST, &errors),
         Err(_) => return failed(format),
     };
     let writing = Writing {
         format,
         rows: Rows::Every,
     };
+    let parse_time = parsing.elapsed();
     answer(
         app,
         asked,
         writing,
         syntax.describe,
-        parsing.elapsed(),
+        parse_time,
         start,
+        turn,
     )
     .await
 }
@@ -282,7 +320,13 @@ fn no_view(view: &str) -> Reply {
     )
 }
 
-async fn get_rows(app: &App, describe: DescribeAskError, view: &str, query: Option<&str>) -> Reply {
+async fn get_rows(
+    app: &App,
+    turns: &Arc<Semaphore>,
+    describe: DescribeAskError,
+    view: &str,
+    query: Option<&str>,
+) -> Reply {
     let start = Instant::now();
     let Some(asked) = app.rows_ask(view) else {
         return no_view(view);
@@ -295,7 +339,10 @@ async fn get_rows(app: &App, describe: DescribeAskError, view: &str, query: Opti
         format: Format::Text,
         rows: Rows::Window(window),
     };
-    answer(app, asked, writing, describe, Duration::ZERO, start).await
+    let Some(turn) = take_turn(turns) else {
+        return busy(Format::Text);
+    };
+    answer(app, asked, writing, describe, Duration::ZERO, start, turn).await
 }
 
 /// The rows `GET /views/NAME` writes, from `start` and `count` in its
@@ -401,6 +448,9 @@ fn within_answer_rows(cut: Cut) -> Result<(), Unwritten> {
     Ok(())
 }
 
+/// The answer to `asked` on a blocking thread, holding `turn` till it is
+/// written: a client that hangs up stops neither, so the turn is not
+/// freed while the store is still being read.
 async fn answer(
     app: &App,
     asked: Ask,
@@ -408,6 +458,7 @@ async fn answer(
     describe: DescribeAskError,
     parse_time: Duration,
     start: Instant,
+    turn: OwnedSemaphorePermit,
 ) -> Reply {
     let format = writing.format;
     let range_errors = answer::range_errors(&asked);
@@ -417,7 +468,11 @@ async fn answer(
     let app = app.clone();
     // A big ask reads every cell of a fact, so it runs off the async
     // threads.
-    let answered = tokio::task::spawn_blocking(move || answer_timed(&app, &asked, writing)).await;
+    let answered = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        answer_timed(&app, &asked, writing)
+    })
+    .await;
     match answered {
         Ok(Ok(timed)) => answered_reply(timed, format, parse_time, start),
         Ok(Err(error)) => answer_error(&error, describe, format),

@@ -14,7 +14,7 @@
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer
 //!   or whose answer has more than `MAX_ANSWER_ROWS` rows, 503 while a
-//!   table it reads isn't ready. With `Accept: text/plain` the
+//!   table it reads isn't ready or while every core answers another ask. With `Accept: text/plain` the
 //!   answer is a table and the errors are lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and Straum is within its
@@ -49,9 +49,11 @@ use std::fmt;
 use std::future::{Future, poll_fn};
 use std::io;
 use std::net;
+use std::num::NonZero;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
+use std::thread;
 use std::time::Duration;
 
 use hyper::server::conn::http1;
@@ -65,6 +67,7 @@ use crate::host::Hosts;
 pub use crate::host::is_host;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::sync::Semaphore;
 
 /// How long to wait before accepting again after an accept fails, as when
 /// the process is out of file descriptors.
@@ -109,12 +112,17 @@ pub struct AskSyntax {
 }
 
 /// What every request is answered from: the app, the syntax its asks are
-/// read in, each view's definition, and the hosts it answers to.
+/// read in, each view's definition, the hosts it answers to, and the
+/// turns to read the store.
 struct Served {
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     hosts: Hosts,
+    /// One per core: a request that reads the store holds one until it is
+    /// done, so asks without end can't keep the writer from the store's
+    /// lock, which a waiting writer would hold every new reader behind.
+    turns: Arc<Semaphore>,
 }
 
 /// Serves `app` on `listener`, and each view's `definitions`, until
@@ -134,11 +142,14 @@ pub async fn serve(
     let hosts = Hosts::of(listener.local_addr()?, named_hosts);
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
+    // A core count unknown is taken as one: asks queue, but none fails.
+    let cores = thread::available_parallelism().map_or(1, NonZero::get);
     let served = Arc::new(Served {
         app,
         syntax,
         definitions,
         hosts,
+        turns: Arc::new(Semaphore::new(cores)),
     });
     let graceful = GracefulShutdown::new();
     let mut shutdown = pin!(shutdown);

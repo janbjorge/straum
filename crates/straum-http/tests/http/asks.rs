@@ -575,6 +575,35 @@ fn reading_asks_leaves_the_health_routes_free() {
     server.stop();
 }
 
+/// One ask read on each core takes every turn to read the store: one
+/// more ask, or a view's rows, is refused 503, and once a turn is free
+/// each is answered.
+#[test]
+fn an_ask_past_one_per_core_is_refused_until_a_turn_is_free() {
+    let writer = loaded();
+    let server = serve_with(writer.app().clone(), read_slowly);
+    let address = server.address;
+    let cores = thread::available_parallelism().map_or(1, NonZero::get);
+    let mut asks = Vec::new();
+    for _ in 0..cores {
+        asks.push(thread::spawn(move || {
+            call(address, "POST", "/ask", ANY_QUERY)
+        }));
+    }
+    thread::sleep(Duration::from_millis(200));
+    let refused = call(address, "POST", "/ask", ANY_QUERY);
+    let busy = r#"{"errors":["busy: every core is answering an ask; ask again shortly"]}"#;
+    assert_eq!((refused.status, refused.body.as_str()), (503, busy));
+    let rows = call(address, "GET", "/views/trips", "");
+    assert_eq!(rows.status, 503, "{}", rows.body);
+    for ask in asks {
+        assert_eq!(ask.join().unwrap().status, 200);
+    }
+    assert_eq!(call(address, "POST", "/ask", ANY_QUERY).status, 200);
+    assert_eq!(call(address, "GET", "/views/trips", "").status, 200);
+    server.stop();
+}
+
 fn query_error(line: Option<u64>, message: &str) -> QueryError {
     QueryError {
         line,

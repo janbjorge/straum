@@ -53,11 +53,12 @@ stopped answering.
 | 0 | Done. |
 | 1 | Failed. |
 | 2 | The command line is wrong; `straum` alone prints the help and exits with 2 too. |
-| 3 | Straum is not ready yet. |
+| 3 | Straum is not ready yet, or busy. |
 
 `status` exits with 3 while `/readyz` answers 503: Straum is loading,
 or further behind PostgreSQL than `--max-lag`. `views` and `ask` exit
-with 3 only while it loads; a Straum that lags still answers. A script
+with 3 only while it loads, or while every core answers another ask
+([Errors](asks.md#errors)); a Straum that lags still answers. A script
 waits on 3 and tries again; the other failures need a change first.
 
 On a pipe, `straum shell` goes on past a failed command, one that met

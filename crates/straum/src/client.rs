@@ -86,8 +86,8 @@ pub(crate) enum ClientError {
 }
 
 impl ClientError {
-    /// Straum answered 503: it is loading or too far behind, and may
-    /// answer if asked again later.
+    /// Straum answered 503: it is loading, too far behind or busy with
+    /// other asks, and may answer if asked again later.
     pub(crate) fn is_not_ready(&self) -> bool {
         match self {
             ClientError::Refused { status_line, .. } => status_code(status_line) == Some(503),

@@ -259,6 +259,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | 415 | `{"errors": ["an ask is JSON, sent with Content-Type: application/json"]}`: the request has no `Content-Type`, or another media type than `application/json`. Its parameters, such as `; charset=utf-8`, and its case don't matter. |
 | 421 | The `Host` is none `--allow-hosts` lists, or Straum listens on loopback and the `Host` names another machine or port, on every endpoint ([Who can ask](deploy.md#who-can-ask)). |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
+| 503 | `{"errors": ["busy: every core is answering an ask; ask again shortly"]}`: Straum answers as many asks at once as it has cores, and `GET /views` and `GET /views/NAME` count as asks. Retry. |
 
 No ask is answered 500: a panic in Straum ends the process rather than
 answering from a store it may have left half written, and the client
