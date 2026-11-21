@@ -16,8 +16,7 @@ use super::{BucketId, Cover, CoveredBucket, DATE_BIN, Direction, Input, LevelInd
 /// The cells of one bucket width.
 #[derive(Debug)]
 pub(super) struct Level {
-    /// Bucket width in seconds.
-    pub(super) width: i64,
+    pub(super) width: Width,
     /// Oldest first. `None` holds the rows without a time, which no ask reads.
     pub(super) buckets: BTreeMap<Option<i64>, Cells>,
 }
@@ -62,7 +61,12 @@ impl Level {
     /// The start of the bucket `time` falls in; none for a null time.
     pub(super) fn bucket(&self, time: &Datum) -> Option<i64> {
         match *time {
-            Datum::Int(seconds) => Some(seconds.div_euclid(self.width) * self.width),
+            // Unchecked: `Rollup::check_time` turned away every time whose
+            // bucket start `i64` can't hold before the row got here.
+            Datum::Int(seconds) => {
+                let width = i64::from(self.width.seconds);
+                Some(seconds.div_euclid(width) * width)
+            }
             _ => None,
         }
     }
@@ -170,7 +174,7 @@ impl Level {
     // An iterator, not a `Vec`: an ask allocates per group, never per
     // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost/main.rs).
     fn buckets_in(&self, from: i64, to: i64) -> impl Iterator<Item = CoveredBucket<'_>> {
-        let width = self.width;
+        let width = i64::from(self.width.seconds);
         let buckets = self.buckets.range(Some(from)..Some(to));
         buckets.map(move |(start, cells)| covered(width, *start, cells))
     }
@@ -220,7 +224,7 @@ impl Rollup {
     /// The level of `width`, which the view keeps.
     fn level_of(&self, width: Width) -> LevelIndex {
         for (index, level) in self.levels.iter().enumerate() {
-            if level.width == i64::from(width.seconds) {
+            if level.width == width {
                 return LevelIndex(index);
             }
         }
@@ -261,15 +265,16 @@ impl Rollup {
 }
 
 /// The least multiple of `width` at or above `at`, if `i64` holds it.
-fn ceiling_multiple(at: i64, width: i64) -> Option<i64> {
-    let mut quotient = at.div_euclid(width);
-    if at.rem_euclid(width) != 0 {
+fn ceiling_multiple(at: i64, width: Width) -> Option<i64> {
+    let seconds = i64::from(width.seconds);
+    let mut quotient = at.div_euclid(seconds);
+    if at.rem_euclid(seconds) != 0 {
         quotient += 1;
     }
-    quotient.checked_mul(width)
+    quotient.checked_mul(seconds)
 }
 
 /// The greatest multiple of `width` at or below `at`, if `i64` holds it.
-fn floor_multiple(at: i64, width: i64) -> Option<i64> {
-    at.div_euclid(width).checked_mul(width)
+fn floor_multiple(at: i64, width: Width) -> Option<i64> {
+    width.bucket_start(at)
 }

@@ -272,12 +272,12 @@ impl Rollup {
         let inputs = shared(&inputs);
         let mut levels = Vec::with_capacity(1 + fact.time.wider.len());
         levels.push(Level {
-            width: i64::from(fact.time.width.seconds),
+            width: fact.time.width,
             buckets: BTreeMap::new(),
         });
         for width in &fact.time.wider {
             levels.push(Level {
-                width: i64::from(width.seconds),
+                width: *width,
                 buckets: BTreeMap::new(),
             });
         }
@@ -319,7 +319,7 @@ impl Rollup {
             Some(last) => *last,
             None => first,
         };
-        Some(first..last + level.width)
+        Some(first..last + i64::from(level.width.seconds))
     }
 
     /// Drops every cell and code; the types stay.
@@ -585,11 +585,7 @@ impl Rollup {
     /// start before the earliest second `i64` holds.
     fn check_time(&self, seconds: i64) -> Result<(), RowError> {
         for level in &self.levels {
-            if seconds
-                .div_euclid(level.width)
-                .checked_mul(level.width)
-                .is_none()
-            {
+            if level.width.bucket_start(seconds).is_none() {
                 return Err(RowError::TimeOutOfRange {
                     column: self.columns[TIME].clone(),
                 });
