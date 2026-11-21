@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::wal::heap::MAIN_FORK;
+use crate::wal::record::{XLOG_FPI, XLOG_FPI_FOR_HINT};
 use crate::wal::test_support::*;
 use crate::wal::{
     Oid, RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_STORAGE,
@@ -177,7 +178,10 @@ fn concerns(record: &Record, files: &FastSet<RelationFile>) -> bool {
         RESOURCE_MANAGER_STANDBY,
     ];
     let page_image = record.resource_manager == RESOURCE_MANAGER_XLOG
-        && matches!(record.info & crate::wal::RESOURCE_MANAGER_INFO, 0xA0 | 0xB0);
+        && matches!(
+            record.info & crate::wal::RESOURCE_MANAGER_INFO,
+            XLOG_FPI | XLOG_FPI_FOR_HINT
+        );
     if always.contains(&record.resource_manager) && !page_image {
         return true;
     }

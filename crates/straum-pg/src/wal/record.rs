@@ -46,11 +46,11 @@ pub(super) const XLOG_SWITCH: u8 = 0x40;
 /// `XLOG_FPI_FOR_HINT`: a page's image, logged when a hint bit changes
 /// on a page first dirtied since the checkpoint, and only with data
 /// checksums or `wal_log_hints` on (`XLogHintBitIsNeeded`).
-const XLOG_FPI_FOR_HINT: u8 = 0xA0;
+pub(super) const XLOG_FPI_FOR_HINT: u8 = 0xA0;
 /// `XLOG_FPI`: a page's image with no other change, as `log_newpage` and
 /// its kin write for a page built outside the usual WAL, such as an
 /// index build's.
-const XLOG_FPI: u8 = 0xB0;
+pub(super) const XLOG_FPI: u8 = 0xB0;
 
 /// `XLR_BLOCK_ID_DATA_SHORT`: main data, its length in one byte.
 pub(super) const DATA_SHORT: u8 = 255;

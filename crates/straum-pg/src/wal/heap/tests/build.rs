@@ -5,15 +5,15 @@
 use std::ops::Range;
 
 use super::*;
+use crate::wal::record::XLOG_FPI;
+use crate::wal::test_support::ROW_PADDING;
 
-/// `XLOG_FPI`: a full-page image with no other change.
-const XLOG_FULL_PAGE_IMAGE: u8 = 0xB0;
 /// `CheckPoint.redo`, the field a checkpoint record opens with.
 pub(super) const CHECKPOINT_REDO: Range<usize> = 0..8;
 /// The rest of `CheckPoint`, which Straum doesn't read.
 const CHECKPOINT_REST: usize = 80;
 /// The padding before a test row's columns.
-pub(super) const PADDING: [u8; 1] = [0];
+pub(super) const PADDING: [u8; ROW_PADDING] = [0; ROW_PADDING];
 /// A test row's `t_infomask2`: two columns, no flags.
 const TWO_COLUMNS: u16 = 2;
 /// `PruneReason` `PRUNE_VACUUM_SCAN`, the reason byte up to 18.
@@ -61,14 +61,20 @@ pub(super) fn page_bytes(rows: &[Placed]) -> Vec<u8> {
         let length = TUPLE_HEADER + tuple.body.len();
         upper -= length;
         let header = &mut page[upper + TUPLE_LOGGED_HEADER..upper + TUPLE_HEADER];
-        header[HEADER_INFOMASK2].copy_from_slice(&tuple.infomask2.to_le_bytes());
-        header[HEADER_INFOMASK].copy_from_slice(&tuple.infomask.to_le_bytes());
-        header[HEADER_HOFF] = tuple.hoff;
+        write_heap_header(header, tuple);
         page[upper + TUPLE_HEADER..upper + length].copy_from_slice(&tuple.body);
         let at = PAGE_HEADER + LINE_POINTER * usize::from(slot - 1);
         page[at..at + LINE_POINTER].copy_from_slice(&line_pointer(upper, length));
     }
     page
+}
+
+/// `tuple`'s `t_infomask2`, `t_infomask` and `t_hoff` into `header`, laid
+/// out as `xl_heap_header`.
+fn write_heap_header(header: &mut [u8], tuple: &HeapTuple) {
+    header[HEADER_INFOMASK2].copy_from_slice(&tuple.infomask2.to_le_bytes());
+    header[HEADER_INFOMASK].copy_from_slice(&tuple.infomask.to_le_bytes());
+    header[HEADER_HOFF] = tuple.hoff;
 }
 
 /// A normal `ItemIdData` for the row at `offset`.
@@ -130,7 +136,7 @@ pub(super) fn record(resource_manager: u8, info: u8, main: Vec<u8>, blocks: Vec<
 pub(super) fn full_page_images(blocks: Vec<BlockSpec>) -> Record {
     record(
         RESOURCE_MANAGER_XLOG,
-        XLOG_FULL_PAGE_IMAGE,
+        XLOG_FPI,
         Vec::new(),
         blocks,
     )
@@ -139,9 +145,7 @@ pub(super) fn full_page_images(blocks: Vec<BlockSpec>) -> Record {
 /// `xl_heap_header` and the row from its null bitmap on.
 pub(super) fn logged(tuple: &HeapTuple) -> Vec<u8> {
     let mut data = vec![0; HEAP_HEADER];
-    data[HEADER_INFOMASK2].copy_from_slice(&tuple.infomask2.to_le_bytes());
-    data[HEADER_INFOMASK].copy_from_slice(&tuple.infomask.to_le_bytes());
-    data[HEADER_HOFF] = tuple.hoff;
+    write_heap_header(&mut data, tuple);
     data.extend_from_slice(&tuple.body);
     data
 }
@@ -197,10 +201,7 @@ pub(super) fn multi_insert_data(rows: &[HeapTuple]) -> Vec<u8> {
         let mut header = vec![0; MULTI_INSERT_TUPLE];
         let length = u16::try_from(row.body.len()).unwrap();
         header[MULTI_INSERT_TUPLE_LENGTH].copy_from_slice(&length.to_le_bytes());
-        let heap_header = &mut header[MULTI_INSERT_TUPLE_LENGTH.end..];
-        heap_header[HEADER_INFOMASK2].copy_from_slice(&row.infomask2.to_le_bytes());
-        heap_header[HEADER_INFOMASK].copy_from_slice(&row.infomask.to_le_bytes());
-        heap_header[HEADER_HOFF] = row.hoff;
+        write_heap_header(&mut header[MULTI_INSERT_TUPLE_LENGTH.end..], row);
         data.extend(header);
         data.extend_from_slice(&row.body);
     }
