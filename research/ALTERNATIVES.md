@@ -12,7 +12,10 @@ through a fetch tool that quotes them, at most 125 characters a quote,
 so a quote can end before its sentence does. A search snippet is U.
 Every item the guide rests on was read a second time the same day,
 and §4 lists what the guide infers past the quotes. Items that say
-"read 2026-11-21", and §6, were read once, on that day.
+"read 2026-11-21", and §6, were read once, on that day. On 2026-11-21
+every quote was matched against the raw text of its page, and the
+quotes made longer or corrected then come from that read. Tiger Data
+had moved its documentation by then; the links are the new paths.
 
 ## 1. pg_ivm
 
@@ -37,16 +40,16 @@ the [LICENSE](https://github.com/sraoss/pg_ivm/blob/main/LICENSE).
    and that the writer's next statement reads the new row, is I: the
    trigger writes a table in that transaction.
 3. **Install.** "add it to either shared_preload_libraries or
-   session_preload_libraries in postgresql.conf", then `CREATE
+   session_preload_libraries in postgresql.conf", and `CREATE
    EXTENSION`. From 1.10 its objects are in the `pgivm` schema.
 4. **What a view takes.** "Inner joins including self-join are
-   supported." "Simple subqueries in FROM clause and EXISTS subqueries
-   in 'WHERE' clause are supported." "Simple CTEs (`WITH` queries) are
-   supported." "DISTINCT is allowed in IMMV's definition queries."
-   "Supported aggregate functions are count, sum, avg, min and max."
-   and "user defined aggregates cannot be used." Not taken: "window
-   functions, HAVING, ORDER BY, LIMIT/OFFSET", set operations, `WITH
-   RECURSIVE`.
+   supported." "Simple subqueries in `FROM` clause and `EXISTS`
+   subqueries in 'WHERE' clause are supported." "Simple CTEs (`WITH`
+   queries) are supported." "`DISTINCT` is allowed in IMMV's definition
+   queries." "Supported aggregate functions are count, sum, avg, min
+   and max." and "user defined aggregates cannot be used." Not taken:
+   "window functions, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`", set
+   operations, `WITH RECURSIVE`.
 5. **Outer joins.** "Outer joins are supported with the following
    restrictions." Among them: "Only simple equijoin is supported." and
    "Aggregate functions cannot be used with outer joins."
@@ -55,29 +58,34 @@ the [LICENSE](https://github.com/sraoss/pg_ivm/blob/main/LICENSE).
    foreign tables can not be used", nor views and materialized views.
 7. **min and max under delete.** When "a tuple containing the current
    minimal or maximal values are deleted from a base table", "the new
-   values could be re-calculated from base tables", and "it can takes a
-   long time to update an IMMV containing these functions."
+   values could be re-calculated from base tables with regard to the
+   affected groups", and "it can takes a long time to update an IMMV
+   containing these functions."
 8. **Floats.** "using `sum` or `avg` on `real` (`float4`) type or
    `double precision` (`float8`) type in IMMV is unsafe", since
    "aggregated values in IMMV can become different from results
-   calculated from base tables." Straum refuses the same columns for
-   the same reason (ADR-0003).
-9. **Concurrent writers.** "ExclusiveLock is held on an IMMV
-   immediately after a base table is modified in READ COMMITTED
+   calculated from base tables due to the limited precision of these
+   types." Straum refuses the same columns for the same reason
+   (ADR-0003).
+9. **Concurrent writers.** "`ExclusiveLock` is held on an IMMV
+   immediately after a base table is modified in `READ COMMITTED`
    isolation level." The exception is a view of one base table with no
    `DISTINCT` or `GROUP BY` under `INSERT`, which takes
    `RowExclusiveLock`. "Incremental updates of a view are basically
    performed in sequentially even with concurrent transactions
    running." "In `REPEATABLE READ` or `SERIALIZABLE` isolation level,
-   an error is raised immediately if lock acquisition fails". How long
-   the lock is held is not in the README; that a second writer waits
-   for it under `READ COMMITTED` is I, from the lock.
+   an error is raised immediately if lock acquisition fails". The
+   README gives the lock no duration in so many words, but it "ensures
+   that the IMMV is updated in the latter transaction only after the
+   former transaction has committed" (item 13), so under `READ
+   COMMITTED` a second writer waits for the first to commit.
 10. **When it is not effective.** "Due to the overhead of immediate
     maintenance, IVM is not effective when a base table is modified
     frequently." Also "when a large part of a base table is modified or
     large data is inserted into a base table, IVM is not effective";
-    for that, "we can use refresh_immv function with with_data = false
-    to disable immediate maintenance before modifying a base table."
+    for that, "we can use `refresh_immv` function with `with_data =
+    false` to disable immediate maintenance before modifying a base
+    table."
 11. **Its own example.** `pgbench_accounts` joined to
     `pgbench_branches`, 10,000,000 rows, no aggregate. One `UPDATE`
     of an account: `Time: 9.052 ms` beside a plain materialized view,
@@ -97,7 +105,9 @@ the [LICENSE](https://github.com/sraoss/pg_ivm/blob/main/LICENSE).
     base tables." The lock of item 9 "ensures that the IMMV is updated
     in the latter transaction only after the former transaction has
     committed." `refresh_immv` "completely replaces the contents of an
-    IMMV". The README names no way to change a view's query.
+    IMMV". The README names no function that changes a view's query;
+    `restore_immv` with `replace` registers an existing table again, an
+    option "intended for use with `pg_upgrade`".
 14. **What it installs** (read 2026-11-21). The server loads it: "add
     it to either shared_preload_libraries or session_preload_libraries
     in postgresql.conf", then "restart PostgreSQL for the configuration
@@ -121,23 +131,29 @@ each item, and the
    minor releases, 18.7, 17.12 and 16.16". The range of majors it
    supports was not read anywhere else.
 2. **What one is**
-   ([about](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/about-continuous-aggregates)).
+   ([about](https://www.tigerdata.com/docs/learn/continuous-aggregates)).
    "Continuous aggregates in TimescaleDB are a kind of hypertable that
    is refreshed automatically in the background". They "take raw data
    from the original hypertable, aggregate it, and store the aggregated
-   data". A hypertable is one of the "PostgreSQL tables that
+   data". "Because continuous aggregates are based on hypertables, you
+   can query them in exactly the same way as your other tables." A
+   hypertable is one of the "PostgreSQL tables that
    automatically partition your time-series data by time"
-   ([hypertables](https://www.tigerdata.com/docs/use-timescale/latest/hypertables)).
+   ([hypertables](https://www.tigerdata.com/docs/learn/hypertables/understand-hypertables)).
 3. **The query**
-   ([create](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/create-a-continuous-aggregate)).
+   ([create](https://www.tigerdata.com/docs/build/continuous-aggregates/create-a-continuous-aggregate)).
    "The `GROUP BY` clause must include a `time_bucket` expression which
-   uses time dimension column of the hypertable." "You can only specify
-   a single hypertable in the `FROM` clause." "Mutable functions have
-   experimental support in the continuous aggregate query definition."
-   "Window functions are disabled by default." "By default, when you
-   create a view for the first time, it is populated with data."
+   uses time dimension column of the hypertable." "Mutable functions
+   have experimental support in the continuous aggregate query
+   definition." "Window functions are disabled by default." "By
+   default, when you create a view for the first time, it is populated
+   with data." Under Query continuous aggregates, of the `SELECT` that
+   reads the view: "You can only specify a single hypertable in the
+   `FROM` clause. Including more hypertables, tables, views, or
+   subqueries in your `SELECT` query is not supported." The page does
+   not square that with the joins of item 8.
 4. **Refresh**
-   ([policies](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/refresh-policies)).
+   ([policies](https://www.tigerdata.com/docs/build/continuous-aggregates/refresh-policies)).
    "Refresh policies control how and when a materialized continuous
    aggregate catches up with its source hypertable." `start_offset`
    and `end_offset` bound the window "relative to when the policy
@@ -150,20 +166,22 @@ each item, and the
    By hand: "CALL refresh_continuous_aggregate('example', '2021-05-01',
    '2021-06-01');". The page's own policy example has
    `schedule_interval => INTERVAL '1 h'`. The
-   [API page](https://www.tigerdata.com/docs/api/latest/continuous-aggregates/add_continuous_aggregate_policy)
+   [API page](https://www.tigerdata.com/docs/reference/timescaledb/continuous-aggregates/add_continuous_aggregate_policy)
    marks `schedule_interval` required and gives it a default of "24
    hours" in the same row, without saying how both hold, so the guide
-   names the example's hour and no default. The policy returns the
+   names neither an interval nor a default. The policy returns the
    "TimescaleDB background job ID created to implement this policy".
 5. **Tracking changes** (about). "Any change to the data in a
    hypertable could potentially invalidate some materialized rows."
    "When data older than the invalidation threshold is changed, each
    transaction logs the minimum and maximum timestamps of the rows it
-   modified." "This logging does cause some write load." A transaction
+   modified." "This logging does cause some write load. However, the
+   threshold lags behind the area of data that is currently changing,
+   so the writes are small and rare." A transaction
    that touches 10:00 and 15:00 invalidates every bucket between them;
    two transactions invalidate only the two.
 6. **Real-time aggregates**
-   ([page](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/real-time-aggregates)).
+   ([page](https://www.tigerdata.com/docs/learn/continuous-aggregates/real-time-aggregates)).
    "Real-time aggregates automatically add the most recent data when
    you query your continuous aggregate." "In TimescaleDB v2.13 and
    later, real-time aggregates are **DISABLED** by default."
@@ -179,6 +197,8 @@ each item, and the
 7. **Aggregates** (about). "In TimescaleDB v2.7 and later, continuous
    aggregates support all PostgreSQL aggregate functions.", ordered-set
    aggregates, `DISTINCT` and `FILTER` in an aggregate included. The
+   create page says less: "You can use most PostgreSQL aggregate
+   functions in continuous aggregations." The
    [2.7.0 release](https://github.com/timescale/timescaledb/releases/tag/2.7.0)
    lists "Continuous Aggregates finals form" and "FILTER, DISTINCT,
    ORDER BY as well as Ordered-Set Aggregate"; neither page says why
@@ -193,13 +213,14 @@ each item, and the
 9. **Stacking** (about). "You can create a continuous aggregate on top
    of another continuous aggregate."
 10. **Dropping raw rows**
-    ([drop data](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/drop-data)).
-    To keep the buckets, "set the `start_offset` value of the aggregate
-    policy to a smaller interval than the `drop_after` parameter."
-    Otherwise "in many cases, dropping underlying data replaces the
-    aggregate with NULL values."
+    ([drop data](https://www.tigerdata.com/docs/build/continuous-aggregates/drop-data)).
+    "In many cases, dropping underlying data replaces the aggregate
+    with NULL values, which can lead to unexpected results in your
+    view." To keep the buckets, "set the `start_offset` value of the
+    aggregate policy to a smaller interval than the `drop_after`
+    parameter of the retention policy."
 11. **Licence**
-    ([editions](https://www.tigerdata.com/docs/about/latest/timescaledb-editions)).
+    ([editions](https://www.tigerdata.com/docs/get-started/choose-your-path/timescaledb-editions)).
     The table's "CREATE MATERIALIZED VIEW (Continuous Aggregate)" row
     is no for the Apache 2 Edition and yes for the Community Edition,
     which is "available under the terms of the Tiger Data License
@@ -222,7 +243,9 @@ each item, and the
     "Invalidations track the regions/intervals [start, end] of a
     continuous", "initially written to a hypertable invalidation log
     [hypertable_id, start, end]." An entry holds a time range and no
-    key. "Since a refresh always materializes full buckets, we can
+    key of a row; on `main` both logs have the columns "(id,
+    lowest_modified_value, greatest_modified_value, seqnum)", the last
+    nullable. "Since a refresh always materializes full buckets, we can
     safely expand an invalidation to bucket boundaries".
     [materialize.c](https://github.com/timescale/timescaledb/blob/main/tsl/src/continuous_aggs/materialize.c)
     then runs "DELETE FROM %s.%s AS D " "WHERE D.%s >= $1 AND D.%s <
@@ -230,29 +253,40 @@ each item, and the
     I.%s >= $1 AND I.%s < $2 %s %s;", or with a setting on a `MERGE`
     that rewrites the rows that differ, "WHEN MATCHED AND ROW(M.*) IS
     DISTINCT FROM ROW(P.*)". Either way the range is computed again
-    from the view's query.
+    from the view's query. One case on `main` narrows that (read
+    2026-11-21): a granular refresh the release notes name from 2.29.0
+    ("Initial placeholder version of granular refresh API") and no
+    documentation page was found for. With it, "only rows whose
+    tenant_column matches a tracked tenant" in the range "are
+    re-materialized", the `%s` after `$2` in the `DELETE` and the
+    `INSERT` being that predicate, and the `MERGE` is "not for
+    tenant-scoped ranges". `seqnum` is its link from a log entry:
+    "seqnum 0 means "no associated granular tracking" and is stored as
+    SQL NULL."
 14. **Stacking, in detail**
-    ([hierarchical](https://www.tigerdata.com/docs/use-timescale/latest/continuous-aggregates/hierarchical-continuous-aggregates)).
-    One view has one bucket width: "To get a daily summary, you can
-    create a new continuous aggregate on top of your hourly aggregate."
-    The upper width "needs to be a multiple of the underlying time
-    bucket." "Set up automatic refresh policies for each level." "Not
+    ([hierarchical](https://www.tigerdata.com/docs/learn/continuous-aggregates/hierarchical-continuous-aggregates)).
+    One view has one bucket width (I, from item 3): "To get a daily
+    summary, you can create a new continuous aggregate on top of your
+    hourly aggregate." The upper width "needs to be a multiple of the
+    underlying time bucket." The page's link to the refresh page reads
+    "Set up automatic refresh policies for each level." "Not
     all calculations return the correct result if you stack them.";
     for those the page points to hyperfunctions "designed with a
     two-step aggregation pattern", where "The first step creates a
     summary aggregate that can be rolled up".
 15. **Unique indexes on a hypertable**
-    ([page](https://www.tigerdata.com/docs/use-timescale/latest/hypertables/hypertables-and-unique-indexes)).
+    ([page](https://www.tigerdata.com/docs/build/performance-optimization/hypertables-and-unique-indexes)).
     "When you create a unique index, it must contain all the
     partitioning columns of the hypertable."
 16. **What it installs, and making a table a hypertable** (read
-    2026-11-21). Self-hosted
-    ([install](https://www.tigerdata.com/docs/self-hosted/latest/install/installation-linux/)):
+    2026-11-21). Self-hosted, in the page's steps for a build from
+    source
+    ([install](https://www.tigerdata.com/docs/get-started/choose-your-path/install-timescaledb)):
     "Open the `postgresql.conf` file and update
     `shared_preload_libraries`", "Restart the PostgreSQL instance",
     then `CREATE EXTENSION IF NOT EXISTS timescaledb;` in each
     database. A table that holds rows
-    ([page](https://www.tigerdata.com/docs/use-timescale/latest/hypertables/hypertable-crud/)):
+    ([page](https://www.tigerdata.com/docs/learn/hypertables/optimize-data-in-hypertables)):
     "To convert an existing table with data in it, call
     `create_hypertable` on that table", with `migrate_data` true, and
     "if you have a lot of data, this may take a long time." Keys
@@ -263,9 +297,12 @@ each item, and the
     [tutorial](https://www.tigerdata.com/docs/learn/tutorials/migrate-a-table-to-a-hypertable)
     makes a new hypertable beside the old table, sends new rows to it
     with a trigger, copies the history so that "each batch commits on
-    its own, so no single transaction holds locks", and renames the
-    two. Whether another table's foreign key may point at a
-    hypertable: a search summary gave two answers by version (U).
+    its own, so no single transaction holds locks or builds up
+    write-ahead log (WAL) for long", and renames the two. Another
+    table's foreign key may point at a hypertable from 2.16.0, whose
+    release note says "You can add foreign keys from regular tables to
+    hypertables, with support for all types of cascading options."
+    (R, read 2026-11-21).
 
 ## 3. Where each is offered
 
@@ -273,7 +310,7 @@ Read on 2026-11-20; these lists change.
 
 | Service | pg_ivm | TimescaleDB |
 | --- | --- | --- |
-| Azure Database for PostgreSQL flexible server | 1.15 on PostgreSQL 13 to 18 (R) | 2.24.0 on 15 to 18, "the TimescaleDB [Apache-2 edition]" (R), so no continuous aggregates (I, from §2.11) |
+| Azure Database for PostgreSQL flexible server | 1.15 on PostgreSQL 13 to 19 (R) | 2.24.0 on 15 to 18, "the TimescaleDB Apache-2 edition" (R), so no continuous aggregates (I, from §2.11) |
 | Google Cloud SQL | "PostgreSQL versions 13 and later support version 1.9." (R) | not on the page (R) |
 | Amazon RDS | not in the tables for PostgreSQL 16 to 19 (R) | not in those tables (R) |
 | Tiger Cloud | not looked up | the Community Edition (R, editions) |
@@ -311,8 +348,8 @@ summary holds (I):
 | Straum | In its own process, on the stream after the commit | Cells of counts and sums that merge and subtract, several widths a view |
 
 What each asks of the database before its first answer (R: §1.14,
-§2.16, `docs/src/postgresql.md`). On a managed service the first
-column is whatever the service offers (§3):
+§2.2, §2.4, §2.16, `docs/src/postgresql.md`). On a managed service the
+first column is whatever the service offers (§3):
 
 | | In the server | In the database |
 | --- | --- | --- |
@@ -322,7 +359,8 @@ column is whatever the service offers (§3):
 | Straum, `--wal physical` | Nothing at the defaults | A role, `SELECT`, one `GRANT EXECUTE` |
 
 Why someone would try Straum, each read from Straum's own pages on
-2026-11-21; the guide's What you gain tells them in this order:
+2026-11-21; the guide's What you gain tells them in this order, but
+for the fifth, which is only here:
 
 - Trying changes nothing in the database: one command copies the
   columns the spec reads into Docker with a role that needs only
@@ -349,29 +387,34 @@ Why someone would try Straum, each read from Straum's own pages on
 What follows for Straum, each with its home in the guide:
 
 - The work leaves the database: no trigger, no refresh, and no query
-  for an ask (`postgresql.md`, What Straum costs the server).
+  for an ask (`how-it-works.md`, Answering an ask: "It never touches
+  PostgreSQL"; `postgresql.md`, What Straum costs the server).
 - One view answers many asks exactly: any range of its buckets, any of
   its keys, a row per hour, day or week, with averages, percentiles
   and distinct counts merged from the cells (`aggregates.md`, Merging;
   `asks.md`, The query).
-- A change costs what it changes: one cell a width for a row inserted,
-  updated or deleted, whatever its time, and one projection row for a
-  dim (`how-it-works.md`, Following and Dims).
+- A change costs what it changes: one cell a width for a row inserted
+  or deleted and two at most for one updated, whatever its time, and
+  one projection row for a dim, which moves cells only where the view
+  keeps bound cells (`how-it-works.md`, Following and Dims).
 - An answer says how current it is, `as_of`, and a transaction applies
   whole (`asks.md`, `how-it-works.md`).
-- A Straum that fails or falls behind exits, its slot goes with it,
-  and `--max-retained-wal` caps the WAL kept for it (`deploy.md`,
-  States; `postgresql.md`).
+- A Straum that fails exits and its slot goes with it. One that falls
+  behind keeps answering, each answer with its `as_of`, until the WAL
+  kept for it passes `--max-retained-wal`; then it exits too
+  (`deploy.md`, States; `postgresql.md`).
 
 Smaller ones, read from Straum's own pages on 2026-11-21. The first
 two are in the guide's What you gain; the rest are only here:
 
-- The server's cost does not grow with the views: one slot, one stream
-  and one `COPY` a table, however many views read the table
-  (`postgresql.md`, What Straum costs the server; `design.md`:
-  "`Spec::tables` lists each table once"). A second view over the same
-  tables is an edit to the spec and a restart, with no statement to
-  run in PostgreSQL.
+- The server's standing cost does not grow with the views: one slot
+  and one stream, however many views read a table (`postgresql.md`,
+  What Straum costs the server). The load does grow: one `COPY` a view
+  and one a dim (`crates/straum-app/src/writer.rs`, read 2026-11-21),
+  so a second view over the same fact table reads that table once more
+  at each start, as the guide says. A second view over the same tables
+  is an edit to the spec and a restart, with no statement to run in
+  PostgreSQL.
 - The summary is not a table in PostgreSQL, so nothing of it is
   written, vacuumed or backed up there (`how-it-works.md`: "It
   installs nothing in PostgreSQL and writes nothing to disk"). In one
@@ -389,7 +432,7 @@ two are in the guide's What you gain; the rest are only here:
   Seeing your own write), and `/readyz` turns off past `--max-lag`
   (`deploy.md`, States).
 - A deleted minimum or maximum lowers a count in its cell, and no row
-  is read again (`aggregates.md`, Removing a row; §1.13 has pg_ivm's
+  is read again (`aggregates.md`, Removing a row; §1.7 has pg_ivm's
   words on the same case).
 - Straum keeps no state across a failure, so a restart builds every
   view from the tables again and there is nothing to repair
@@ -397,23 +440,29 @@ two are in the guide's What you gain; the rest are only here:
 - With `--wal physical` no table and no server setting changes: the
   default `wal_level`, a role, `SELECT` and one `GRANT EXECUTE`
   (`postgresql.md`). RDS, Aurora and Cloud SQL do not hand out that
-  stream.
+  stream (U: `postgresql.md` says so, and no provider page was read
+  for it).
 - An app that asks holds no database connection and no database
   password. Straum checks no one, so who reaches it is decided in
   front of it (`deploy.md`, Who can ask).
 
 What follows for the other two, which Straum does not have: pg_ivm's
 view is right inside the writing transaction and can hold a join with
-no aggregate; a continuous aggregate takes every PostgreSQL aggregate,
-is on disk and can outlive its raw rows. Either is a table any SQL
-reads and joins. Straum holds its views in memory, loads at every
-start, answers only its spec and needs PostgreSQL 17 or newer.
+no aggregate; a continuous aggregate takes "all PostgreSQL aggregate
+functions" by one page and "most" by another (§2.7), is on disk and
+can outlive its raw rows. Either is a table any SQL reads and joins
+(I, below). Straum holds its views in memory, loads at every start,
+answers only its spec and needs PostgreSQL 17 or newer.
 
 What the guide says of the two extensions that no quote above says,
 all I:
 
-- With pg_ivm "each write waits for it": the trigger runs in the
-  writing statement (§1.2).
+- With pg_ivm "it is never behind and each write waits for it": the
+  trigger runs in the writing statement (§1.2).
+- "Either leaves a table that any SQL can read and join": pg_ivm
+  creates a table (§1.2), and a continuous aggregate is queried "in
+  exactly the same way as your other tables" (§2.2). Neither source
+  speaks of joins to it.
 - A continuous aggregate fits "when the data is already in
   TimescaleDB": it reads a hypertable (§2.3), which Straum refuses.
 
@@ -428,9 +477,10 @@ all I:
 - What real-time aggregation costs a query.
 - TimescaleDB's hyperfunctions inside a continuous aggregate
   (AGGREGATES.md §2 has the percentile sketches).
-- Engines beside PostgreSQL: Materialize, Feldera and ReadySet are in
-  JOINS.md §2 and AGGREGATES.md §2 for their joins and aggregates,
-  not as alternatives.
+- Engines beside PostgreSQL: Materialize and Feldera are in JOINS.md
+  §2 and AGGREGATES.md §2, ReadySet in JOINS.md §2, for their joins
+  and aggregates, not as alternatives. §6 reads three home pages for
+  their wording only.
 
 ## 6. How tools beside the database state their case
 
@@ -453,5 +503,9 @@ checked.
 
 The angles repeat: nothing to change in the schema, no stale answer
 and no expiry to tune, load taken off the database, SQL the reader
-already writes. Straum can say each of itself (§4) but one: its reads
-are asks over HTTP, so the application's read does change.
+already writes. Straum can say three of itself (§4): no expiry to
+tune, load taken off the database, SQL the reader already writes. The
+rest it cannot say whole. Its answer "may be milliseconds behind"
+(`introduction.md`) and says so in `as_of`; `--wal logical` sets
+`REPLICA IDENTITY FULL` on each spec table; and its reads are asks
+over HTTP, so the application's read does change.

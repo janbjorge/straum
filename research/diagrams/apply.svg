@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="722" viewBox="0 0 880 722" role="img" aria-labelledby="t d">
   <title id="t">What each pgoutput message does to the store</title>
-  <desc id="d">A matrix of pgoutput messages against fact tables with REPLICA IDENTITY FULL, fact tables with the default identity, and dim tables. Facts with the default identity get no old row on update or delete, so Straum starts over. Relation messages that change a column start over. Commit applies the transaction under one write lock. Starting over clears readiness, waits with backoff, drops the store and the slot, and loads again from a new slot.</desc>
+  <desc id="d">A matrix of pgoutput messages against fact tables with REPLICA IDENTITY FULL, tables whose identity was changed back, and dim tables with REPLICA IDENTITY FULL. A table without FULL sends no old row on update or delete, so Straum stops. Relation messages that change a column stop it too. Commit applies the transaction under one write lock. Stopping logs the error and exits with 1; the connection closes, so PostgreSQL drops the slot; whatever runs Straum starts a new process, which loads again from a new slot.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -87,76 +87,76 @@
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
   <rect class="canvas" x="0.5" y="0.5" width="879" height="721" rx="10"/>
-  <text x="32" y="42" class="title">A fact needs the old row; without it, Straum starts over</text>
+  <text x="32" y="42" class="title">Every table sends its old row; without it, Straum stops</text>
   <text x="32" y="64" class="sub muted">What State::apply does with each pgoutput message, per kind of table.</text>
   <text x="172" y="108" class="h">Fact, REPLICA IDENTITY FULL</text>
-  <text x="172" y="126" class="s muted">mutable facts; straum plan sets it</text>
-  <text x="404" y="108" class="h">Fact, default identity</text>
-  <text x="404" y="126" class="s muted">what append = true facts get</text>
-  <text x="636" y="108" class="h">Dim</text>
-  <text x="636" y="126" class="s muted">its key is the replica identity</text>
+  <text x="172" y="126" class="s muted">straum plan prints the SQL for it</text>
+  <text x="404" y="108" class="h">Fact or dim without FULL</text>
+  <text x="404" y="126" class="s muted">its identity changed after setup</text>
+  <text x="636" y="108" class="h">Dim, REPLICA IDENTITY FULL</text>
+  <text x="636" y="126" class="s muted">held as a projection</text>
   <text x="32" y="108" class="lbl muted">MESSAGE</text>
   <path class="rule" d="M32 142H848"/>
   <text x="32" y="184.0" class="mono b">Insert</text>
   <rect class="box" x="160" y="154" width="224" height="50" rx="5"/>
   <text x="172" y="184.0">add the row to its cell</text>
   <rect class="box" x="392" y="154" width="224" height="50" rx="5"/>
-  <text x="404" y="184.0">add the row to its cell</text>
+  <text x="404" y="184.0">add the row, as with FULL</text>
   <rect class="box" x="624" y="154" width="224" height="50" rx="5"/>
-  <text x="636" y="184.0">upsert the row by key</text>
+  <text x="636" y="184.0">add the row to its projection</text>
   <text x="32" y="242.0" class="mono b">Update</text>
   <rect class="box" x="160" y="212" width="224" height="50" rx="5"/>
   <text x="172" y="234.0">remove the old row,</text>
   <text x="172" y="250.0">add the new one</text>
   <rect class="errbox" x="392" y="212" width="224" height="50" rx="5"/>
-  <text x="404" y="242.0" class="err b">start over: no old row</text>
+  <text x="404" y="242.0" class="err b">stop: no old row</text>
   <rect class="box" x="624" y="212" width="224" height="50" rx="5"/>
-  <text x="636" y="234.0">upsert the new row; delete</text>
-  <text x="636" y="250.0">the old key if it changed</text>
+  <text x="636" y="234.0">remove the old row,</text>
+  <text x="636" y="250.0">add the new one</text>
   <text x="32" y="300.0" class="mono b">Delete</text>
   <rect class="box" x="160" y="270" width="224" height="50" rx="5"/>
   <text x="172" y="300.0">remove the old row</text>
   <rect class="errbox" x="392" y="270" width="224" height="50" rx="5"/>
-  <text x="404" y="300.0" class="err b">start over: no old row</text>
+  <text x="404" y="300.0" class="err b">stop: no old row</text>
   <rect class="box" x="624" y="270" width="224" height="50" rx="5"/>
-  <text x="636" y="300.0">delete by key</text>
+  <text x="636" y="300.0">remove the old row</text>
   <text x="32" y="358.0" class="mono b">Truncate</text>
   <rect class="box" x="160" y="328" width="224" height="50" rx="5"/>
   <text x="172" y="358.0">empty the rollup</text>
   <rect class="box" x="392" y="328" width="224" height="50" rx="5"/>
-  <text x="404" y="358.0">empty the rollup</text>
+  <text x="404" y="358.0">empty it, as with FULL</text>
   <rect class="box" x="624" y="328" width="224" height="50" rx="5"/>
-  <text x="636" y="358.0">empty the rows</text>
+  <text x="636" y="358.0">empty the projection</text>
   <text x="32" y="416.0" class="mono b">Relation</text>
   <rect class="box" x="160" y="386" width="224" height="50" rx="5"/>
   <text x="172" y="408.0">column types unchanged:</text>
   <text x="172" y="424.0">nothing to do</text>
   <rect class="errbox" x="392" y="386" width="456" height="50" rx="5"/>
   <text x="404" y="408.0" class="err b">a column reads differently, is dropped, or turns to</text>
-  <text x="404" y="424.0" class="err b">a type Straum doesn’t read: start over</text>
+  <text x="404" y="424.0" class="err b">a type Straum doesn’t read: stop</text>
   <text x="32" y="474.0" class="mono b">Commit</text>
   <rect class="accbox" x="160" y="444" width="688" height="50" rx="5"/>
   <text x="172" y="466.0" xml:space="preserve">apply every change above under one write lock, <tspan class="muted">then </tspan><tspan class="b acc">position = the commit’s end LSN</tspan></text>
   <text x="172" y="482.0" xml:space="preserve"><tspan class="s muted">Changes after a Truncate in the same transaction still apply.</tspan></text>
-  <text x="32" y="518" class="s ink2">Also start over: a row that doesn’t fit its rollup, such as removing a row never added, and an update that leaves out</text>
+  <text x="32" y="518" class="s ink2">Also stop: a row that doesn’t fit its rollup, such as removing a row never added, and an update that leaves out</text>
   <text x="32" y="535" class="s ink2">an unchanged TOASTed value with no old row to take it from. Tables in the publication but not in the spec are skipped.</text>
   <path class="rule" d="M32 566H848"/>
-  <text x="32" y="596" class="lbl err">START OVER</text>
-  <text x="118" y="596" class="s muted">Writer::step, then the backoff loop in the binary</text>
+  <text x="32" y="596" class="lbl err">STOP</text>
+  <text x="76" y="596" class="s muted">Writer::step fails and the binary ends the process</text>
   <rect class="errbox" x="32" y="614" width="186" height="76" rx="6"/>
-  <text x="44" y="638" class="h err">Not ready</text>
-  <text x="44" y="658" class="s ink2">position cleared;</text>
-  <text x="44" y="674" class="s ink2">/readyz 503 with the error</text>
+  <text x="44" y="638" class="h err">Exit 1</text>
+  <text x="44" y="658" class="s ink2">the error is logged;</text>
+  <text x="44" y="674" class="s ink2">the port closes</text>
   <path class="a" d="M220 652 L238 652" marker-end="url(#m)"/>
   <rect class="box" x="242" y="614" width="186" height="76" rx="6"/>
-  <text x="254" y="638" class="h">Wait</text>
-  <text x="254" y="658" class="s ink2">1 s, doubling after each</text>
-  <text x="254" y="674" class="s ink2">failure in a row, up to 60 s</text>
+  <text x="254" y="638" class="h">Slot gone</text>
+  <text x="254" y="658" class="s ink2">the connection closes;</text>
+  <text x="254" y="674" class="s ink2">PostgreSQL drops the slot</text>
   <path class="a" d="M430 652 L448 652" marker-end="url(#m)"/>
   <rect class="box" x="452" y="614" width="186" height="76" rx="6"/>
-  <text x="464" y="638" class="h">Drop store and slot</text>
-  <text x="464" y="658" class="s ink2">close the connection;</text>
-  <text x="464" y="674" class="s ink2">PostgreSQL drops the slot</text>
+  <text x="464" y="638" class="h">Start again</text>
+  <text x="464" y="658" class="s ink2">whatever runs Straum starts</text>
+  <text x="464" y="674" class="s ink2">a new process, in its own time</text>
   <path class="a" d="M640 652 L658 652" marker-end="url(#m)"/>
   <rect class="box" x="662" y="614" width="186" height="76" rx="6"/>
   <text x="674" y="638" class="h">Load again</text>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="600" viewBox="0 0 880 600" role="img" aria-labelledby="t d">
   <title id="t">Straum on AKS next to Azure Database for PostgreSQL</title>
-  <desc id="d">In the AKS cluster, apps keep reading and writing PostgreSQL as before and send asks to the straum Service. The straum pod reads its spec from a ConfigMap and the DSN from a Key Vault secret at start, then holds one replication connection to the Flexible Server walsender with a temporary slot, and reads the server WAL position about once a second on a plain connection. OTLP export is planned.</desc>
+  <desc id="d">In the AKS cluster, apps keep reading and writing PostgreSQL as before and send asks to the straum Service. The straum pod reads its spec from a ConfigMap and the DSN from a Key Vault secret at start, then holds one replication connection to the Flexible Server walsender with a temporary slot, and two plain connections: one reads the server WAL position about once a second and one is the watchdog. The Secret is made outside the chart, from Key Vault if wanted.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -116,14 +116,12 @@
   <text x="418" y="426" class="s muted">STRAUM_DSN</text>
   <rect class="box2" x="640" y="278" width="184" height="86" rx="6"/>
   <text x="654" y="302" class="h">walsender</text>
-  <text x="654" y="321" class="s ink2">pgoutput, temporary slot</text>
-  <text x="654" y="337" class="s ink2">dropped with the session</text>
+  <text x="654" y="321" class="s ink2">--wal logical: pgoutput,</text>
+  <text x="654" y="337" class="s ink2">a temporary slot, dropped</text>
+  <text x="654" y="353" class="s ink2">with the session</text>
   <rect class="box2" x="640" y="444" width="184" height="62" rx="6"/>
   <text x="654" y="468" class="h">Key Vault</text>
-  <text x="654" y="487" class="s ink2">optional, syncs the Secret</text>
-  <rect class="planbox" x="290" y="462" width="214" height="44" rx="6"/>
-  <text x="304" y="489" class="h plantext">OTel collector</text>
-  <text x="490" y="489" class="s plantext" text-anchor="end">planned</text>
+  <text x="654" y="487" class="s ink2">optional source of the DSN</text>
   <path class="a" d="M226 160 L636 160" marker-end="url(#m)"/>
   <text x="431" y="152" class="s halo" text-anchor="middle">SQL reads and writes, as today</text>
   <path class="a" d="M141 196 L141 286" marker-end="url(#m)"/>
@@ -134,15 +132,14 @@
   <path class="a-acc" d="M640 340 L508 340" marker-end="url(#m-acc)"/>
   <text x="570" y="358" class="s acc halo" text-anchor="middle">commit stream</text>
   <path class="a" d="M470 278 L470 182 L636 182" marker-end="url(#m)"/>
-  <text x="480" y="202" class="s ink2 halo">WAL position, every 1 s</text>
+  <text x="480" y="202" class="s ink2 halo">WAL position, watchdog:</text>
+  <text x="480" y="218" class="s ink2 halo">two plain, every 1 s</text>
   <path class="a" d="M732 196 L732 274" marker-end="url(#m)"/>
   <text x="742" y="240" class="s muted halo">decodes WAL</text>
   <path class="a-cfg" d="M340 386 L340 368" marker-end="url(#m)"/>
   <path class="a-cfg" d="M454 386 L454 368" marker-end="url(#m)"/>
   <path class="a-cfg" d="M640 475 L600 475 L600 410 L508 410" marker-end="url(#m)"/>
-  <text x="560" y="404" class="s muted halo" text-anchor="middle">synced</text>
-  <path class="a-plan" d="M397 364 L397 458" marker-end="url(#m-plan)"/>
-  <text x="407" y="452" class="s plantext halo">OTLP</text>
+  <text x="560" y="404" class="s muted halo" text-anchor="middle">outside the chart</text>
   <path class="rule" d="M32 540H848"/>
   <path class="a" d="M32 556 L64 556" marker-end="url(#m)"/>
   <text x="72" y="560" class="s ink2">traffic</text>
@@ -150,7 +147,5 @@
   <text x="180" y="560" class="s ink2">replication</text>
   <path class="a-cfg" d="M270 556 L302 556" marker-end="url(#m)"/>
   <text x="310" y="560" class="s ink2">read at start; a spec change rolls the pod</text>
-  <path class="a-plan" d="M580 556 L612 556" marker-end="url(#m-plan)"/>
-  <text x="620" y="560" class="s ink2">planned</text>
-  <text x="32" y="584" class="s muted">An Azure HA failover drops the connection and Straum starts over. A rollout (maxSurge 1) holds two slots while the new pod loads.</text>
+  <text x="32" y="584" class="s muted">After an Azure HA failover Straum exits and the restarted pod loads again. A rollout (maxSurge 1) holds two slots meanwhile.</text>
 </svg>

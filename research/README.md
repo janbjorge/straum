@@ -27,9 +27,12 @@ design; `docs/adr/` holds the decisions. The surveys of planner hooks,
 Rust crates and competitors that led here are in the git history
 before 2026-11-12.
 
-What carried over: the speed comes from pre-aggregation, since
-columnar engines are 31x to 103x faster than cached PostgreSQL on
-ClickBench and 1000x needs rows that collapse into far fewer groups;
+What carried over: the speed comes from pre-aggregation, since DuckDB
+and ClickHouse are 31x and 103x faster than PostgreSQL on ClickBench
+with the data cached (hot runs on its largest machine, a geometric
+mean over the 43 queries computed from ClickBench's result files; the
+method is in `research/COMPETITORS.md` before `75e6dbe`), and 1000x
+needs rows that collapse into far fewer groups;
 ingest works on managed PostgreSQL with one parameter and a restart;
 drift is fixable per ask with a WAL barrier (POSTGRESQL.md §3), which
 v1 doesn't build.
