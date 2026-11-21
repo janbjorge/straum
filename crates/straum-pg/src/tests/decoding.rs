@@ -63,10 +63,7 @@ fn commits_what_logical_decoding_commits() {
     let theirs = logical_commits_past(&mut logical, before, "");
     let ours = commits_after(pipeline.through_now(&mut db, &mut stream), start);
     assert!(theirs.len() > 100, "{} commits", theirs.len());
-    for (ours, theirs) in ours.iter().zip(&theirs) {
-        assert_eq!(ours, theirs);
-    }
-    assert_eq!(ours.len(), theirs.len());
+    assert_same_in_order(&ours, &theirs, "");
 }
 
 /// The commits the logical slot of `logical` sends until one ends past
@@ -188,10 +185,7 @@ fn commits_what_logical_decoding_commits_at_random() {
         let theirs = logical_commits_past(&mut logical, before, &format!("seed {seed}: "));
         let ours = commits_after(pipeline.through_now(&mut db, &mut stream), start);
         assert!(theirs.len() > 50, "seed {seed}: {} commits", theirs.len());
-        for (ours, theirs) in ours.iter().zip(&theirs) {
-            assert_eq!(ours, theirs, "seed {seed}");
-        }
-        assert_eq!(ours.len(), theirs.len(), "seed {seed}");
+        assert_same_in_order(&ours, &theirs, &format!("seed {seed}"));
         let done = workload.done;
         assert!(done.all_ran(), "seed {seed}: {done:?}");
     }

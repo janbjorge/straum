@@ -5,6 +5,7 @@
 //! bytes of the PostgreSQL wire protocol (the messages a client and
 //! server exchange) for the error paths a real server never takes.
 
+use std::fmt::Debug;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
@@ -600,6 +601,17 @@ pub(super) fn records_to_switch(db: &mut Db, physical: &mut Physical) -> ReadToS
             return ReadToSwitch { last, records };
         }
     }
+}
+
+/// Asserts `ours` equals `theirs` in order, item by item so a failure
+/// shows the first that differs, then in length; `context` starts each
+/// message.
+// `T`: the lists are of records, of transaction endings and of commits.
+pub(super) fn assert_same_in_order<T: PartialEq + Debug>(ours: &[T], theirs: &[T], context: &str) {
+    for (our_item, their_item) in ours.iter().zip(theirs) {
+        assert_eq!(our_item, their_item, "{context}");
+    }
+    assert_eq!(ours.len(), theirs.len(), "{context}");
 }
 
 /// Seeded random numbers by splitmix64, and the hours from `START` that

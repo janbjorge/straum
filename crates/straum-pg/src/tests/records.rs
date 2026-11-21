@@ -48,10 +48,7 @@ fn reads_the_wal_pg_waldump_reads() {
     let expected = dumped_through(&out, switch);
     assert_eq!(read[0].lsn, start.0);
     assert!(read.len() > 1000, "{} records", read.len());
-    for (ours, theirs) in read.iter().zip(&expected) {
-        assert_eq!(ours, theirs);
-    }
-    assert_eq!(read.len(), expected.len());
+    assert_same_in_order(&read, &expected, "");
 }
 
 /// The records of `pg_waldump`'s output `out` up to the one at `switch`.

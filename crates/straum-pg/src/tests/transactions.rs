@@ -65,10 +65,7 @@ fn reads_the_endings_pg_waldump_reads() {
             theirs.push(ending);
         }
     }
-    for (ours, theirs) in ours.iter().zip(&theirs) {
-        assert_eq!(ours, theirs);
-    }
-    assert_eq!(ours.len(), theirs.len());
+    assert_same_in_order(&ours, &theirs, "");
     assert_every_way_of_ending(&ours);
 }
 
