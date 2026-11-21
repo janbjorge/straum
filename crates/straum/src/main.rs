@@ -264,11 +264,13 @@ fn write_answer(mut output: impl Write, text: &str) -> Result<(), Failure> {
 fn read_file(path: &str) -> Result<String, Failure> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(text),
-        Err(error) => {
-            let path = path.to_owned();
-            Err(Failure::ReadingFile { path, error })
-        }
+        Err(error) => Err(reading(path, error)),
     }
+}
+
+fn reading(path: &str, error: io::Error) -> Failure {
+    let path = path.to_owned();
+    Failure::ReadingFile { path, error }
 }
 
 /// A spec file, read and checked, and each view's statement in it.
@@ -383,10 +385,7 @@ fn write_or_print(path: Option<&str>, text: &str) -> Result<(), Failure> {
     };
     match fs::write(path, text) {
         Ok(()) => Ok(()),
-        Err(error) => {
-            let path = path.to_owned();
-            Err(Failure::WritingFile { path, error })
-        }
+        Err(error) => Err(writing(path, error)),
     }
 }
 
