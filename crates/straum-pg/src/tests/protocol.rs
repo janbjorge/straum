@@ -436,13 +436,16 @@ fn an_asynchronous_commit_counts_before_it_is_written() {
         source.next_commit(Duration::from_millis(100)).unwrap(),
         None
     );
-    let wait = Wait::within(3 * LONG, "the slot to confirm all that was written");
+    // Written out, not a `Wait`: a failure here shows the reading that
+    // never caught up.
+    let deadline = Instant::now() + 3 * LONG;
     loop {
         let wal = source.wal().unwrap();
         if wal.confirmed >= wal.written {
             break;
         }
-        wait.poll();
+        assert!(Instant::now() < deadline, "never caught up: {wal:?}");
+        thread::sleep(WAIT_POLL);
     }
 }
 
