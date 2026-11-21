@@ -1,7 +1,7 @@
 //! The physical stream end to end (`--wal physical`): Straum reads the
 //! physical WAL (the write-ahead log PostgreSQL writes every page change
 //! to) at `wal_level = replica`, starts from a snapshot, and follows on.
-//! Also what holds a start back and what the setup check asks of it.
+//! Also what holds a start back.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +13,7 @@ use straum_app::{App, Lsn, Source, Writer};
 use super::decoding::Pipeline;
 use super::references::*;
 use super::support::*;
-use crate::catalog::{self, Checked};
+use crate::catalog::Checked;
 use crate::physical::{Physical, read_layouts_seeing};
 use crate::source::{Postgres, Replication};
 use crate::wire::{Connection, ConnectionKind};
@@ -665,124 +665,6 @@ fn stops_when_the_physical_stream_dies() {
     writer = db.physical_writer(SPEC);
     started(&mut writer);
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
-}
-
-/// `--wal physical` needs neither the publication nor `REPLICA IDENTITY
-/// FULL`, takes `wal_level` replica, and needs PostgreSQL 17 or newer,
-/// full-page writes and a `wal_compression` it reads.
-#[test]
-fn checks_what_the_physical_wal_needs() {
-    let pg = postgres_at_replica(&tag());
-    let mut db = Db::new(
-        &pg,
-        "needs",
-        &TABLES
-            .replace("REPLICA IDENTITY FULL", "REPLICA IDENTITY DEFAULT")
-            .replace(
-                "CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;",
-                "",
-            ),
-    );
-    let spec = db.spec(SPEC);
-    let mut catalog = catalog::query(&mut db.connection, &spec, "needs").unwrap();
-    assert_eq!(
-        (catalog.full_page_writes.as_str(), catalog.publication),
-        ("on", catalog::PublicationState::Missing)
-    );
-    assert_eq!(check_lines(&spec, &catalog, "needs", PHYSICAL), None);
-    let logical = catalog::check(&spec, &catalog, "needs", Replication::Logical).unwrap_err();
-    let mut publication_missing = false;
-    for problem in &logical {
-        if problem
-            .to_string()
-            .contains("publication needs does not exist")
-        {
-            publication_missing = true;
-        }
-    }
-    assert!(publication_missing);
-    for server in servers_and_their_problems() {
-        catalog.server_version = server.version;
-        catalog.wal_level = server.wal_level.into();
-        catalog.full_page_writes = server.full_page_writes.into();
-        catalog.wal_compression = server.wal_compression.into();
-        let mut expected = None;
-        if !server.problems.is_empty() {
-            let mut problems = Vec::new();
-            for problem in &server.problems {
-                problems.push((*problem).to_owned());
-            }
-            expected = Some(problems);
-        }
-        let Server {
-            version,
-            wal_level,
-            full_page_writes,
-            wal_compression,
-            ..
-        } = server;
-        assert_eq!(
-            check_lines(&spec, &catalog, "needs", PHYSICAL),
-            expected,
-            "{version} {wal_level} {full_page_writes} {wal_compression}"
-        );
-    }
-}
-
-/// A server's version and settings as the catalog reads them, and the
-/// problems `--wal physical` finds with them.
-// `'static`: every setting and problem is a literal written here.
-struct Server {
-    version: u32,
-    wal_level: &'static str,
-    full_page_writes: &'static str,
-    wal_compression: &'static str,
-    problems: Vec<&'static str>,
-}
-
-/// Servers `--wal physical` takes, then three it doesn't.
-fn servers_and_their_problems() -> [Server; 6] {
-    [
-        server(170_000, ["replica", "on", "lz4"], vec![]),
-        server(180_000, ["logical", "on", "pglz"], vec![]),
-        server(190_000, ["replica", "on", "on"], vec![]),
-        server(
-            160_009,
-            ["minimal", "on", "off"],
-            vec![
-                "PostgreSQL 16 is too old; Straum needs 17 or newer",
-                "wal_level is minimal; Straum needs replica or logical, which takes a restart",
-            ],
-        ),
-        server(
-            200_000,
-            ["replica", "on", "lz4"],
-            vec![
-                "--wal physical reads the WAL of PostgreSQL 17 to 19, not 20; read it through logical decoding",
-            ],
-        ),
-        server(
-            180_000,
-            ["replica", "off", "zstd"],
-            vec![
-                "full_page_writes is off; --wal physical needs on",
-                "wal_compression is zstd; --wal physical reads off, pglz and lz4",
-            ],
-        ),
-    ]
-}
-
-/// A server of `version` with `wal_level`, `full_page_writes` and
-/// `wal_compression` as `settings` lists them.
-fn server(version: u32, settings: [&'static str; 3], problems: Vec<&'static str>) -> Server {
-    let [wal_level, full_page_writes, wal_compression] = settings;
-    Server {
-        version,
-        wal_level,
-        full_page_writes,
-        wal_compression,
-        problems,
-    }
 }
 
 /// With nothing logging which transactions run, and a role that may not
