@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use straum_app::{Change, Drift, Source};
-use straum_domain::{Ask, Store, Value};
+use straum_domain::{Ask, Value};
 
 use super::references::{SPEC, TABLES, TASKS, TASKS_SPEC, compare, task_oracles};
 use super::support::*;
@@ -34,7 +34,7 @@ fn a_table_left_out_of_the_publication_stops_the_stream() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
-    load_all(&mut source, &spec);
+    load_all(&mut source, &spec).unwrap();
     assert!(source.wal().is_ok());
     db.run("ALTER PUBLICATION $S DROP TABLE $S.trips");
     let error = source.wal().unwrap_err().to_string();
@@ -56,7 +56,7 @@ fn a_table_renamed_away_and_made_again_stops_the_stream() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
-    load_all(&mut source, &spec);
+    load_all(&mut source, &spec).unwrap();
     db.run(MADE_AGAIN);
     db.run(&Rng::new(1).trip(1).replace("$S.trips", "$S.trips_old"));
     let commit = source.next_commit(LONG).unwrap().unwrap();
@@ -93,7 +93,7 @@ fn a_label_renamed_stops_the_logical_stream() {
     let spec = db.spec(TASKS_SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
-    load_all(&mut source, &spec);
+    load_all(&mut source, &spec).unwrap();
     assert!(source.wal().is_ok());
     // A label added is nothing: no row loaded holds it.
     db.run("ALTER TYPE $S.kind ADD VALUE 'bin'");
@@ -164,13 +164,7 @@ fn a_rewrite_during_the_load_waits_for_it() {
     });
     // Time for the rewrite to reach the lock, or, without one, to end.
     thread::sleep(Duration::from_millis(500));
-    let mut store = Store::new(spec.clone());
-    for dim in spec.dims() {
-        source.load(&dim.name, &mut store).unwrap();
-    }
-    for fact in spec.facts() {
-        source.load(&fact.name, &mut store).unwrap();
-    }
+    let store = load_all(&mut source, &spec).unwrap();
     rewrite.join().unwrap();
     let every_trip = Ask {
         view: id("trips"),
@@ -267,7 +261,7 @@ fn a_column_altered_to_its_own_type_stops_the_logical_stream() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
-    load_all(&mut source, &spec);
+    load_all(&mut source, &spec).unwrap();
     db.run("VACUUM FULL $S.trips");
     db.run("ALTER TABLE $S.trips ADD COLUMN note text");
     assert!(source.wal().is_ok());
@@ -290,7 +284,7 @@ fn a_column_granted_keeps_the_logical_stream_and_one_retyped_stops_it() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
-    load_all(&mut source, &spec);
+    load_all(&mut source, &spec).unwrap();
     for kept in [
         "GRANT SELECT (fare) ON $S.trips TO PUBLIC",
         "ALTER TABLE $S.trips ALTER COLUMN fare SET STATISTICS 500",

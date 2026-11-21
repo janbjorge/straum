@@ -50,7 +50,7 @@ fn commits_what_logical_decoding_commits() {
     let spec = db.spec(SPEC);
     let mut logical = db.pg();
     let start = logical.open(&spec).unwrap();
-    load_all(&mut logical, &spec);
+    load_all(&mut logical, &spec).unwrap();
     let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
 
     write_what_logical_decoding_reads(&mut db, &mut rng);
@@ -176,7 +176,7 @@ fn commits_what_logical_decoding_commits_at_random() {
         let spec = db.spec(SPEC);
         let mut logical = db.pg();
         let start = logical.open(&spec).unwrap();
-        load_all(&mut logical, &spec);
+        load_all(&mut logical, &spec).unwrap();
         let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
         let mut workload = Workload::new(&db);
         for _ in 0..STEPS {

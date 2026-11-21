@@ -11,7 +11,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use straum_app::{Lsn, Source};
-use straum_domain::{Spec, Store};
 
 use super::references::*;
 use super::support::*;
@@ -282,7 +281,7 @@ fn load_holds(pg: &PostgresContainer, name: &str, replication: Replication, limi
     db.run(FILLER);
     if limit < MAX_RETAINED_WAL_BYTES {
         assert_slot_goes(&mut db, &format!("{name}: the slot outlived the limit"));
-        let error = load_everything(&mut source, &spec).unwrap_err();
+        let error = load_all(&mut source, &spec).unwrap_err().to_string();
         assert!(error.contains("--max-retained-wal"), "{name}: {error}");
     } else {
         thread::sleep(ROUNDS);
@@ -291,7 +290,7 @@ fn load_holds(pg: &PostgresContainer, name: &str, replication: Replication, limi
             1,
             "{name}: the slot ended within the limit"
         );
-        load_everything(&mut source, &spec).unwrap();
+        load_all(&mut source, &spec).unwrap();
     }
 }
 
@@ -308,7 +307,7 @@ fn writer_stuck(pg: &PostgresContainer, name: &str, replication: Replication) {
     );
     let spec = db.spec(SPEC);
     source.open(&spec).unwrap();
-    load_everything(&mut source, &spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
     // The first call starts the stream; nothing applies after it.
     source.next_commit(Duration::ZERO).unwrap();
     for id in 1..=QUEUE_FILLING_COMMITS {
@@ -365,7 +364,7 @@ fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
     end_watchdog_session(&mut db);
     if reconnect == Reconnect::Refused {
         assert_slot_goes(&mut db, &format!("{name}: the slot outlived its watchdog"));
-        let error = load_everything(&mut source, &spec).unwrap_err();
+        let error = load_all(&mut source, &spec).unwrap_err().to_string();
         assert!(
             error.contains("couldn't read Straum's slot"),
             "{name}: {error}"
@@ -373,7 +372,7 @@ fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
     } else {
         thread::sleep(SHORT_UNWATCHED + ROUNDS);
         assert_eq!(straum_slots(&mut db), 1, "{name}: the stream ended");
-        load_everything(&mut source, &spec).unwrap();
+        load_all(&mut source, &spec).unwrap();
     }
 }
 
@@ -496,24 +495,6 @@ fn stream_reading_nothing(db: &mut Db, dsn: &Dsn, slot: &str) -> (Connection, St
         }
         before = now;
     }
-}
-
-/// Every dim, then every fact, as the writer loads them.
-fn load_everything(source: &mut Postgres, spec: &Spec) -> Result<(), String> {
-    let mut store = Store::new(spec.clone());
-    let mut tables = Vec::new();
-    for dim in spec.dims() {
-        tables.push(&dim.name);
-    }
-    for fact in spec.facts() {
-        tables.push(&fact.name);
-    }
-    for table in tables {
-        if let Err(error) = source.load(table, &mut store) {
-            return Err(error.to_string());
-        }
-    }
-    Ok(())
 }
 
 /// Straum's slots on the server.
