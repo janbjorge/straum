@@ -262,8 +262,8 @@ PostgreSQL's join does:
 | Measures | Under a doubled row |
 | --- | --- |
 | `count(*)`, `count(c)`, `sum` | double |
-| `min`, `max`, `avg`, `count(DISTINCT ...)`, `sum(DISTINCT ...)`, `avg(DISTINCT ...)`, `bool_and`, `bool_or` | stay |
-| `percentile_disc`, `mode`, the variances, the standard deviations | count the row's value twice |
+| `min`, `max`, `count(DISTINCT ...)`, `sum(DISTINCT ...)`, `avg(DISTINCT ...)`, `bool_and`, `bool_or` | stay |
+| `avg`, `percentile_disc`, `mode`, the variances, the standard deviations | count the row's value twice |
 
 Two joins can point at one dim table, each reading its own columns, as
 `a` and `referrer` do above. A dim table is one dim however many views
