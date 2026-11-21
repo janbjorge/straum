@@ -428,7 +428,7 @@ pipeline held at most 429.5 MiB of rows, most of them the open `COPY`
 transactions' rows, which wait for their commit.
 
 Timings drift with the machine, so two tests in
-`crates/straum-pg/src/wal/pipeline.rs` hold what this bench gained by
+`crates/straum-pg/src/wal/pipeline/tests.rs` hold what this bench gained by
 counting allocations instead: a row of a spec table may allocate three
 times, for its page's slot list, its bytes and its decoded values, and
 a row of another table allocates nothing.
