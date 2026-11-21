@@ -385,11 +385,7 @@ impl<'s> Expander<'s> {
             ViaFrom::Through {
                 reference,
                 attribute,
-            } => match row[reference] {
-                Some(found) => (self.plans[reference].projection)
-                    .attribute_value(attribute, found[attribute.0]),
-                None => &Datum::Null,
-            },
+            } => self.plans[reference].projection.value_in(attribute, row[reference]),
         }
     }
 }

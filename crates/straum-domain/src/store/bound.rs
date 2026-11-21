@@ -193,11 +193,7 @@ impl Bound {
             for (reference, found) in self.refs.iter().zip(&join_row) {
                 let projection = &projections[reference.dim.0];
                 for &attribute in &reference.attributes {
-                    let value = match found {
-                        Some(codes) => projection.attribute_value(attribute, codes[attribute.0]),
-                        None => &Datum::Null,
-                    };
-                    out.push(value.clone());
+                    out.push(projection.value_in(attribute, *found).clone());
                 }
             }
         }
@@ -313,12 +309,7 @@ impl Bound {
         let mut part = self.by_parts;
         for (reference, found) in self.refs.iter().zip(join_row) {
             for &attribute in &reference.attributes {
-                let datum = match found {
-                    Some(codes) => {
-                        projections[reference.dim.0].attribute_value(attribute, codes[attribute.0])
-                    }
-                    None => &Datum::Null,
-                };
+                let datum = projections[reference.dim.0].value_in(attribute, *found);
                 key.push(self.rollup.code_part(PartIndex(part), datum));
                 part += 1;
             }

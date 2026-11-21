@@ -210,6 +210,15 @@ impl Projection {
         self.codes[attribute.0].value(code)
     }
 
+    /// The value of an attribute in `found`, the codes of a dim row a
+    /// join found, or `Null` where the join found none.
+    pub(crate) fn value_in(&self, attribute: AttributeIndex, found: Option<&[u32]>) -> &Datum {
+        match found {
+            Some(codes) => self.attribute_value(attribute, codes[attribute.0]),
+            None => &Datum::Null,
+        }
+    }
+
     /// Codes an attribute has, `Null`'s counted.
     pub(crate) fn attribute_codes(&self, attribute: AttributeIndex) -> usize {
         self.codes[attribute.0].len()
