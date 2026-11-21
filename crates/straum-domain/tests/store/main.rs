@@ -24,7 +24,7 @@ mod workload;
 use std::collections::BTreeMap;
 use straum_domain::{Ask, AskKey, ColumnType, Datum, Store, Value};
 
-use common::id;
+use common::{id, names};
 
 /// The `date_bin` width of every view here, a quarter hour, in seconds.
 const WIDTH: u32 = 900;
@@ -113,13 +113,9 @@ const KEYS: [&str; 14] = [
 /// An ask of the trips view for `measures` by `keys` over every bucket
 /// the tests fill, with no filter or HAVING.
 fn trips_ask(measures: &[&str], keys: Vec<AskKey>) -> Ask {
-    let mut names = Vec::with_capacity(measures.len());
-    for name in measures {
-        names.push(id(name));
-    }
     Ask {
         view: id("trips"),
-        measures: names,
+        measures: names(measures),
         keys,
         filter: Vec::new(),
         having: Vec::new(),

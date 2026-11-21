@@ -3,13 +3,12 @@
 //! a key of several columns matches on all; a key with a null joins
 //! nothing.
 
-use crate::common::{Rng, attribute, by_key, condition, id, lit, table, text};
+use crate::common::{Rng, attribute, by_key, condition, dim, id, lit, text};
 use crate::random::trip;
-use crate::views::{new_measure, spec, typed};
+use crate::views::{new_measure, spec, trips_by_pay, typed};
 use crate::{AT, DRO, FARE, PU, SHARED, START, VENDOR, WIDTH, first_values, trips_ask};
 use straum_domain::{
-    Aggregate, Ask, AskKey, ColumnType, Datum, Dim, Fact, Ref, RefKind, RowError, Spec, Store,
-    Time, Value, Via, Width,
+    Aggregate, Ask, AskKey, ColumnType, Datum, Ref, RefKind, RowError, Spec, Store, Value, Via,
 };
 
 fn trip_key_type(store: &Store, name: &str) -> Option<ColumnType> {
@@ -363,34 +362,16 @@ fn a_dim_row_with_a_null_key_is_never_held() {
 /// via column is a by key, so asks read the dim through the projection,
 /// not through bound cells.
 fn combos_on_by_keys_spec() -> Spec {
-    let combos = Dim {
-        as_text: Vec::new(),
-        name: id("combos"),
-        table: table("combos"),
-        key: vec![id("pu_id"), id("vendor_id")],
-        attributes: vec![id("label")],
-    };
-    let trips = Fact {
-        as_text: Vec::new(),
-        name: id("trips"),
-        table: table("trips"),
-        time: Time {
-            column: id("at"),
-            width: Width { seconds: WIDTH },
-            wider: Vec::new(),
-            name: id("bucket"),
-        },
-        refs: vec![Ref {
-            alias: id("combo"),
-            dim: id("combos"),
-            via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
-            kind: RefKind::Left,
-            reads: vec![attribute("combo_label", "label")],
-        }],
-        by_keys: vec![by_key("pay"), by_key("pu"), by_key("vendor")],
-        filter: vec![],
-        measures: vec![new_measure("trips", Aggregate::Count, vec![])],
-    };
+    let combos = dim("combos", &["pu_id", "vendor_id"], &["label"]);
+    let mut trips = trips_by_pay(vec![new_measure("trips", Aggregate::Count, vec![])]);
+    trips.refs = vec![Ref {
+        alias: id("combo"),
+        dim: id("combos"),
+        via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
+        kind: RefKind::Left,
+        reads: vec![attribute("combo_label", "label")],
+    }];
+    trips.by_keys = vec![by_key("pay"), by_key("pu"), by_key("vendor")];
     Spec::new(vec![combos], vec![trips]).unwrap()
 }
 

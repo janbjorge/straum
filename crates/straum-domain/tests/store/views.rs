@@ -3,11 +3,11 @@
 //! zones alone, and one of percentiles. Also the column types a load sets,
 //! so a store here is typed as the source would type it.
 
-use crate::common::{attribute, by_key, condition, id, lit, percentile, table};
+use crate::common::{attribute, by_key, condition, dim, id, lit, percentile, table};
 use crate::{DAY, DIM_TYPES, DIST, FARE, HOUR, ROW_COLUMNS, TIP, TRIP_SCALES, WEEK, WIDTH};
 use straum_domain::{
-    Aggregate, ByKey, ColumnType, Condition, Dim, Fact, Literal, Measure, Ref, RefKind, Spec,
-    Store, Time, Via, Width,
+    Aggregate, ByKey, ColumnType, Condition, Fact, Literal, Measure, Ref, RefKind, Spec, Store,
+    Time, Via, Width,
 };
 
 /// The trips view with every join a left one.
@@ -19,53 +19,45 @@ pub(crate) fn spec() -> Spec {
 /// the trips of a vendor with no row, so their buckets hold no bound
 /// cells.
 pub(crate) fn spec_joining(vend: RefKind) -> Spec {
-    let zones = Dim {
-        as_text: Vec::new(),
-        name: id("zones"),
-        table: table("zones"),
-        key: vec![id("id")],
-        attributes: vec![id("borough"), id("zone")],
-    };
+    let zones = dim("zones", &["id"], &["borough", "zone"]);
     // Keyed by two fact columns, one of them a by column asks group by.
-    let combos = Dim {
-        as_text: Vec::new(),
-        name: id("combos"),
-        table: table("combos"),
-        key: vec![id("pu_id"), id("vendor_id")],
-        attributes: vec![id("label")],
-    };
-    let vendors = Dim {
-        as_text: Vec::new(),
-        name: id("vendors"),
-        table: table("vendors"),
-        key: vec![id("id")],
-        attributes: vec![id("label")],
-    };
-    let trips = Fact {
+    let combos = dim("combos", &["pu_id", "vendor_id"], &["label"]);
+    let vendors = dim("vendors", &["id"], &["label"]);
+    let mut trips = trips_by_pay(
+        [
+            count_sum_and_rank_measures(),
+            average_count_and_bool_measures(),
+        ]
+        .concat(),
+    );
+    // Hours, days and weeks, so random ranges read every width.
+    trips.time.wider = vec![
+        Width { seconds: HOUR },
+        Width { seconds: DAY },
+        Width { seconds: WEEK },
+    ];
+    trips.refs = trip_refs(vend);
+    trips.by_keys = trip_by_keys();
+    Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
+}
+
+/// Trips by pay at the quarter hour, joined to nothing, with `measures`.
+pub(crate) fn trips_by_pay(measures: Vec<Measure>) -> Fact {
+    Fact {
         as_text: Vec::new(),
         name: id("trips"),
         table: table("trips"),
         time: Time {
             column: id("at"),
             width: Width { seconds: WIDTH },
-            // Hours, days and weeks, so random ranges read every width.
-            wider: vec![
-                Width { seconds: HOUR },
-                Width { seconds: DAY },
-                Width { seconds: WEEK },
-            ],
+            wider: Vec::new(),
             name: id("bucket"),
         },
-        refs: trip_refs(vend),
-        by_keys: trip_by_keys(),
+        refs: Vec::new(),
+        by_keys: vec![by_key("pay")],
         filter: vec![],
-        measures: [
-            count_sum_and_rank_measures(),
-            average_count_and_bool_measures(),
-        ]
-        .concat(),
-    };
-    Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
+        measures,
+    }
 }
 
 /// A measure of the trips view.
@@ -315,16 +307,17 @@ pub(crate) enum Widths {
 /// Trips by pay, joined to zones for the borough as `pickup` says, or
 /// with no join at all.
 pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
-    let zones = Dim {
-        as_text: Vec::new(),
-        name: id("zones"),
-        table: table("zones"),
-        key: vec![id("id")],
-        attributes: vec![id("borough")],
-    };
-    let mut refs = Vec::new();
+    let zones = dim("zones", &["id"], &["borough"]);
+    let mut trips = trips_by_pay(vec![Measure {
+        name: id("trips"),
+        aggregate: Aggregate::Count,
+        filter: vec![],
+    }]);
+    if let Widths::QuarterAndHour = widths {
+        trips.time.wider = vec![Width { seconds: HOUR }];
+    }
     if let Some(kind) = pickup {
-        refs.push(Ref {
+        trips.refs.push(Ref {
             alias: id("pickup"),
             dim: id("zones"),
             via: vec![Via::Fact(id("pu"))],
@@ -332,54 +325,18 @@ pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
             reads: vec![attribute("borough", "borough")],
         });
     }
-    let trips = Fact {
-        as_text: Vec::new(),
-        name: id("trips"),
-        table: table("trips"),
-        time: Time {
-            column: id("at"),
-            width: Width { seconds: WIDTH },
-            wider: match widths {
-                Widths::Quarter => Vec::new(),
-                Widths::QuarterAndHour => vec![Width { seconds: HOUR }],
-            },
-            name: id("bucket"),
-        },
-        refs,
-        by_keys: vec![by_key("pay")],
-        filter: vec![],
-        measures: vec![Measure {
-            name: id("trips"),
-            aggregate: Aggregate::Count,
-            filter: vec![],
-        }],
-    };
     Spec::new(vec![zones], vec![trips]).unwrap()
 }
 
 /// Trips by pay with a max and percentiles of the fare, joined to nothing.
 pub(crate) fn percentile_spec() -> Spec {
-    let trips = Fact {
-        as_text: Vec::new(),
-        name: id("trips"),
-        table: table("trips"),
-        time: Time {
-            column: id("at"),
-            width: Width { seconds: WIDTH },
-            wider: Vec::new(),
-            name: id("bucket"),
-        },
-        refs: Vec::new(),
-        by_keys: vec![by_key("pay")],
-        filter: vec![],
-        measures: vec![
-            new_measure("top", Aggregate::Max(id("fare")), vec![]),
-            new_measure("median", percentile(5, 1, "fare"), vec![]),
-            new_measure("p99", percentile(99, 2, "fare"), vec![]),
-            new_measure("lowest", percentile(0, 0, "fare"), vec![]),
-            new_measure("highest", percentile(1, 0, "fare"), vec![]),
-            new_measure("p07", percentile(7, 2, "fare"), vec![]),
-        ],
-    };
+    let trips = trips_by_pay(vec![
+        new_measure("top", Aggregate::Max(id("fare")), vec![]),
+        new_measure("median", percentile(5, 1, "fare"), vec![]),
+        new_measure("p99", percentile(99, 2, "fare"), vec![]),
+        new_measure("lowest", percentile(0, 0, "fare"), vec![]),
+        new_measure("highest", percentile(1, 0, "fare"), vec![]),
+        new_measure("p07", percentile(7, 2, "fare"), vec![]),
+    ]);
     Spec::new(vec![], vec![trips]).unwrap()
 }

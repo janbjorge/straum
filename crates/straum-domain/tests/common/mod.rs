@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal,
+    Aggregate, Ask, AskKey, Attribute, ByKey, Condition, Datum, Dim, Fraction, Identifier, Literal,
     Measure, Table, Value, Width,
 };
 
@@ -280,6 +280,27 @@ pub fn bool_or_null(value: Option<bool>) -> Value {
 /// An identifier known to be valid.
 pub fn id(name: &str) -> Identifier {
     Identifier::new(name).unwrap()
+}
+
+/// Identifiers known to be valid, one per name.
+pub fn names(names: &[&str]) -> Vec<Identifier> {
+    let mut identifiers = Vec::with_capacity(names.len());
+    for name in names {
+        identifiers.push(id(name));
+    }
+    identifiers
+}
+
+/// A dim over `public.name`, keyed by the `key` columns, with the
+/// `attributes` a join may read.
+pub fn dim(name: &str, key: &[&str], attributes: &[&str]) -> Dim {
+    Dim {
+        as_text: Vec::new(),
+        name: id(name),
+        table: table(name),
+        key: names(key),
+        attributes: names(attributes),
+    }
 }
 
 /// A by key that reads the column of the same name.

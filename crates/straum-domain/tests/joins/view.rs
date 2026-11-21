@@ -5,10 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::{condition, dim_row, id, lit, measure, percentile, table};
+use crate::common::{condition, dim, dim_row, id, lit, measure, names, percentile, table};
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Measure,
-    Ref, RefKind, Spec, Store, Via, Width,
+    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Fact, Measure, Ref,
+    RefKind, Spec, Store, Via, Width,
 };
 
 pub const HOUR: i64 = 3_600;
@@ -83,24 +83,6 @@ pub enum Shape {
     /// The product is no `by` key, so the joins on it make the keyed cells
     /// finer than the `by` keys, and the fact keeps bound cells.
     Bound,
-}
-
-fn names(columns: &[&str]) -> Vec<straum_domain::Identifier> {
-    let mut names = Vec::with_capacity(columns.len());
-    for column in columns {
-        names.push(id(column));
-    }
-    names
-}
-
-fn dim(name: &str, key: &[&str], attributes: &[&str]) -> Dim {
-    Dim {
-        as_text: Vec::new(),
-        name: id(name),
-        table: table(name),
-        key: names(key),
-        attributes: names(attributes),
-    }
 }
 
 fn attribute(name: &str) -> Attribute {

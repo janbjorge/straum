@@ -3,14 +3,12 @@
 //! notices a value its cell lacks, and every kind of cell state refusing a
 //! row it never saw.
 
-use crate::common::{Rng, by_key, id, table, text};
+use crate::common::{Rng, id, text};
 use crate::random::trip;
 use crate::rows::base_trip_with;
-use crate::views::{new_measure, percentile_spec, spec, typed};
+use crate::views::{new_measure, percentile_spec, spec, trips_by_pay, typed};
 use crate::{AT, FARE, HOUR, PU, RIDER, START, TIP, TOLLED, WIDTH, first_values, trips_ask};
-use straum_domain::{
-    Aggregate, Answer, Ask, AskKey, Datum, Fact, RowError, Spec, Store, Time, Value, Width,
-};
+use straum_domain::{Aggregate, Answer, Ask, AskKey, Datum, RowError, Spec, Store, Value, Width};
 
 /// The values of each row of an answer, the keys left out.
 fn values_of(answer: Answer) -> Vec<Vec<Value>> {
@@ -165,24 +163,11 @@ fn trips_and_tipped_pair(trips: i128, tipped: i128) -> Vec<Value> {
 /// cell never held and a value where it holds only nulls.
 #[test]
 fn a_count_alone_notices_a_value_its_cell_lacks() {
-    let trips = Fact {
-        as_text: Vec::new(),
-        name: id("trips"),
-        table: table("trips"),
-        time: Time {
-            column: id("at"),
-            width: Width { seconds: WIDTH },
-            wider: vec![Width { seconds: HOUR }],
-            name: id("bucket"),
-        },
-        refs: Vec::new(),
-        by_keys: vec![by_key("pay")],
-        filter: vec![],
-        measures: vec![
-            new_measure("trips", Aggregate::Count, vec![]),
-            new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
-        ],
-    };
+    let mut trips = trips_by_pay(vec![
+        new_measure("trips", Aggregate::Count, vec![]),
+        new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
+    ]);
+    trips.time.wider = vec![Width { seconds: HOUR }];
     let spec = Spec::new(Vec::new(), vec![trips]).unwrap();
     // What the count makes of a row that holds each of the two.
     for (held, lacked, of_held, of_lacked) in [

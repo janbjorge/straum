@@ -2,16 +2,14 @@
 //! types its measures read, and held before it is removed. Also where the
 //! columns of a row and the parts of the rollup key lie.
 
-use crate::common::{Rng, by_key, id, table, text};
+use crate::common::{Rng, id, text};
 use crate::random::trip;
-use crate::views::{new_measure, spec};
+use crate::views::{new_measure, spec, trips_by_pay};
 use crate::{
     AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_COLUMNS, SHARED, START, TIP, TOLLED, VENDOR,
     WIDTH,
 };
-use straum_domain::{
-    Aggregate, ColumnType, Datum, Fact, Identifier, KeyPart, RowError, Spec, Store, Time, Width,
-};
+use straum_domain::{Aggregate, ColumnType, Datum, Identifier, KeyPart, RowError, Spec, Store};
 
 #[test]
 fn rows_added_together_add_none_on_error() {
@@ -180,28 +178,17 @@ fn row_errors() {
 /// cell or other state of the fare stands in for a check the keyed cells
 /// make.
 fn fare_sum_spec() -> Spec {
-    let trips = Fact {
-        as_text: Vec::new(),
-        name: id("trips"),
-        table: table("trips"),
-        time: Time {
-            column: id("at"),
-            width: Width { seconds: WIDTH },
-            wider: Vec::new(),
-            name: id("bucket"),
-        },
-        refs: Vec::new(),
-        by_keys: vec![by_key("pay")],
-        filter: vec![],
-        measures: vec![new_measure("fare", Aggregate::Sum(id("fare")), vec![])],
-    };
+    let trips = trips_by_pay(vec![new_measure(
+        "fare",
+        Aggregate::Sum(id("fare")),
+        vec![],
+    )]);
     Spec::new(Vec::new(), vec![trips]).unwrap()
 }
 
 /// Trips by pay with one aggregate of the fare's distinct values.
 fn distinct_fare_spec(aggregate: Aggregate) -> Spec {
-    let mut trips = fare_sum_spec().fact("trips").unwrap().clone();
-    trips.measures = vec![new_measure("fare", aggregate, vec![])];
+    let trips = trips_by_pay(vec![new_measure("fare", aggregate, vec![])]);
     Spec::new(Vec::new(), vec![trips]).unwrap()
 }
 

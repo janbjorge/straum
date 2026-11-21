@@ -17,8 +17,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Literal,
-    Measure, Ref, RefKind, Spec, Start, Store, Time, Via, Width, Window,
+    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Fact, Literal, Measure,
+    Ref, RefKind, Spec, Start, Store, Time, Via, Width, Window,
 };
 
 #[path = "../common/mod.rs"]
@@ -26,7 +26,7 @@ mod common;
 
 mod churn;
 
-use common::{id, measure, percentile, table};
+use common::{dim, id, measure, percentile, table};
 
 thread_local! {
     /// Allocations this thread has made.
@@ -138,13 +138,7 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
     let mut dims = Vec::new();
     let mut refs = Vec::new();
     if zones != Zones::Apart {
-        dims.push(Dim {
-            as_text: Vec::new(),
-            name: id("zones"),
-            table: table("zones"),
-            key: vec![id("id")],
-            attributes: vec![id("borough")],
-        });
+        dims.push(dim("zones", &["id"], &["borough"]));
         refs.push(Ref {
             alias: id("pickup"),
             dim: id("zones"),
