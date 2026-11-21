@@ -421,3 +421,57 @@ fn a_candidate_fits_what_is_typed_in_any_case() {
     assert!(!starts_with_ignoring_case("blåbær", "bla"));
     assert!(!starts_with_ignoring_case("FROM ", "SEL"));
 }
+
+/// The first word of each line of `help` that names a shell command:
+/// two spaces, then a backslash.
+fn help_commands(help: &str) -> Vec<&str> {
+    let mut commands = Vec::new();
+    for line in help.lines() {
+        let Some(entry) = line.strip_prefix("  ") else {
+            continue;
+        };
+        let Some(command) = entry.split_whitespace().next() else {
+            continue;
+        };
+        if command.starts_with('\\') && !commands.contains(&command) {
+            commands.push(command);
+        }
+    }
+    commands
+}
+
+/// Each command Tab offers that `help` doesn't list, then each command
+/// `help` lists that Tab doesn't offer.
+fn command_drift(offered: &[&str], help: &str) -> Vec<String> {
+    let listed = help_commands(help);
+    let mut trimmed = Vec::new();
+    for command in offered {
+        trimmed.push(command.trim());
+    }
+    let mut drift = Vec::new();
+    for command in &trimmed {
+        if !listed.contains(command) {
+            drift.push((*command).to_owned());
+        }
+    }
+    for command in &listed {
+        if !trimmed.contains(command) {
+            drift.push((*command).to_owned());
+        }
+    }
+    drift
+}
+
+#[test]
+fn tab_offers_each_command_the_shell_help_lists() {
+    let help = crate::help::SHELL_HELP;
+    assert_eq!(help_commands(help), ["\\d", "\\rows", "\\?", "\\q"]);
+    assert_eq!(command_drift(&COMMANDS, help), Vec::<String>::new());
+}
+
+#[test]
+fn a_command_on_one_side_alone_drifts() {
+    let help = "Reads commands until \\q.\n\n  \\d   views\n  \\y   why\n  --url URL\n";
+    assert_eq!(help_commands(help), ["\\d", "\\y"]);
+    assert_eq!(command_drift(&["\\d", "\\x "], help), ["\\x", "\\y"]);
+}
