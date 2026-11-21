@@ -100,9 +100,9 @@ fn stops_past_the_page_memory() {
         "INSERT INTO $S.trips SELECT i, now(), 'cab', 1, 1.5, md5(i::text), 1
          FROM generate_series(1, 5000) AS i",
     );
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the stream to stop");
     let error = loop {
-        assert!(Instant::now() < deadline, "never stopped");
+        wait.check();
         match source.next_commit(Duration::from_millis(100)) {
             Ok(_) => {}
             Err(error) => break error.to_string(),
@@ -371,19 +371,18 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
     db.run("SELECT pg_reload_conf()");
     // A session reads its configuration again between commands.
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the setting");
     while held.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref() != Some("nobody") {
-        assert!(Instant::now() < deadline, "the setting never came");
-        thread::sleep(Duration::from_millis(20));
+        wait.poll();
     }
     checkpointer_reads_the_setting(&mut db);
     let committing = thread::spawn(move || held.execute("COMMIT").unwrap());
+    let waiting = wait.then("the commit to wait");
     while db
         .rows("SELECT 1 FROM pg_stat_activity WHERE wait_event = 'SyncRep'")
         .is_empty()
     {
-        assert!(Instant::now() < deadline, "the commit never waited");
-        thread::sleep(Duration::from_millis(20));
+        waiting.poll();
     }
     let mut source = source_over(db.dsn.clone(), &db.name, PHYSICAL);
     source.settings.consistent_wait = Duration::from_secs(2);
@@ -446,12 +445,11 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
             "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_log_standby_snapshot()'",
         );
         let mut committing = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
-        let deadline = Instant::now() + LONG;
+        let wait = Wait::new("the setting");
         while committing.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref()
             != Some("nobody")
         {
-            assert!(Instant::now() < deadline, "the setting never came");
-            thread::sleep(Duration::from_millis(20));
+            wait.poll();
         }
         let commit = thread::spawn(move || {
             committing.execute(&format!("BEGIN; {sql} COMMIT")).unwrap();
@@ -495,10 +493,9 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     db.run("SET synchronous_commit = local");
     db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
     db.run("SELECT pg_reload_conf()");
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the setting");
     while altering.rows("SHOW synchronous_standby_names")[0][0].as_deref() != Some("nobody") {
-        assert!(Instant::now() < deadline, "the setting never came");
-        thread::sleep(Duration::from_millis(20));
+        wait.poll();
     }
     checkpointer_reads_the_setting(&mut db);
     let alter = thread::spawn(move || {
@@ -510,17 +507,15 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     );
     let dsn = db.dsn.clone();
     let (applied_later, later_applied) = std::sync::mpsc::channel();
+    let waiting = wait.then("Straum to wait or go on");
     let release = thread::spawn(move || {
         let mut watch = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         // Straum read the DDL's commit and waits for a snapshot to see it,
         // or it went on past it without one.
-        let waiting = "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_current_snapshot()'";
-        while watch.rows(waiting).unwrap().is_empty() && later_applied.try_recv().is_err() {
-            assert!(
-                Instant::now() < deadline,
-                "Straum neither waited nor went on"
-            );
-            thread::sleep(Duration::from_millis(20));
+        let snapshot_query =
+            "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_current_snapshot()'";
+        while watch.rows(snapshot_query).unwrap().is_empty() && later_applied.try_recv().is_err() {
+            waiting.poll();
         }
         watch
             .execute("ALTER SYSTEM RESET synchronous_standby_names")
@@ -532,8 +527,9 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     let written = db.run_committed(&format!(
         "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
     ));
+    let applying = wait.then(&format!("{written} applied"));
     while !applied_through(&writer, written) {
-        assert!(Instant::now() < deadline, "never applied {written}");
+        applying.check();
         applied(&mut writer);
     }
     // Gone if it released the standby when Straum waited.
@@ -583,15 +579,6 @@ fn checkpointer_reads_the_setting(db: &mut Db) {
     db.run("CHECKPOINT");
 }
 
-/// Waits until `query` returns a row.
-fn wait_for(watch: &mut Connection, query: &str) {
-    let deadline = Instant::now() + LONG;
-    while watch.rows(query).unwrap().is_empty() {
-        assert!(Instant::now() < deadline, "never: {query}");
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// A checkpoint in progress sets the redo point, where a physical slot
 /// starts, before PostgreSQL has flushed the WAL up to it; the server
 /// streams nothing it hasn't flushed, so the start waits for the flush.
@@ -610,12 +597,12 @@ fn starts_while_a_checkpoint_runs() {
     for _ in 0..100 {
         let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
         // A read may end inside a message and give no record yet.
-        let deadline = Instant::now() + LONG;
+        let wait = Wait::new(&format!("a record past {start}"));
         let record = loop {
             if let Some(record) = physical.next_record().unwrap() {
                 break record;
             }
-            assert!(Instant::now() < deadline, "no record past {start}");
+            wait.check();
         };
         assert!(record.lsn >= start.0);
     }
@@ -660,9 +647,9 @@ fn stops_when_the_physical_stream_dies() {
     let killed = db.rows("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_replication");
     assert_eq!(killed[0][0].as_deref(), Some("1"));
     db.run(&rng.trip(500));
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the writer to notice");
     loop {
-        assert!(Instant::now() < deadline, "never noticed");
+        wait.check();
         if writer.step().is_err() {
             break;
         }
@@ -711,13 +698,14 @@ fn says_what_a_physical_start_waits_for() {
 /// Applies commits until Straum is ready and its views equal SQL's. A
 /// trip goes in each round, so there is a commit to wait for.
 pub(super) fn catch_up(db: &mut Db, writer: &mut Writer<Postgres>, rng: &mut Rng, next: &mut u64) {
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("Straum to catch up");
     loop {
-        assert!(Instant::now() < deadline, "never caught up");
+        wait.check();
         *next += 1;
         let written = db.run_committed(&rng.trip(*next));
+        let applying = wait.then(&format!("{written} applied"));
         while !applied_through(writer, written) {
-            assert!(Instant::now() < deadline, "never applied {written}");
+            applying.check();
             applied(writer);
         }
         if compare(db, writer.app(), &taxi_oracles(2)).is_some() {

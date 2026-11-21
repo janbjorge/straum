@@ -440,9 +440,9 @@ fn lines_the_load_up_with_the_stream() {
 /// back until it ends, so it commits once the first record has come.
 fn read_until_consistent(reader: &mut WalReader, open: &mut Option<Connection>) -> Vec<Committed> {
     let mut before = Vec::new();
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the stream to be consistent");
     while reader.transactions.consistency() != Consistency::Consistent {
-        assert!(Instant::now() < deadline, "never consistent");
+        wait.check();
         let Advanced { committed, record } = reader.advance();
         before.extend(committed);
         if record.is_some()

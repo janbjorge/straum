@@ -73,17 +73,14 @@ fn commits_what_logical_decoding_commits() {
 /// `before`; `context` starts the message if none comes.
 fn logical_commits_past(logical: &mut Postgres, before: Lsn, context: &str) -> Vec<Commit> {
     let mut commits: Vec<Commit> = Vec::new();
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new(&format!("{context}a logical commit past {before}"));
     loop {
         if let Some(last) = commits.last()
             && last.lsn > before
         {
             return commits;
         }
-        assert!(
-            Instant::now() < deadline,
-            "{context}no logical commit past {before}"
-        );
+        wait.check();
         commits.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
     }
 }

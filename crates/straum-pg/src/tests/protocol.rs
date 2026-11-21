@@ -380,13 +380,12 @@ fn a_check_of_the_stream_gives_its_failure() {
     assert!(quiet.stream.check().is_ok());
     let fatal = error_response("57P01", "terminating connection");
     let mut failed = scripted_stream(vec![now(fatal)]);
-    let clock = Instant::now();
+    let wait = Wait::new("the stream to fail");
     let error = loop {
         if let Err(error) = failed.stream.check() {
             break error;
         }
-        assert!(clock.elapsed() < LONG, "the stream never failed");
-        thread::sleep(Duration::from_millis(20));
+        wait.poll();
     };
     assert_eq!(
         error.to_string(),
@@ -437,14 +436,13 @@ fn an_asynchronous_commit_counts_before_it_is_written() {
         source.next_commit(Duration::from_millis(100)).unwrap(),
         None
     );
-    let deadline = Instant::now() + 3 * LONG;
+    let wait = Wait::within(3 * LONG, "the slot to confirm all that was written");
     loop {
         let wal = source.wal().unwrap();
         if wal.confirmed >= wal.written {
             break;
         }
-        assert!(Instant::now() < deadline, "never caught up: {wal:?}");
-        thread::sleep(Duration::from_millis(100));
+        wait.poll();
     }
 }
 
@@ -470,13 +468,9 @@ fn reads_the_servers_wal() {
         source.next_commit(Duration::from_millis(100)).unwrap(),
         None
     );
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the slot to confirm the commit");
     while source.wal().unwrap().confirmed < commit.lsn {
-        assert!(
-            Instant::now() < deadline,
-            "the slot never confirmed the commit"
-        );
-        thread::sleep(Duration::from_millis(100));
+        wait.poll();
     }
 
     // The reading's connection dies; the next reading connects again.

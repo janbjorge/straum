@@ -11,7 +11,7 @@ use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use straum_app::{App, Limits, Lsn, Source, SourceError, Step, Writer};
 use straum_domain::{
@@ -513,6 +513,63 @@ pub(super) fn applied_or_started_again(db: &Db, spec: &str, writer: &mut Writer<
             started(writer);
         }
         other => panic!("expected a commit, got {other:?}"),
+    }
+}
+
+/// How long a [`Wait`] sleeps between looks: the shortest any test took.
+pub(super) const WAIT_POLL: Duration = Duration::from_millis(20);
+
+/// A wait for something a test needs to come, which fails the test past
+/// its deadline.
+pub(super) struct Wait {
+    deadline: Instant,
+    what: String,
+}
+
+impl Wait {
+    /// A wait of [`LONG`] for `what`.
+    pub(super) fn new(what: &str) -> Wait {
+        Wait::within(LONG, what)
+    }
+
+    /// A wait of `timeout` for `what`.
+    pub(super) fn within(timeout: Duration, what: &str) -> Wait {
+        Wait {
+            deadline: Instant::now() + timeout,
+            what: what.to_owned(),
+        }
+    }
+
+    /// A wait for `what` that ends when this one does.
+    pub(super) fn then(&self, what: &str) -> Wait {
+        Wait {
+            deadline: self.deadline,
+            what: what.to_owned(),
+        }
+    }
+
+    /// Panics naming what never came once the deadline has passed. For a
+    /// loop whose every turn blocks on a read, so it needs no sleep.
+    pub(super) fn check(&self) {
+        assert!(
+            Instant::now() < self.deadline,
+            "waited too long for {}",
+            self.what
+        );
+    }
+
+    /// As [`Wait::check`], then sleeps one poll.
+    pub(super) fn poll(&self) {
+        self.check();
+        thread::sleep(WAIT_POLL);
+    }
+}
+
+/// Waits until `query` returns a row on `connection`.
+pub(super) fn wait_for(connection: &mut Connection, query: &str) {
+    let wait = Wait::new(&format!("a row from {query}"));
+    while connection.rows(query).unwrap().is_empty() {
+        wait.poll();
     }
 }
 

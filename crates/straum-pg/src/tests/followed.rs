@@ -129,9 +129,9 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
         "ALTER TYPE $S.kind RENAME VALUE 'shelf' TO 'rack';
          INSERT INTO $S.tasks VALUES (4, 1, 2, '2024-01-15 13:00', NULL, 6, 'rack')",
     );
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the writer to stop");
     let error = loop {
-        assert!(Instant::now() < deadline, "never stopped");
+        wait.check();
         match writer.step() {
             Ok(_) => {}
             Err(error) => break error.to_string(),

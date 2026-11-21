@@ -322,9 +322,9 @@ fn writer_stuck(pg: &PostgresContainer, name: &str, replication: Replication) {
         panic!("{name}: the slot outlived the limit; watchdog: {watchdog}\n{timeline}");
     }
     // The writer wakes, takes what was queued, then the reason.
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new(&format!("{name}: the stream to end"));
     let error = loop {
-        assert!(Instant::now() < deadline, "{name}: the stream never ended");
+        wait.check();
         match source.next_commit(Duration::from_millis(100)) {
             Ok(_) => {}
             Err(error) => break error.to_string(),
@@ -372,12 +372,8 @@ fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
 
 /// Waits until the watchdog has read the slot on a session of its own.
 fn await_watchdog_session(db: &mut Db) {
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the watchdog to read the slot");
     loop {
-        assert!(
-            Instant::now() < deadline,
-            "the watchdog never read the slot"
-        );
         let sessions = db.rows(
             "SELECT count(*) FROM pg_stat_activity
              WHERE usename = 'reader' AND query LIKE '%pg_replication_slots%'
@@ -386,18 +382,14 @@ fn await_watchdog_session(db: &mut Db) {
         if sessions[0][0].as_deref() != Some("0") {
             return;
         }
-        thread::sleep(Duration::from_millis(100));
+        wait.poll();
     }
 }
 
 /// Ends the session the watchdog reads the slot on, once it has read it.
 fn end_watchdog_session(db: &mut Db) {
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the watchdog to read the slot");
     loop {
-        assert!(
-            Instant::now() < deadline,
-            "the watchdog never read the slot"
-        );
         let ended = db.rows(
             "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
              WHERE usename = 'reader' AND query LIKE '%pg_replication_slots%'
@@ -406,7 +398,7 @@ fn end_watchdog_session(db: &mut Db) {
         if ended[0][0].as_deref() != Some("0") {
             return;
         }
-        thread::sleep(Duration::from_millis(100));
+        wait.poll();
     }
 }
 
@@ -464,14 +456,11 @@ fn stream_reading_nothing(db: &mut Db, dsn: &Dsn, slot: &str) -> (Connection, St
          FROM pg_stat_replication r JOIN pg_stat_activity a USING (pid)
          WHERE r.pid = {walsender}"
     );
-    let deadline = Instant::now() + LONG;
+    let wait = Wait::new("the walsender's sends to stop");
     let mut before = db.rows(&sent);
     let mut steady = 0;
     loop {
-        assert!(
-            Instant::now() < deadline,
-            "the walsender's sends never stopped"
-        );
+        wait.check();
         thread::sleep(STUCK_SAMPLE);
         let now = db.rows(&sent);
         let behind = now[0][1].as_deref() == Some("t");
