@@ -208,7 +208,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     let at = (first_row_value(&created, 1).and_then(parse_lsn))
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::HoldTables)?;
-    let versions = catalog::column_versions(&mut connection, &followed(&tables))?;
+    let versions = catalog::column_versions(&mut connection, &checked(&tables))?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
@@ -234,7 +234,7 @@ fn physical_snapshot(
     let wait = settings.consistent_wait;
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::Nothing)?;
-    let started = start_physical_stream(dsn, &mut connection, checked(tables), pages, guard)?;
+    let started = start_physical_stream(dsn, &mut connection, checked(&tables), pages, guard)?;
     let PhysicalStream { mut stream, slot } = started;
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
@@ -484,9 +484,12 @@ fn unloaded(tables: &Tables) -> Vec<Identifier> {
     names
 }
 
-/// The facts, then the dims, as the decoder takes them.
-fn checked(tables: Tables) -> Vec<Checked> {
-    tables.facts.into_iter().chain(tables.dims).collect()
+/// Every table of `tables`, the facts then the dims, as the decoder takes
+/// them.
+fn checked(tables: &Tables) -> Vec<Checked> {
+    let mut checked = tables.facts.clone();
+    checked.extend(tables.dims.iter().cloned());
+    checked
 }
 
 /// A slot name no other Straum process or slot of this one has.
@@ -536,16 +539,12 @@ impl Source for Postgres {
         };
         let snapshot = match opened {
             Ok(snapshot) => snapshot,
-            Err(error) => {
-                let error = self.guard.blame(error);
-                self.guard.stop();
-                return Err(error.into());
-            }
+            Err(error) => return Err(self.failed(error)),
         };
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
         self.followed = Followed {
-            tables: followed(&snapshot.tables),
+            tables: checked(&snapshot.tables),
             labels: snapshot.tables.labels.clone(),
             versions: snapshot.versions.clone(),
         };
@@ -661,13 +660,6 @@ fn read_wal_and_check(
     Ok(wal)
 }
 
-/// Every table of `tables`, facts then dims.
-fn followed(tables: &Tables) -> Vec<Checked> {
-    let mut followed = tables.facts.clone();
-    followed.extend(tables.dims.iter().cloned());
-    followed
-}
-
 /// The server's WAL position, and how far the slot has confirmed and keeps
 /// WAL.
 pub(crate) fn read_wal(connection: &mut Connection, slot: &str) -> Result<Wal, Error> {
@@ -728,7 +720,7 @@ fn stream(mut snapshot: Snapshot, settings: &Settings) -> Result<Stream, Error> 
         snapshot.slot, snapshot.at
     ))?;
     let limit = settings.max_transaction_rows;
-    let reader = Reader::Logical(Decoder::new(checked(snapshot.tables), limit));
+    let reader = Reader::Logical(Decoder::new(checked(&snapshot.tables), limit));
     Stream::start(snapshot.connection, reader, snapshot.at)
 }
 
