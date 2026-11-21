@@ -123,6 +123,17 @@ pub(crate) struct Block {
     data: Range<usize>,
 }
 
+impl Block {
+    /// The bytes the block's data and image take in the record.
+    pub(super) fn payload_length(&self) -> usize {
+        let mut length = self.data.len();
+        if let Some(image) = &self.image {
+            length += image.bytes.len();
+        }
+        length
+    }
+}
+
 /// Where a relation's pages live: `RelFileLocator`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RelationFile {
@@ -248,10 +259,7 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
                     previous_file = Some(previous.file);
                 }
                 let block = read_block_header(&mut cursor, id, previous_file).ok_or(short)?;
-                payload += block.data.len();
-                if let Some(image) = &block.image {
-                    payload += image.bytes.len();
-                }
+                payload += block.payload_length();
                 blocks.push(block);
             }
             _ => return Err(short),
@@ -336,10 +344,7 @@ pub(super) fn interest(
                 if block.fork == MAIN_FORK && files.contains(&block.file) {
                     return Interest::Read;
                 }
-                payload += block.data.len();
-                if let Some(image) = &block.image {
-                    payload += image.bytes.len();
-                }
+                payload += block.payload_length();
                 previous_file = Some(block.file);
             }
             _ => return Interest::Unsure,

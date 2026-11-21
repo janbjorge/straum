@@ -242,10 +242,7 @@ fn passes_by_exactly_the_records_of_other_files() {
 fn headers_on_first_page(record: &Record) -> bool {
     let mut payload = record.main_data().len();
     for block in &record.blocks {
-        payload += record.block_data(block).len();
-        if let Some(image) = &block.image {
-            payload += record.image_bytes(image).len();
-        }
+        payload += block.payload_length();
     }
     let headers = (record.total_length() - payload) as u64;
     record.lsn % PAGE_SIZE + headers <= PAGE_SIZE
