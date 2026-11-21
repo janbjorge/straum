@@ -4,8 +4,8 @@
 //! Each test reads the heap through the counting allocator of `main.rs`.
 
 use super::{
-    BOROUGHS, Datum, HOUR, PEAK, RefKind, Spec, Store, ZONES, Zones, ask, held, live, load_zones,
-    spec, spec_of, trip_value,
+    Datum, HOUR, RefKind, Spec, Store, ZONES, Zones, ask, borough, held, load_zones, peak, spec,
+    spec_of, trip_row,
 };
 
 /// A truncate gives back the codes of the values the view held, not only
@@ -33,21 +33,6 @@ fn a_cleared_view_holds_no_codes() {
     assert!(cleared - fresh < 4 << 10, "{cleared} against {fresh}");
 }
 
-/// A trip of `store`'s view with pickup zone `pickup` and the tip
-/// offset `tip`.
-fn trip_row(store: &Store, pickup: i64, tip: i64) -> Vec<Datum> {
-    let columns = store.spec().fact("trips").unwrap().columns();
-    let mut row = Vec::with_capacity(columns.len());
-    for column in columns {
-        let mut value = trip_value(column.as_str(), 0, tip);
-        if column.as_str() == "pu" {
-            value = Datum::Int(pickup);
-        }
-        row.push(value);
-    }
-    row
-}
-
 /// A store of `ids` trips, each in an hour of its own from a zone id of
 /// its own: the zones name a few of the ids, as a dim of accounts names
 /// the ones still open.
@@ -70,10 +55,7 @@ fn store_of_ids(ids: i64) -> Store {
 /// The heap an ask by borough over the first `hours` reaches at its most.
 fn peak_by_borough(store: &Store, hours: i64) -> isize {
     let ask = ask(&["borough"], 0, hours);
-    let before = live();
-    PEAK.set(before);
-    drop(store.ask(&ask).unwrap());
-    PEAK.get() - before
+    peak(|| drop(store.ask(&ask).unwrap()))
 }
 
 /// An ask that reads a dim value through a join works it out once per
@@ -135,9 +117,8 @@ fn inner(spec: &Spec) -> Spec {
 /// Removes every zone [`load_zones`] added, one row at a time.
 fn remove_zones(store: &mut Store) {
     for zone in 0..ZONES {
-        let borough = BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()];
         store
-            .remove_row("zones", &[Datum::Int(zone), Datum::Text(borough.into())])
+            .remove_row("zones", &[Datum::Int(zone), borough(zone)])
             .unwrap();
     }
 }
@@ -202,7 +183,7 @@ fn renamed(renames: usize) -> isize {
     held(|| {
         let mut store = Store::new(spec_of(&[], Zones::Bound));
         load_zones(&mut store);
-        let mut name = Datum::Text(BOROUGHS[1].into());
+        let mut name = borough(1);
         for rename in 0..renames {
             let next = Datum::Text(format!("borough {rename}").into());
             store
@@ -214,7 +195,7 @@ fn renamed(renames: usize) -> isize {
                 .unwrap();
             name = next;
         }
-        let back = Datum::Text(BOROUGHS[1].into());
+        let back = borough(1);
         store
             .update_row("zones", &[Datum::Int(1), name], &[Datum::Int(1), back])
             .unwrap();

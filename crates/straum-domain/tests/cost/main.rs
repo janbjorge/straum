@@ -218,11 +218,15 @@ fn load_zones(store: &mut Store) {
         .unwrap();
     let mut zones = Vec::new();
     for zone in 0..ZONES {
-        let borough = BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()];
         zones.push(Datum::Int(zone));
-        zones.push(Datum::Text(borough.into()));
+        zones.push(borough(zone));
     }
     store.add_rows("zones", &zones).unwrap();
+}
+
+/// The borough [`load_zones`] puts `zone` in.
+fn borough(zone: i64) -> Datum {
+    Datum::Text(BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()].into())
 }
 
 /// The value of `column` in the trip of cell number `cell` with tip
@@ -236,6 +240,21 @@ fn trip_value(column: &str, cell: i64, tip: i64) -> Datum {
         "tip" => Datum::Int(cell % 7 + tip),
         other => panic!("no value for {other}"),
     }
+}
+
+/// A trip of `store`'s view in the first cell, with pickup zone `pickup`
+/// and the tip offset `tip`.
+fn trip_row(store: &Store, pickup: i64, tip: i64) -> Vec<Datum> {
+    let columns = store.spec().fact("trips").unwrap().columns();
+    let mut row = Vec::with_capacity(columns.len());
+    for column in columns {
+        let mut value = trip_value(column.as_str(), 0, tip);
+        if column.as_str() == "pu" {
+            value = Datum::Int(pickup);
+        }
+        row.push(value);
+    }
+    row
 }
 
 /// Every measure, by `by`, over the hours `from..to`.
@@ -259,11 +278,7 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
 /// The allocations an ask of every measure by `by` makes.
 fn allocations(store: &Store, by: &[&str]) -> usize {
     let ask = ask(by, 0, 1000);
-    let before = ALLOCATIONS.get();
-    let answer = store.ask(&ask).unwrap();
-    let after = ALLOCATIONS.get();
-    drop(answer);
-    after - before
+    allocations_of(|| drop(store.ask(&ask).unwrap()))
 }
 
 /// The spec has no percentile: it gathers the values of its range, which
@@ -346,7 +361,7 @@ fn a_zone_change_stays_within_its_time() {
     }
     let per_change = clock.elapsed() / (2 * REPS);
     eprintln!("a zone no trip names: {per_change:?} a change");
-    let named = [Datum::Int(1), Datum::Text(BOROUGHS[1].into())];
+    let named = [Datum::Int(1), borough(1)];
     let moved = [Datum::Int(1), Datum::Text("Bronx".into())];
     let clock = Instant::now();
     for _ in 0..REPS {
@@ -439,6 +454,25 @@ fn held(build: impl FnOnce() -> Store) -> isize {
     drop(store);
     assert_eq!(live(), empty);
     held
+}
+
+/// The most the heap grew past where it stood while `work` ran.
+// A function to call, not a value: the peak is reset before the work
+// runs and read after.
+fn peak(work: impl FnOnce()) -> isize {
+    let before = live();
+    PEAK.set(before);
+    work();
+    PEAK.get() - before
+}
+
+/// The allocations `work` makes.
+// A function to call, not a count: the tally is read before the work
+// runs and after.
+fn allocations_of(work: impl FnOnce()) -> usize {
+    let before = ALLOCATIONS.get();
+    work();
+    ALLOCATIONS.get() - before
 }
 
 /// A join on a `by` key adds no cells, which bound cells would be as many
@@ -542,13 +576,10 @@ fn a_distinct_holds_what_a_percentile_holds() {
 
 /// The heap an ask of the median by `by` over hours `from..to` reaches
 /// at its most, the answer dropped.
-fn peak(store: &Store, by: &[&str], from: i64, to: i64) -> isize {
+fn median_peak(store: &Store, by: &[&str], from: i64, to: i64) -> isize {
     let mut ask = ask(by, from, to);
     ask.measures = vec![id("tip_median")];
-    let before = live();
-    PEAK.set(before);
-    drop(store.ask(&ask).unwrap());
-    PEAK.get() - before
+    peak(|| drop(store.ask(&ask).unwrap()))
 }
 
 /// The fact joined to the zones, measuring the median tip alone.
@@ -569,7 +600,10 @@ fn a_percentile_ask_holds_the_values_of_its_range() {
     for (by, from, to) in [(&[][..], 24, 48), (&["pay"], 0, 100), (&["pu"], 99, 100)] {
         let values = (to - from) * per_hour * TIPS;
         let most = isize::try_from(2 * 16 * values + (4 << 10)).unwrap();
-        let (small, big) = (peak(&small, by, from, to), peak(&big, by, from, to));
+        let (small, big) = (
+            median_peak(&small, by, from, to),
+            median_peak(&big, by, from, to),
+        );
         eprintln!("by {by:?}, hours {from}..{to}: {small} bytes, {big} with 8x the cells");
         assert!(small <= most, "{small} bytes for {values} values");
         assert_eq!(small, big, "by {by:?}: cells outside the range cost");
@@ -580,9 +614,7 @@ fn a_percentile_ask_holds_the_values_of_its_range() {
 fn median_allocations(store: &Store, by: &[&str]) -> usize {
     let mut ask = ask(by, 0, 1000);
     ask.measures = vec![id("tip_median")];
-    let before = ALLOCATIONS.get();
-    drop(store.ask(&ask).unwrap());
-    ALLOCATIONS.get() - before
+    allocations_of(|| drop(store.ask(&ask).unwrap()))
 }
 
 /// An ask of a percentile allocates once more each time a group's list
@@ -614,10 +646,7 @@ fn repeated_filter_peak(store: &Store, repeats: usize) -> isize {
         values: vec![Literal::Int(1)],
     };
     ask.filter = vec![pickup; repeats];
-    let before = live();
-    PEAK.set(before);
-    drop(store.ask(&ask).unwrap());
-    PEAK.get() - before
+    peak(|| drop(store.ask(&ask).unwrap()))
 }
 
 /// Conditions on one key fold into one check, so repeating one a thousand
@@ -641,10 +670,7 @@ fn borough_filter_peak(store: &Store, value: Literal) -> isize {
         key: id("borough"),
         values: vec![value],
     }];
-    let before = live();
-    PEAK.set(before);
-    drop(store.ask(&ask));
-    PEAK.get() - before
+    peak(|| drop(store.ask(&ask)))
 }
 
 /// Checking a condition's type reads the dim's column type, not a join
@@ -655,17 +681,10 @@ fn borough_filter_peak(store: &Store, value: Literal) -> isize {
 fn checking_an_ask_s_types_keeps_no_memo_of_its_joins() {
     const PICKUPS: i64 = 50_000;
     let mut store = store(1_000);
-    let columns = store.spec().fact("trips").unwrap().columns().clone();
     for pickup in 0..PICKUPS {
-        let mut row = Vec::with_capacity(columns.len());
-        for column in &columns {
-            let mut value = trip_value(column.as_str(), 0, 0);
-            if column.as_str() == "pu" {
-                value = Datum::Int(ZONES + pickup);
-            }
-            row.push(value);
-        }
-        store.add_row("trips", &row).unwrap();
+        store
+            .add_row("trips", &trip_row(&store, ZONES + pickup, 0))
+            .unwrap();
     }
     let memo = isize::try_from(PICKUPS).unwrap() * 4;
     let refused = borough_filter_peak(&store, Literal::Int(1));
@@ -680,13 +699,10 @@ fn by_every_key_peak(store: &Store, window: Option<Window>) -> isize {
     let ask = ask(&["pay", "pu"], 0, 1000);
     let mut by_bucket = ask.clone();
     by_bucket.keys.insert(0, AskKey::Key(id("bucket")));
-    let before = live();
-    PEAK.set(before);
-    match window {
+    peak(|| match window {
         Some(window) => drop(store.ask_window(&by_bucket, Some(window)).unwrap()),
         None => drop(store.ask(&by_bucket).unwrap()),
-    }
-    PEAK.get() - before
+    })
 }
 
 /// A window of one row builds that row, not every row of the answer: the
@@ -718,10 +734,7 @@ fn by_bucket_peak(store: &Store, by: &[&str], measure: &str) -> isize {
     let mut ask = ask(by, 0, 1000);
     ask.keys.insert(0, AskKey::Key(id("bucket")));
     ask.measures = vec![id(measure)];
-    let before = live();
-    PEAK.set(before);
-    drop(store.ask(&ask).unwrap());
-    PEAK.get() - before
+    peak(|| drop(store.ask(&ask).unwrap()))
 }
 
 /// A count of distinct values reads a group of one cell in place: by the
@@ -775,7 +788,7 @@ fn a_percentile_reads_a_group_of_one_cell_in_place() {
 fn a_dim_key_back_to_one_row_counts_each_cell_once_again() {
     let mut store = store(8_000);
     let before = allocations(&store, &["borough"]);
-    let twice = [Datum::Int(3), Datum::Text(BOROUGHS[3].into())];
+    let twice = [Datum::Int(3), borough(3)];
     store.add_row("zones", &twice).unwrap();
     let repeating = allocations(&store, &["borough"]);
     store.remove_row("zones", &twice).unwrap();
