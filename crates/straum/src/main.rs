@@ -194,7 +194,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             };
             print(&format!("straum {version}\n"))
         }
-        Command::Plan(args) => plan(args),
+        Command::Plan(args) => plan(&args),
         Command::Run(args) => run(args),
         Command::Status { server, output } => {
             print(&client::status(&server, output)?)?;
@@ -295,53 +295,25 @@ fn read_spec(path: &str) -> Result<SpecFile, Failure> {
 /// setup and `straum run` agree on them without being told twice.
 /// `--out` writes the SQL there. Otherwise it is printed. `--tables` and
 /// `--copy` take several specs and need no DSN.
-fn plan(
-    Plan {
-        specs,
-        publication,
-        role,
-        dsn_file,
-        out,
-        printed,
-    }: Plan,
-) -> Result<(), Failure> {
+fn plan(plan: &Plan) -> Result<(), Failure> {
     let mut read = Vec::new();
-    for path in &specs {
+    for path in &plan.specs {
         read.push(read_spec(path)?.spec);
     }
-    let directory = match printed {
-        Printed::Tables => return write_or_print(out.as_deref(), &table_lines(&read)),
-        Printed::Copy { directory } => directory,
-        Printed::Setup { replication } => {
-            let setup = Setup {
-                replication,
-                publication,
-                role,
-                dsn_file,
-                out,
-            };
-            return plan_setup(&read, &setup);
-        }
-    };
-    write_copy_scripts(&directory, &read)
+    match &plan.printed {
+        Printed::Tables => write_or_print(plan.out.as_deref(), &table_lines(&read)),
+        Printed::Copy { directory } => write_copy_scripts(directory, &read),
+        Printed::Setup { replication } => plan_setup(&read, plan, *replication),
+    }
 }
 
-/// What the setup SQL is made of, besides the spec.
-struct Setup {
-    replication: Replication,
-    publication: String,
-    role: Option<String>,
-    dsn_file: Option<String>,
-    out: Option<String>,
-}
-
-fn plan_setup(specs: &[Spec], setup: &Setup) -> Result<(), Failure> {
+fn plan_setup(specs: &[Spec], plan: &Plan, replication: Replication) -> Result<(), Failure> {
     // plan_command lets only --copy and --tables have several specs.
     let Some(spec) = specs.first() else {
         return Ok(());
     };
-    let dsn = read_dsn(setup.dsn_file.as_deref())?;
-    let role = match (&setup.role, &dsn) {
+    let dsn = read_dsn(plan.dsn_file.as_deref())?;
+    let role = match (&plan.role, &dsn) {
         (Some(role), _) => role.as_str(),
         (None, Some(dsn)) => dsn.user(),
         (None, None) => ROLE,
@@ -353,8 +325,8 @@ fn plan_setup(specs: &[Spec], setup: &Setup) -> Result<(), Failure> {
         Some(dsn) => dsn.password(),
         None => None,
     };
-    let sql = straum_pg::plan(spec, &setup.publication, role, password, setup.replication);
-    write_or_print(setup.out.as_deref(), &sql)
+    let sql = straum_pg::plan(spec, &plan.publication, role, password, replication);
+    write_or_print(plan.out.as_deref(), &sql)
 }
 
 /// Every spec's tables, each once, a line each.
