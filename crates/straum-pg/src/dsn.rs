@@ -108,25 +108,21 @@ impl Dsn {
         if host.is_empty() {
             return Err(DsnError::Host);
         }
-        let mut plain = false;
+        let mut transport = Transport::Tls;
         let mut root_cert = None;
         for pair in query.split('&') {
             if pair.is_empty() {
                 continue;
             }
             match pair.split_once('=') {
-                Some(("sslmode", "disable")) => plain = true,
-                Some(("sslmode", "require" | "verify-ca" | "verify-full")) => plain = false,
-                Some(("sslmode", mode @ ("allow" | "prefer"))) => {
-                    return Err(DsnError::Fallback(mode.to_owned()));
-                }
+                Some(("sslmode", mode)) => transport = transport_of(Some(mode))?,
                 // libpq's word for the system's roots: Straum's are built in.
                 Some(("sslrootcert", "system")) => root_cert = None,
                 Some(("sslrootcert", file)) if !file.is_empty() => root_cert = Some(decode(file)?),
                 _ => return Err(DsnError::Parameter(parameter_name(pair))),
             }
         }
-        let tls = tls(host, plain, root_cert)?;
+        let tls = tls(host, transport, root_cert)?;
         let database = match decode(database)? {
             decoded if decoded.is_empty() => user.clone(),
             decoded => decoded,
@@ -175,8 +171,8 @@ impl Dsn {
             Some(database) => database.to_owned(),
             None => user.clone(),
         };
-        let plain = match plain_tcp(text(env.sslmode.as_deref())) {
-            Ok(plain) => plain,
+        let transport = match transport_of(text(env.sslmode.as_deref())) {
+            Ok(transport) => transport,
             Err(DsnError::Parameter(_)) => return Err(DsnError::PgSslMode),
             Err(other) => return Err(other),
         };
@@ -184,7 +180,7 @@ impl Dsn {
             Some("system") | None => None,
             Some(file) => Some(file.to_owned()),
         };
-        let tls = tls(host, plain, root_cert)?;
+        let tls = tls(host, transport, root_cert)?;
         Ok(Some(Dsn {
             host: host.to_owned(),
             port,
@@ -211,22 +207,29 @@ impl PgEnv {
     }
 }
 
+/// What an `sslmode` asks for, before the host and roots make it a `Tls`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    PlainTcp,
+    Tls,
+}
+
 /// `sslmode=disable` is plain TCP. Omitted, `require`, `verify-ca` and
 /// `verify-full` verify. `allow` and `prefer` are refused.
-fn plain_tcp(mode: Option<&str>) -> Result<bool, DsnError> {
+fn transport_of(mode: Option<&str>) -> Result<Transport, DsnError> {
     match mode {
-        Some("disable") => Ok(true),
-        None | Some("require" | "verify-ca" | "verify-full") => Ok(false),
+        Some("disable") => Ok(Transport::PlainTcp),
+        None | Some("require" | "verify-ca" | "verify-full") => Ok(Transport::Tls),
         Some(mode @ ("allow" | "prefer")) => Err(DsnError::Fallback(mode.to_owned())),
         Some(_) => Err(DsnError::Parameter(Some("sslmode"))),
     }
 }
 
-fn tls(host: &str, plain: bool, root_cert: Option<String>) -> Result<Tls, DsnError> {
-    match (plain, root_cert) {
-        (true, Some(_)) => Err(DsnError::RootCert),
-        (true, None) => Ok(Tls::Off),
-        (false, root_cert) => match ServerName::try_from(host.to_owned()) {
+fn tls(host: &str, transport: Transport, root_cert: Option<String>) -> Result<Tls, DsnError> {
+    match (transport, root_cert) {
+        (Transport::PlainTcp, Some(_)) => Err(DsnError::RootCert),
+        (Transport::PlainTcp, None) => Ok(Tls::Off),
+        (Transport::Tls, root_cert) => match ServerName::try_from(host.to_owned()) {
             Ok(name) => Ok(Tls::Verify { name, root_cert }),
             Err(_) => Err(DsnError::TlsHost(host.to_owned())),
         },
