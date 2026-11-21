@@ -134,7 +134,7 @@ parameter. The view's time, by the name the view gives it, bounds the
 buckets read: bucket >= $n AND bucket < $n for the view usage below. A
 bound left out leaves its end open, so with no WHERE an ask reads every
 bucket held. A selected key is also in GROUP BY. A measure is its name, never
-sum(...) or count(...).
+sum(...) or count(...). Not equal in HAVING is written <>; != is refused.
 
 examples:
   straum ask 'SELECT events FROM usage
