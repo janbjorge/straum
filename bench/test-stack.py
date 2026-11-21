@@ -8,18 +8,22 @@
 bench/stack.py and bench/try_your_data.py each carry the same functions
 to name and find their Compose projects, since try_your_data.py runs
 from a URL alone; every such test runs against both. They read `docker
-compose` output handed to them here.
+compose` output handed to them here. try_your_data.py's Compose file
+names the Host names Straum answers, which a test reads.
 
 bench/answers.py says when Straum and PostgreSQL answer alike, and
 bench/materialized.py writes the materialized views and the asks over them
 that bench/taxi.py's materialized mode times.
 """
 
+import argparse
 import datetime
 import decimal
 import importlib.util
+import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import unittest
@@ -38,7 +42,8 @@ def load(name: str):
     return module
 
 
-COPIES = [load("stack"), load("try_your_data")]
+TRY = load("try_your_data")
+COPIES = [load("stack"), TRY]
 # bench/materialized.py imports answers as its scripts do, from bench/.
 sys.path.insert(0, str(BENCH))
 answers = load("answers")
@@ -130,6 +135,55 @@ class PublishedPorts(unittest.TestCase):
             for copy in COPIES:
                 with self.subTest(copy=copy.__name__, listed=listed):
                     self.assertIsNone(copy.published_port(listed))
+
+
+class TryAllowedHosts(unittest.TestCase):
+    """try_your_data.py publishes Straum on loopback, so it names the
+    Host names Straum answers, as a page rebound to 127.0.0.1 sends
+    another."""
+
+    def straum(self, port: int) -> dict:
+        args = argparse.Namespace(
+            wal="logical",
+            postgres="18",
+            data=BENCH,
+            spec=BENCH / "usage.sql",
+            image="straum",
+            stack=f"{TOOL}-pid1",
+            port=port,
+        )
+        compose = json.loads(TRY.compose_file(args, "secret"))
+        return compose["services"][TRY.STRAUM]
+
+    def allowed(self, straum: dict) -> list[str]:
+        command = straum["command"]
+        return command[command.index("--allow-hosts") + 1].split(",")
+
+    def test_names_the_published_port_and_the_shells(self):
+        straum = self.straum(49153)
+        self.assertEqual(
+            straum["ports"],
+            [{"target": 8080, "host_ip": "127.0.0.1", "published": 49153}],
+        )
+        self.assertEqual(
+            self.allowed(straum),
+            ["localhost:49153", "127.0.0.1:49153", "127.0.0.1:8080"],
+        )
+        # At Straum's own port, the shell's name is named once.
+        self.assertEqual(
+            self.allowed(self.straum(8080)), ["localhost:8080", "127.0.0.1:8080"]
+        )
+
+    def test_a_rebound_name_is_not_named(self):
+        allowed = self.allowed(self.straum(49153))
+        for name in ["evil.example:49153", "0.0.0.0:49153", "localhost:8080"]:
+            with self.subTest(name=name):
+                self.assertNotIn(name, allowed)
+
+    def test_a_free_port_can_be_bound(self):
+        port = TRY.free_port()
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", port))
 
 
 class Answers(unittest.TestCase):

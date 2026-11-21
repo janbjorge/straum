@@ -35,6 +35,7 @@ import pathlib
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -160,9 +161,11 @@ def parse() -> argparse.Namespace:
     parser.add_argument(
         "--port",
         type=int,
-        help="local port Straum answers on (a free one Docker picks)",
+        help="local port Straum answers on (a free one)",
     )
     args = parser.parse_args()
+    if args.port is None:
+        args.port = free_port()
     if args.spec_file and args.spec_flag:
         parser.error("give the spec once: as SPEC or as --spec, not both")
     args.spec = args.spec_file or args.spec_flag
@@ -210,9 +213,7 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
     # Straum alone is published, on loopback only, since the copy holds
     # your rows; the load and psql reach PostgreSQL through
     # docker compose exec.
-    published = {"target": STRAUM_PORT, "host_ip": "127.0.0.1"}
-    if args.port:
-        published["published"] = args.port
+    published = {"target": STRAUM_PORT, "host_ip": "127.0.0.1", "published": args.port}
     services = {
         POSTGRES: {
             "image": f"postgres:{args.postgres}",
@@ -231,7 +232,8 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
         STRAUM: {
             "image": args.image,
             # Every address in the container: unless told, Straum serves its
-            # own loopback, which the published port never reaches.
+            # own loopback, which the published port never reaches. Only
+            # the names below, so a page rebound to 127.0.0.1 can't ask.
             "command": [
                 "run",
                 SPEC_IN_IMAGE,
@@ -239,6 +241,8 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
                 args.wal,
                 "--listen",
                 f"0.0.0.0:{STRAUM_PORT}",
+                "--allow-hosts",
+                allowed_hosts(args.port),
             ],
             "environment": {"STRAUM_DSN": dsn(password)},
             "volumes": [f"{args.spec}:{SPEC_IN_IMAGE}:ro"],
@@ -246,6 +250,23 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
         },
     }
     return json.dumps({"name": args.stack, "services": services})
+
+
+def allowed_hosts(port: int) -> str:
+    """The Host names Straum answers: this machine's, at the published
+    port, and the shell's inside the container, at Straum's own."""
+    names = [f"localhost:{port}", f"127.0.0.1:{port}", f"127.0.0.1:{STRAUM_PORT}"]
+    return ",".join(dict.fromkeys(names))
+
+
+def free_port() -> int:
+    """A port free on this machine's loopback now. --allow-hosts names the
+    published port as Straum starts, so Docker can't be left to pick it.
+    Another process may take it before Docker does; the start then fails,
+    and --port names another."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 class Stack:

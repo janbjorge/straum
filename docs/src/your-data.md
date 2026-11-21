@@ -125,8 +125,10 @@ just try usage.sql --data copy
 
 [`straum plan --copy`](cli.md#straum-plan) writes the scripts into
 `copy/`. `just try` loads `copy/` into a new PostgreSQL, starts Straum,
-opens the shell and prints Straum's port, which Docker picks unless
-`--port` names one. Leaving the shell removes both containers.
+opens the shell and prints Straum's port: a free one, unless `--port`
+names it. Straum answers only `localhost` and `127.0.0.1` at that port
+([Who can ask](deploy.md#who-can-ask)). Leaving the shell removes both
+containers.
 
 `--wal physical` has Straum read the [physical write-ahead log
 (WAL)](postgresql.md#physical-wal) in place of logical decoding. `just
