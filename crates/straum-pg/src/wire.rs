@@ -34,6 +34,10 @@ const TRANSACTION_TIMEOUT_MAJOR: u32 = 17;
 const COPY_BOTH: u8 = b'W';
 
 /// One row of a query's result, each value as text; `None` for a null.
+/// The `application_name` Straum connects with, which
+/// `synchronous_standby_names` may name.
+pub(crate) const APPLICATION_NAME: &str = "straum";
+
 pub(crate) type Row = Vec<Option<String>>;
 
 /// What a connection takes: SQL, or replication commands as well.
@@ -149,7 +153,7 @@ impl Connection {
         let mut parameters = vec![
             ("user", dsn.user.as_str()),
             ("database", dsn.database.as_str()),
-            ("application_name", "straum"),
+            ("application_name", APPLICATION_NAME),
             ("client_encoding", "UTF8"),
             ("DateStyle", "ISO"),
             ("TimeZone", "UTC"),

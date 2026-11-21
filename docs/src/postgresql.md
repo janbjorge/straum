@@ -167,9 +167,17 @@ no table inherits from; a partitioned table, a view or a TimescaleDB
 hypertable is refused. A line starts with the view, or with the dim,
 such as `accounts:`.
 
+Straum connects with `application_name` `straum` and confirms each
+commit it reads. A `synchronous_standby_names` holding `*` or `straum`
+could count it as a synchronous standby: a commit only Straum
+confirmed is then lost on failover, and a Straum stopped holds up
+commits. Straum refuses to start under one; list your standbys by
+name instead.
+
 ```text
 the server is a standby in recovery; give Straum the primary's DSN
 PostgreSQL 16 is too old; Straum needs 17 or newer
+synchronous_standby_names is 'ANY 1 (*)', which names Straum's connection, application_name straum: a commit only Straum confirmed could be lost on failover; name your standbys there, not * or straum
 usage: Straum's role can't read public.events: GRANT SELECT ON public.events
 usage: tables inherit from public.events; Straum reads a table without children
 usage: row-level security filters what straum reads of public.events; Straum needs every row: ALTER ROLE straum BYPASSRLS, as a superuser

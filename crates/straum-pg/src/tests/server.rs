@@ -1,6 +1,7 @@
-//! The server's part of the setup check: its version, its `wal_level`
-//! and whether it is a standby, from the catalog Straum reads at each
-//! start, and the timeouts each connection turns off.
+//! The server's part of the setup check: its version, its `wal_level`,
+//! whether it is a standby and whether `synchronous_standby_names` could
+//! name Straum, from the catalog Straum reads at each start, and the
+//! timeouts each connection turns off.
 
 use straum_app::Source;
 use straum_domain::Spec;
@@ -36,6 +37,42 @@ fn says_postgresql_16_is_too_old() {
         error.contains("PostgreSQL 16 is too old; Straum needs 17 or newer"),
         "{error}"
     );
+}
+
+/// A `synchronous_standby_names` that could name Straum's connection
+/// fails the check, naming the setting; one naming other standbys
+/// passes. Nothing commits while either is set: no standby answers.
+#[test]
+fn refuses_synchronous_standby_names_that_name_straum() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "syncnames", TABLES);
+    let spec = db.spec(SPEC);
+    let named = "synchronous_standby_names is 'ANY 1 (*)', which names Straum's connection, \
+                 application_name straum: a commit only Straum confirmed could be lost on \
+                 failover; name your standbys there, not * or straum";
+    for (setting, expected) in [("ANY 1 (*)", Some(named)), ("FIRST 1 (replica1)", None)] {
+        db.run(&format!(
+            "ALTER SYSTEM SET synchronous_standby_names = '{setting}'"
+        ));
+        db.run("SELECT pg_reload_conf()");
+        let wait = Wait::new("the reloaded setting");
+        let shown = Some(setting.to_owned());
+        while db
+            .connection
+            .rows("SHOW synchronous_standby_names")
+            .unwrap()[0][0]
+            != shown
+        {
+            wait.poll();
+        }
+        let catalog = catalog::query(&mut db.connection, &spec, &db.name).unwrap();
+        let lines = check_lines(&spec, &catalog, &db.name, Replication::Logical);
+        assert_eq!(
+            lines,
+            expected.map(|line| vec![line.to_owned()]),
+            "{setting}"
+        );
+    }
 }
 
 /// A timeout set on the database would cancel a long load: from 17 on,

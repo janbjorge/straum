@@ -81,6 +81,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         "SELECT current_setting('server_version_num'), current_user, current_setting('wal_level'),
                 current_setting('full_page_writes'), current_setting('wal_compression'),
                 current_setting('server_encoding'), pg_is_in_recovery(),
+                current_setting('synchronous_standby_names'),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
                    FROM pg_publication WHERE pubname = {publication})"
     ))?;
@@ -95,6 +96,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_compression,
         server_encoding,
         in_recovery,
+        synchronous_standby_names,
         published,
     ] = row.try_into().map_err(|_| shape("settings"))?;
     let server_version =
@@ -107,6 +109,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_compression: wal_compression.unwrap_or_default(),
         server_encoding: server_encoding.unwrap_or_default(),
         in_recovery: in_recovery.as_deref().is_some_and(is_true),
+        synchronous_standby_names: synchronous_standby_names.unwrap_or_default(),
         publication: publication_state(published.as_deref()),
         ..Catalog::default()
     })

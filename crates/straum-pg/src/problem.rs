@@ -9,6 +9,7 @@ use std::fmt;
 use straum_domain::{ColumnType, Identifier};
 
 use crate::catalog::{NEWEST_PHYSICAL_MAJOR, OLDEST_MAJOR, Purpose};
+use crate::wire::APPLICATION_NAME;
 
 /// A transaction id, as PostgreSQL numbers transactions in its WAL.
 pub(crate) type Xid = u32;
@@ -83,6 +84,11 @@ pub(crate) enum ServerProblem {
     /// on, `OLDEST_MAJOR` to `NEWEST_PHYSICAL_MAJOR`.
     TooNewForPhysical {
         major: u32,
+    },
+    /// `synchronous_standby_names`, as `setting`, could count Straum as
+    /// a synchronous standby, whose word alone a commit then waits for.
+    SynchronousStandby {
+        setting: String,
     },
     /// The physical stream can't read pages compressed with zstd.
     WalCompressionZstd,
@@ -277,6 +283,12 @@ impl fmt::Display for ServerProblem {
                 "--wal physical reads the WAL of PostgreSQL {OLDEST_MAJOR} to \
                  {NEWEST_PHYSICAL_MAJOR}, not {major}; \
                  read it through logical decoding"
+            ),
+            ServerProblem::SynchronousStandby { setting } => write!(
+                formatter,
+                "synchronous_standby_names is '{setting}', which names Straum's connection, \
+                 application_name {APPLICATION_NAME}: a commit only Straum confirmed could be \
+                 lost on failover; name your standbys there, not * or {APPLICATION_NAME}"
             ),
             ServerProblem::WalCompressionZstd => formatter
                 .write_str("wal_compression is zstd; --wal physical reads off, pglz and lz4"),

@@ -5,7 +5,8 @@
 //! tables as the load does; `check` compares that with the spec and gives
 //! `source.rs` the tables ready to load, or every `Problem` found.
 //! `query.rs` holds the reading, `followed.rs` what a running stream
-//! checks of its tables again.
+//! checks of its tables again, `standby.rs` whether the server's
+//! synchronous standbys could include Straum.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_domain::{
@@ -20,10 +21,11 @@ use crate::problem::{
 use crate::source::Replication;
 use crate::unexpected::Unexpected;
 use crate::value::{BPCHAR, FLOAT4, FLOAT8, Oid, type_of};
-use crate::wire::Connection;
+use crate::wire::{APPLICATION_NAME, Connection};
 
 mod followed;
 mod query;
+mod standby;
 
 pub(crate) use followed::{ColumnVersions, Followed, column_versions, still_followed};
 pub(crate) use query::{labels, locked_tables, query};
@@ -185,6 +187,7 @@ pub(crate) struct Catalog {
     /// `pg_is_in_recovery()`: a standby, which has no current WAL
     /// position to read.
     pub(crate) in_recovery: bool,
+    pub(crate) synchronous_standby_names: String,
     pub(crate) publication: PublicationState,
     pub(crate) classes: Vec<Class>,
     /// Every label of every enum type a spec column has, in type order.
@@ -318,6 +321,12 @@ pub(crate) fn check(
 ) -> Result<Tables, Vec<Problem>> {
     let mut problems = Vec::new();
     check_server(catalog, publication, replication, &mut problems);
+    // A replication connection it names may confirm commits alone.
+    if standby::names_standby(&catalog.synchronous_standby_names, APPLICATION_NAME) {
+        problems.push(Problem::Server(ServerProblem::SynchronousStandby {
+            setting: catalog.synchronous_standby_names.clone(),
+        }));
+    }
     // Its tables weren't read: the server's problems are all there is.
     if catalog.server_version < OLDEST_VERSION_NUM {
         return Err(problems);
