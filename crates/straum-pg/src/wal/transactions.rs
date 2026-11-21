@@ -71,11 +71,17 @@ pub(crate) struct Transactions {
 /// What one xid holds: its changes with the LSN of each one's record.
 #[derive(Default)]
 struct Held {
-    changes: Vec<(u64, HeapChange)>,
+    changes: Vec<HeldChange>,
     /// The changes' footprints, summed.
     bytes: usize,
     /// It made more changes than the limit; none of them is kept.
     over: bool,
+}
+
+/// A held change and the LSN of the record that made it.
+struct HeldChange {
+    lsn: u64,
+    change: HeapChange,
 }
 
 // Straum starts at a redo point, so a transaction running there may have
@@ -137,7 +143,7 @@ impl Transactions {
                 let bytes = change.footprint();
                 held.bytes += bytes;
                 self.bytes += bytes;
-                held.changes.push((lsn, change));
+                held.changes.push(HeldChange { lsn, change });
             }
         }
     }
@@ -328,8 +334,8 @@ impl Transactions {
         let mut changes = 0;
         for held in self.held.values() {
             changes += held.changes.len();
-            for (_, change) in &held.changes {
-                counted += change.footprint();
+            for held_change in &held.changes {
+                counted += held_change.change.footprint();
             }
         }
         assert_eq!(self.bytes, counted, "bytes as counted");
@@ -349,8 +355,8 @@ fn merge_by_lsn(mut held: Vec<Held>) -> Vec<HeapChange> {
     // sort's copies were the cost of most commits.
     if let [part] = held.as_mut_slice() {
         let mut changes = Vec::with_capacity(part.changes.len());
-        for (_, change) in std::mem::take(&mut part.changes) {
-            changes.push(change);
+        for held_change in std::mem::take(&mut part.changes) {
+            changes.push(held_change.change);
         }
         return changes;
     }
@@ -360,14 +366,14 @@ fn merge_by_lsn(mut held: Vec<Held>) -> Vec<HeapChange> {
     }
     changes.sort_by_key(lsn_of);
     let mut merged = Vec::with_capacity(changes.len());
-    for (_, change) in changes {
-        merged.push(change);
+    for held_change in changes {
+        merged.push(held_change.change);
     }
     merged
 }
 
-fn lsn_of(change: &(u64, HeapChange)) -> u64 {
-    change.0
+fn lsn_of(held_change: &HeldChange) -> u64 {
+    held_change.lsn
 }
 
 /// `xid` is `from` or later, as xids wrap: `TransactionIdFollowsOrEquals`.
