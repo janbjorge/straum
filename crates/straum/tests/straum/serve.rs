@@ -5,11 +5,11 @@
 //! SIGTERM stops it.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::{
-    ASK, PostgresContainer, Running, SPEC, STRAUM, Scratch, TABLES, Until, no_slot_left, output,
-    postgres, run, set_up,
+    ASK, PostgresContainer, Running, SPEC, Scratch, TABLES, Until, no_slot_left, output, postgres,
+    run, set_up, straum,
 };
 
 #[test]
@@ -49,7 +49,7 @@ fn serves_asks_from_postgres() {
 
 // What `straum status` says, as from inside the pod.
 fn status_says_ready(url: &str) {
-    let (code, status, _) = output(Command::new(STRAUM).args(["status", "--url", url]));
+    let (code, status, _) = output(&mut straum(&["status", "--url", url]));
     assert_eq!(code, Some(0), "{status}");
     assert!(
         status.starts_with("ready:        yes\napplied:      "),
@@ -60,7 +60,7 @@ fn status_says_ready(url: &str) {
 }
 
 fn views_lists_the_view_and_the_dim(url: &str) -> String {
-    let (code, views, _) = output(Command::new(STRAUM).args(["views", "--url", url]));
+    let (code, views, _) = output(&mut straum(&["views", "--url", url]));
     assert_eq!(code, Some(0), "{views}");
     assert_eq!(
         views,
@@ -85,8 +85,9 @@ fn ask_prints_a_table_or_says_why_not(url: &str) {
     let query = "SELECT kind, borough, trips, fare FROM trips \
                  WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, borough";
     let range = ["2024-01-01T00:00:00Z", "2024-01-01T04:00:00Z"];
-    let (code, table, _) =
-        output(Command::new(STRAUM).args(["ask", "--url", url, query, range[0], range[1]]));
+    let (code, table, _) = output(&mut straum(&[
+        "ask", "--url", url, query, range[0], range[1],
+    ]));
     assert_eq!(code, Some(0), "{table}");
     let rows = "\
 kind | borough | trips | fare
@@ -98,8 +99,7 @@ van  | null    |     1 | null
 4 rows, as of 20";
     assert!(table.starts_with(rows), "{table}");
     let wrong = "SELECT trips FROM trips WHERE kind = $1 AND bucket >= $2 AND bucket < $3";
-    let (code, _, stderr) =
-        output(Command::new(STRAUM).args(["ask", "--url", url, wrong, "7", "0", "3600"]));
+    let (code, _, stderr) = output(&mut straum(&["ask", "--url", url, wrong, "7", "0", "3600"]));
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
         stderr,
@@ -112,7 +112,7 @@ van  | null    |     1 | null
 
 /// `straum <args>` finding Straum through `STRAUM_URL` alone.
 fn with_url_variable(url: &str, args: &[&str]) -> (Option<i32>, String, String) {
-    output(Command::new(STRAUM).args(args).env("STRAUM_URL", url))
+    output(straum(args).env("STRAUM_URL", url))
 }
 
 fn json(text: &str) -> serde_json::Value {
@@ -153,8 +153,7 @@ fn scripts_read_json_from_straum_url(url: &str) {
 
 // The same from `straum shell`, a line each, on a pipe.
 fn shell_answers_a_line_at_a_time(url: &str, views: &str) {
-    let mut shell = Command::new(STRAUM)
-        .args(["shell", "--url", url])
+    let mut shell = straum(&["shell", "--url", url])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
