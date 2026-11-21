@@ -13,7 +13,7 @@ hyper = { version = "1.12.0", default-features = false, features = ["server", "h
 # Tokio glue and graceful shutdown for hyper.
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "http1", "server-graceful"] }
 # RFC 3339 formatting of as_of, which std lacks.
-jiff = { version = "0.2.41", default-features = false, features = ["std"] }
+jiff = { version = "1.0.1", default-features = false, features = ["std"] }
 # A Visitor that rejects duplicate keys in an ask.
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
 # The JSON parser behind that Visitor; arbitrary_precision hands a number

@@ -12,7 +12,7 @@ crc32c = "0.6.9"
 # Forced by postgres-protocol: its writers take BytesMut.
 bytes = "1.12.1"
 # Forced by postgres-protocol: its parsers return FallibleIterator.
-fallible-iterator = "0.2"
+fallible-iterator = "0.3"
 # Wire messages and SCRAM (ADR-0007).
 postgres-protocol = "0.6.12"
 # TLS (ADR-0012).
