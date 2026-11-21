@@ -10,7 +10,9 @@ use common::{
     BASE, ask_view_t, attribute, base, by_key, condition, described, edit, id, key_text,
     spec_errors, sql_errors,
 };
-use straum_domain::{Aggregate, ByKey, Fraction, Literal, RefKind, Spec, SpecError, Via, Width};
+use straum_domain::{
+    Aggregate, ByKey, Fraction, Literal, RefIndex, RefKind, Spec, SpecError, Via, Width,
+};
 use straum_notation::{SqlError, parse};
 
 const TAXI: &str = include_str!("taxi.sql");
@@ -382,7 +384,7 @@ fn shown_ref(alias: &str, kind: RefKind, via: Vec<Via>, reads: usize) -> ShownRe
 /// A via column read through the first ref, `z`.
 fn through_z(column: &str) -> Via {
     Via::Attribute {
-        through: 0,
+        through: RefIndex(0),
         column: id(column),
     }
 }

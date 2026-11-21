@@ -5,7 +5,7 @@
 
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Instead, JoinError,
-    Key, Literal, Measure, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
+    Key, Literal, Measure, Reads, Ref, RefIndex, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
@@ -351,7 +351,7 @@ fn every_error_is_reported_and_displayed() {
 
 /// The errors of a spec whose ref `c` joins twice through `column` of
 /// join `through`.
-fn joined_twice_through(through: usize, column: &str) -> Vec<String> {
+fn joined_twice_through(through: RefIndex, column: &str) -> Vec<String> {
     let mut view = fact();
     let chained = Via::Attribute {
         through,
@@ -369,7 +369,7 @@ fn joined_twice_through(through: usize, column: &str) -> Vec<String> {
 
 #[test]
 fn a_chained_via_used_twice_names_its_ref() {
-    let shown = joined_twice_through(0, "name");
+    let shown = joined_twice_through(RefIndex(0), "name");
     assert!(
         shown.contains(&"view t: join c joins on r.name twice".to_owned()),
         "{shown:?}"
@@ -380,7 +380,7 @@ fn a_chained_via_used_twice_names_its_ref() {
 /// that ref, and puts a question mark in its place.
 #[test]
 fn a_chained_via_through_no_ref_is_named_with_a_question_mark() {
-    let shown = joined_twice_through(9, "name");
+    let shown = joined_twice_through(RefIndex(9), "name");
     assert!(
         shown.contains(&"view t: join c joins on ?.name twice".to_owned()),
         "{shown:?}"
@@ -408,7 +408,7 @@ fn chained() -> Fact {
         alias: id("through"),
         dim: id("z"),
         via: vec![Via::Attribute {
-            through: 0,
+            through: RefIndex(0),
             column: id("name"),
         }],
         kind: RefKind::Semi,
@@ -427,7 +427,7 @@ fn refused(view: Fact) -> Vec<String> {
 }
 
 /// [`chained`], its second ref joined through `column` of join `through`.
-fn chained_through(through: usize, column: &str) -> Fact {
+fn chained_through(through: RefIndex, column: &str) -> Fact {
     let mut view = chained();
     view.refs[1].via = vec![Via::Attribute {
         through,
@@ -460,10 +460,10 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     // A column the dim before it doesn't carry, then the join itself
     // and one that isn't there, named by its alias or a question mark.
     assert_eq!(
-        refused(chained_through(0, "id")),
+        refused(chained_through(RefIndex(0), "id")),
         ["view t: join through joins through column r.id, which no join before it carries"]
     );
-    for (not_before, alias) in [(1, "through"), (7, "?")] {
+    for (not_before, alias) in [(RefIndex(1), "through"), (RefIndex(7), "?")] {
         assert_eq!(
             refused(chained_through(not_before, "name")),
             [format!(
@@ -497,7 +497,7 @@ fn a_key_read_and_a_chain_through_exists_are_refused() {
         alias: id("far"),
         dim: id("z"),
         via: vec![Via::Attribute {
-            through: 1,
+            through: RefIndex(1),
             column: id("name"),
         }],
         kind: RefKind::Left,
@@ -509,7 +509,7 @@ fn a_key_read_and_a_chain_through_exists_are_refused() {
     );
     // Through the left join before it, the same chain stands.
     through_semi.refs[2].via = vec![Via::Attribute {
-        through: 0,
+        through: RefIndex(0),
         column: id("name"),
     }];
     assert!(Spec::new(vec![dim()], vec![through_semi]).is_ok());

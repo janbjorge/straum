@@ -9,7 +9,9 @@ use common::{
     BASE, FEB, JAN, any_contains, any_message, ask_view_t, attribute, base, by_key, condition,
     described, edit, error_lines, id, key_text, rejects, spec_errors, sql_errors, strings,
 };
-use straum_domain::{Ask, AskError, AskKey, ByKey, Instead, Literal, Spec, SpecError, Via};
+use straum_domain::{
+    Ask, AskError, AskKey, ByKey, Instead, Literal, RefIndex, Spec, SpecError, Via,
+};
 use straum_notation::{Error, SqlError, parse};
 
 /// One dim keyed by two columns, joined by two views in either order.
@@ -428,7 +430,7 @@ fn a_join_through_a_dim_key_reads_the_fact_column() {
     assert_eq!(
         spec.fact("t").unwrap().refs[1].via,
         [Via::Attribute {
-            through: 0,
+            through: RefIndex(0),
             column: id("name")
         }]
     );
@@ -665,7 +667,7 @@ fn a_join_through_a_chained_key_column_reads_the_column_it_is_joined_to() {
     assert_eq!(
         spec.fact("usage").unwrap().refs[2].via,
         [Via::Attribute {
-            through: 0,
+            through: RefIndex(0),
             column: id("region")
         }]
     );

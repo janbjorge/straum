@@ -447,7 +447,7 @@ fn cast_columns(scope: &mut Scope) -> Vec<Identifier> {
         match &key.column {
             Via::Fact(column) => push_once(&mut as_text, column),
             Via::Attribute { through, column } => {
-                push_once(&mut scope.refs[*through].as_text, column);
+                push_once(&mut scope.refs[through.0].as_text, column);
             }
         }
     }

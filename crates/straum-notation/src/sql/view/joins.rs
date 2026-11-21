@@ -4,7 +4,7 @@
 //! rest of WHERE is handed back, to be read once the keys are known.
 
 use sqlparser::ast as sql;
-use straum_domain::{Identifier, Ref, RefKind, Table, Via};
+use straum_domain::{Identifier, Ref, RefIndex, RefKind, Table, Via};
 
 use super::columns::{Resolved, resolve};
 use super::{JoinedRef, Scope};
@@ -367,10 +367,10 @@ fn alias_taken(scope: &Scope, alias: &Identifier) -> bool {
 }
 
 /// The place in `scope.refs` of the join under `alias`.
-pub(super) fn ref_position(scope: &Scope, alias: &Identifier) -> Option<usize> {
+pub(super) fn ref_position(scope: &Scope, alias: &Identifier) -> Option<RefIndex> {
     for (position, joined) in scope.refs.iter().enumerate() {
         if joined.reference.alias == *alias {
-            return Some(position);
+            return Some(RefIndex(position));
         }
     }
     None

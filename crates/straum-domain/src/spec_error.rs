@@ -110,7 +110,7 @@ impl ViaColumn {
         match via {
             Via::Fact(column) => ViaColumn::Fact(column.clone()),
             Via::Attribute { through, column } => {
-                let join = match refs.get(*through) {
+                let join = match refs.get(through.0) {
                     Some(join) => Some(join.alias.clone()),
                     None => None,
                 };

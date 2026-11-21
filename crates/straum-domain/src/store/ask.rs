@@ -11,7 +11,7 @@ use crate::ask::{Ask, AskError, Comparison};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
 use crate::rollup::{Cover, CoveredBucket, Rollup};
-use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefKind, Via};
+use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefIndex, RefKind, Via};
 
 use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, Rows, ViaFrom};
 use super::groups::{Grouping, Groups};
@@ -221,7 +221,7 @@ impl Store {
             Via::Fact(column) => ViaFrom::KeyPart(key_part_of(fact, KeyPart::Column(column))),
             Via::Attribute { through, column } => ViaFrom::Through {
                 reference: *through,
-                attribute: self.attribute_index(&fact.refs[*through], column),
+                attribute: self.attribute_index(fact.reference(*through), column),
             },
         }
     }
@@ -338,10 +338,10 @@ fn position_of_key(keys: &[&Identifier], key: &Identifier) -> Option<usize> {
 }
 
 /// Where `reference` is among the fact's refs.
-fn ref_position(fact: &Fact, reference: &Ref) -> usize {
+fn ref_position(fact: &Fact, reference: &Ref) -> RefIndex {
     for (position, other) in fact.refs.iter().enumerate() {
         if other.alias == reference.alias {
-            return position;
+            return RefIndex(position);
         }
     }
     panic!("{CHECKED}")

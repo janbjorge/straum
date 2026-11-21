@@ -9,8 +9,8 @@ use crate::common::{
     attribute, by_key, condition, dim, dim_row, id, lit, measure, names, percentile, table,
 };
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ColumnType, Condition, Datum, Fact, Measure, Ref, RefKind,
-    Spec, Store, Via, Width,
+    Aggregate, Ask, AskKey, Attribute, ColumnType, Condition, Datum, Fact, Measure, Ref, RefIndex,
+    RefKind, Spec, Store, Via, Width,
 };
 
 pub const HOUR: i64 = 3_600;
@@ -138,7 +138,7 @@ pub fn keyed(shape: Shape, key: &str) -> bool {
 fn refs(kinds: Kinds, shape: Shape) -> Vec<Ref> {
     let tiers_via = if shape == Shape::Chained {
         Via::Attribute {
-            through: CUSTOMERS,
+            through: RefIndex(CUSTOMERS),
             column: id("tier_id"),
         }
     } else {

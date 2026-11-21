@@ -8,7 +8,7 @@ use crate::date::parse_date;
 use crate::hash::{FastMap, FastSet};
 use crate::projection::{AttributeIndex, NULL, Projection};
 use crate::rollup::{Cells, PartIndex, Rollup};
-use crate::spec::{Literal, RefKind};
+use crate::spec::{Literal, RefIndex, RefKind};
 use crate::uuid::parse_uuid;
 use crate::value::{ColumnType, Datum};
 
@@ -29,8 +29,7 @@ pub(super) enum Lookup<'s> {
 
 /// A dim value read through a ref.
 pub(super) struct AttributeLookup<'s> {
-    /// Into [`Fact::refs`](crate::spec::Fact::refs).
-    pub(super) reference: usize,
+    pub(super) reference: RefIndex,
     pub(super) attribute: AttributeIndex,
     pub(super) joined: Joined<'s>,
 }
@@ -157,7 +156,7 @@ impl AttributeLookup<'_> {
 
     /// The attribute's code under one join row.
     fn code_in(&self, row: &JoinRow<'_>) -> u32 {
-        match row[self.reference] {
+        match row[self.reference.0] {
             Some(found) => found[self.attribute.0],
             None => NULL,
         }

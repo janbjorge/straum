@@ -751,7 +751,7 @@ fn check_joins(fact: &Fact, tables: &Tables, problems: &mut Vec<Problem>) {
             let (via_name, via_type) = match via {
                 Via::Fact(column) => (column.to_string(), facts.column_type(column)),
                 Via::Attribute { through, column } => {
-                    let parent = &fact.refs[*through];
+                    let parent = fact.reference(*through);
                     let name = format!("{}.{column}", parent.alias);
                     (name, tables.dim(&parent.dim).column_type(column))
                 }

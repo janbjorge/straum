@@ -45,7 +45,7 @@ pub use identifier::Identifier;
 pub use rollup::RowError;
 pub use spec::{
     Attribute, ByKey, Condition, Definition, Dim, Fact, Key, KeyPart, Literal, Measure, Ref,
-    RefKind, Spec, Table, Time, Via,
+    RefIndex, RefKind, Spec, Table, Time, Via,
 };
 pub use spec_error::{JoinError, SpecError, ViaColumn};
 pub use store::{Answer, AnswerColumn, AnswerRow, Cut, Start, Store, Window, WindowAnswer};

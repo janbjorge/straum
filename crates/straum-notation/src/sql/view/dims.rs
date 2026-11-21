@@ -24,7 +24,7 @@ impl Walker {
         for joined in &refs {
             for via in &joined.reference.via {
                 if let Via::Attribute { through, column } = via {
-                    carried[*through].push(column.clone());
+                    carried[through.0].push(column.clone());
                 }
             }
         }

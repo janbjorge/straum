@@ -428,7 +428,7 @@ fn record_key(selected: &mut SelectedKeys, name: &Identifier, column: &Via, form
             selected.by_keys.push(by_key);
         }
         Via::Attribute { through, column } => {
-            selected.attributes[*through].push(Attribute {
+            selected.attributes[through.0].push(Attribute {
                 name: name.clone(),
                 column: column.clone(),
             });
@@ -441,7 +441,7 @@ fn written(scope: &Scope, column: &Via) -> String {
     match column {
         Via::Fact(column) => format!("{}.{column}", scope.alias),
         Via::Attribute { through, column } => {
-            format!("{}.{column}", scope.refs[*through].reference.alias)
+            format!("{}.{column}", scope.refs[through.0].reference.alias)
         }
     }
 }
@@ -457,7 +457,7 @@ pub(super) fn resolve(scope: &Scope, reference: Qualified) -> Resolved {
     let Some(through) = ref_position(scope, &alias) else {
         return Resolved::UnknownAlias(alias);
     };
-    let joined = &scope.refs[through];
+    let joined = &scope.refs[through.0];
     let kind = joined.reference.kind;
     match kind {
         RefKind::Left | RefKind::Inner => {}

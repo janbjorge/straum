@@ -173,11 +173,15 @@ pub enum RefKind {
 pub enum Via {
     Fact(Identifier),
     Attribute {
-        /// Index into [`Fact::refs`], before this ref.
-        through: usize,
+        /// A ref before this one.
+        through: RefIndex,
         column: Identifier,
     },
 }
+
+/// A position among [`Fact::refs`], in join order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RefIndex(pub usize);
 
 /// `alias.column AS name`: a dim column a ref reads, and what asks call
 /// it.
@@ -242,6 +246,11 @@ pub enum KeyPart<'a> {
 }
 
 impl Fact {
+    /// The ref at `index`.
+    pub fn reference(&self, index: RefIndex) -> &Ref {
+        &self.refs[index.0]
+    }
+
     /// The `by` keys, then every ref's fact-side via columns in ref
     /// order, each part once, then the time bucket.
     pub fn rollup_key(&self) -> Vec<KeyPart<'_>> {
@@ -510,7 +519,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                 name: join.alias.clone(),
             });
         }
-        check_ref(fact, position, dims, &mut keys, errors);
+        check_ref(fact, RefIndex(position), dims, &mut keys, errors);
     }
     check_measures(fact, &mut keys, errors);
 }
@@ -577,20 +586,20 @@ fn join_error(fact: &Fact, join: &Ref, error: JoinError) -> SpecError {
 
 fn check_ref<'a>(
     fact: &'a Fact,
-    position: usize,
+    position: RefIndex,
     dims: &[Dim],
     keys: &mut HashSet<&'a Identifier>,
     errors: &mut Vec<SpecError>,
 ) {
     check_vias(fact, position, dims, errors);
-    let join = &fact.refs[position];
+    let join = fact.reference(position);
     let dim = check_ref_dim(fact, join, dims, errors);
     check_ref_kind(fact, join, errors);
     check_reads(fact, join, dim, keys, errors);
 }
 
-fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecError>) {
-    let join = &fact.refs[position];
+fn check_vias(fact: &Fact, position: RefIndex, dims: &[Dim], errors: &mut Vec<SpecError>) {
+    let join = fact.reference(position);
     let mut seen = HashSet::new();
     for via in &join.via {
         if !seen.insert(via) {
@@ -600,7 +609,7 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
         let Via::Attribute { through, column } = via else {
             continue;
         };
-        if let Some(parent) = fact.refs.get(*through)
+        if let Some(parent) = fact.refs.get(through.0)
             && *through < position
             && let RefKind::Semi | RefKind::Anti = parent.kind
         {
@@ -622,15 +631,15 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
 // the column.
 fn carried_before(
     fact: &Fact,
-    position: usize,
+    position: RefIndex,
     dims: &[Dim],
-    through: usize,
+    through: RefIndex,
     column: &Identifier,
 ) -> bool {
     if through >= position {
         return false;
     }
-    let parent = &fact.refs[through];
+    let parent = fact.reference(through);
     let Some(dim) = find_dim(dims, parent.dim.as_str()) else {
         return false;
     };

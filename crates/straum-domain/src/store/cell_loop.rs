@@ -9,7 +9,7 @@ use crate::ask::Ask;
 use crate::hash::FastMap;
 use crate::projection::{AttributeIndex, Projection};
 use crate::rollup::{Cells, Cover, InputIndex, PartIndex, Rollup, State};
-use crate::spec::{Measure, RefKind};
+use crate::spec::{Measure, RefIndex, RefKind};
 use crate::value::{Datum, Value};
 
 use super::ask::{HavingCheck, buckets, meets};
@@ -305,8 +305,7 @@ impl RefPlan<'_> {
 pub(super) enum ViaFrom {
     KeyPart(PartIndex),
     Through {
-        /// Into [`Fact::refs`](crate::spec::Fact::refs).
-        reference: usize,
+        reference: RefIndex,
         attribute: AttributeIndex,
     },
 }
@@ -385,9 +384,9 @@ impl<'s> Expander<'s> {
             ViaFrom::Through {
                 reference,
                 attribute,
-            } => self.plans[reference]
+            } => self.plans[reference.0]
                 .projection
-                .value_in(attribute, row[reference]),
+                .value_in(attribute, row[reference.0]),
         }
     }
 }

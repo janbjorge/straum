@@ -62,8 +62,8 @@ and this glossary. The clashes at the end are open.
   through the cell's join column at ask time. Also "attribute".
 - **Join**: how a view reaches a dim: `INNER JOIN`, `LEFT OUTER JOIN`,
   `EXISTS`, `NOT EXISTS` ([Joining a dim](spec.md#joining-a-dim)).
-- **Ref** (`Ref`, `RefKind`, `JoinError`): the join as the domain holds
-  it; its kind is left, inner, semi or anti.
+- **Ref** (`Ref`, `RefKind`, `RefIndex`, `JoinError`): the join as the
+  domain holds it; its kind is left, inner, semi or anti.
 - **Join column** (`Via::Fact`): the fact column a join reads its key
   from; it keys the cells. Also "via", "join id".
 - **Chain** (`Via::Attribute`): a join whose key comes from a dim joined

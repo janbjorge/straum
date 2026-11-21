@@ -315,11 +315,12 @@ joins through one `Via` per dim key column and reads dim columns.*
 each table once, dims first. There is one `Dim` per table however many
 views join it; its `attributes` are the union of the dim columns they
 read. A `Fact` keeps its refs in join order, so a ref joined through
-another dim comes after it (`Via::Attribute::through` is an index into
-`Fact::refs` before it). A `Ref` points at a dim by name, with as many
-`Via` columns as the dim's key has (`JoinError::KeyLength`). A left or
-inner ref reads at least one dim column, an `Attribute`; a semi or anti
-ref reads none (`JoinError::ReadsNothing`, `JoinError::ReadsColumns`).
+another dim comes after it (`Via::Attribute::through` is a `RefIndex`,
+a position in `Fact::refs` before it). A `Ref` points at a dim by name,
+with as many `Via` columns as the dim's key has (`JoinError::KeyLength`).
+A left or inner ref reads at least one dim column, an `Attribute`; a
+semi or anti ref reads none (`JoinError::ReadsNothing`,
+`JoinError::ReadsColumns`).
 
 Within a view, the time, keys, dim columns and measures share one
 namespace (`SpecError::Duplicate`), so an ask reaches any of them by
