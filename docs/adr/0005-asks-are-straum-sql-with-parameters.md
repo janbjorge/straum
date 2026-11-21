@@ -87,8 +87,9 @@ it lands.
   arrive and part from PostgreSQL's `date_bin`. Local days, Monday
   weeks and months wait for an origin or zone on the view.
 - `HAVING` costs one pass over the groups. An unselected measure can't
-  be compared; allowing it later breaks no ask. `!=`, `OR`, parentheses
-  and expressions are refused.
+  be compared; allowing it later breaks no ask. `OR`, parentheses and
+  expressions are refused. So is `!=`: Straum SQL keeps one spelling per
+  meaning (ADR-0004), and `<>` is SQL's standard one.
 - Percentile asks miss the target. The roadmap, each step measured:
   count the work; pick the rank without a sort; a running count per run
   (revises ADR-0003); counts per wider bucket across keys.

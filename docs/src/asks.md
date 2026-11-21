@@ -113,7 +113,9 @@ SELECT bucket, region, events, amount FROM usage WHERE kind = $1 AND bucket >= $
 A comparison names a measure the ask selects, so the answer shows every
 value a group was kept for. A key goes in `WHERE`, a measure in
 `HAVING`; each refuses the other and says where it goes. Comparisons
-join by `AND`. Not equal is `<>`; `!=` is refused.
+join by `AND`. Not equal is `<>`, SQL's standard spelling. PostgreSQL
+reads `!=` as an alias of it, but Straum SQL keeps one spelling per
+meaning, so `!=` is refused.
 
 A null measure meets no comparison, `<>` included, as in PostgreSQL,
 so its group is left out. An ask without keys answers its one row

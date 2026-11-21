@@ -36,7 +36,9 @@ pub(crate) use view::{Views, parse};
 /// How much of a rejected construct an error quotes before it cuts.
 const QUOTE_CHARACTERS: usize = 60;
 
-/// How every refusal ends, so no one takes it for PostgreSQL's error.
+/// How a refusal that quotes or names a construct ends, so no one takes
+/// it for PostgreSQL's error. An error that says what to write instead,
+/// such as `write <> for not equal, not !=`, goes without it.
 const NOT_IN_STRAUM_SQL: &str = "is not in Straum SQL, the PostgreSQL subset made only for Straum";
 
 /// One thing wrong with a spec or an ask, and the line it is on.
