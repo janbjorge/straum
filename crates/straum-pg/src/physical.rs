@@ -487,11 +487,7 @@ fn text(row: &[Option<String>], column: usize) -> Result<&str, Error> {
 
 // T: each column parses to its own number type.
 fn parsed<T: FromStr>(row: &[Option<String>], column: usize) -> Result<T, Error> {
-    parsed_text(text(row, column)?)
-}
-
-fn parsed_text<T: FromStr>(text: &str) -> Result<T, Error> {
-    text.parse().map_err(|_| unknown_shape())
+    text(row, column)?.parse().map_err(|_| unknown_shape())
 }
 
 #[cfg(test)]
