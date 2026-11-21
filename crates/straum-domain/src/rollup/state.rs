@@ -163,6 +163,34 @@ impl State {
         }
     }
 
+    /// Gives back the room of entries gone.
+    pub(super) fn shrink_to_fit(&mut self) {
+        match self {
+            State::Count { nulls } => nulls.shrink_to_fit(),
+            State::Sum {
+                sums,
+                nulls,
+                squares,
+            } => {
+                sums.shrink_to_fit();
+                nulls.shrink_to_fit();
+                if let Some(squares) = squares {
+                    squares.shrink_to_fit();
+                }
+            }
+            State::Extent { mins, maxs, counts } => {
+                mins.shrink_to_fit();
+                maxs.shrink_to_fit();
+                counts.shrink_to_fit();
+            }
+            State::Distinct(cells) => cells.shrink_to_fit(),
+            State::Bools { trues, falses } => {
+                trues.shrink_to_fit();
+                falses.shrink_to_fit();
+            }
+        }
+    }
+
     /// A null is counted where a count or a sum reads the column, and
     /// passed over elsewhere, as in SQL.
     pub(super) fn add(&mut self, cell: usize, value: &Datum) {

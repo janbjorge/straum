@@ -253,6 +253,17 @@ impl Counts {
         }
     }
 
+    /// Gives back the room of counts gone.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        match self {
+            Counts::Zero(_) => {}
+            Counts::U8(column) => column.shrink_to_fit(),
+            Counts::U16(column) => column.shrink_to_fit(),
+            Counts::U32(column) => column.shrink_to_fit(),
+            Counts::U64(column) => column.shrink_to_fit(),
+        }
+    }
+
     /// Each cell's count, in cell order.
     pub(crate) fn iter(&self) -> CountsIter<'_> {
         CountsIter {
@@ -401,6 +412,15 @@ impl Sums {
         }
     }
 
+    /// Gives back the room of sums gone.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        match self {
+            Sums::I32(column) => column.shrink_to_fit(),
+            Sums::I64(column) => column.shrink_to_fit(),
+            Sums::I128(column) => column.shrink_to_fit(),
+        }
+    }
+
     /// Each cell's sum, in cell order.
     pub(crate) fn iter(&self) -> SumsIter<'_> {
         SumsIter {
@@ -535,6 +555,14 @@ impl Squares {
         match self {
             Squares::Narrow(sums) => sums.swap_remove(cell),
             Squares::Wide(column) => drop(column.swap_remove(cell)),
+        }
+    }
+
+    /// Gives back the room of sums gone.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        match self {
+            Squares::Narrow(sums) => sums.shrink_to_fit(),
+            Squares::Wide(column) => column.shrink_to_fit(),
         }
     }
 

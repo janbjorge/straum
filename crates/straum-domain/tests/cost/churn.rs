@@ -1,11 +1,11 @@
 //! What a store keeps as rows come and go: a truncate, a dim change or
 //! values never seen again leave what a store that never held them
-//! holds, and an ask through a join remembers only the ids it read.
-//! Each test reads the heap through the counting allocator of `main.rs`.
+//! holds, a bucket thinned out gives back its room, and an ask through
+//! a join or a filter remembers only the ids it read. Each test reads the heap through the counting allocator of `main.rs`.
 
 use super::{
-    Condition, Datum, HOUR, Literal, RefKind, Spec, Store, ZONES, Zones, ask, borough, held, id,
-    load_zones, peak, spec, spec_of, trip_row,
+    Condition, Datum, HOUR, Literal, RefKind, Spec, Store, ZONES, Zones, allocations_of, ask,
+    borough, held, id, load_zones, peak, spec, spec_of, trip_row,
 };
 
 /// A truncate gives back the codes of the values the view held, not only
@@ -237,4 +237,90 @@ fn a_dim_row_renamed_holds_a_bounded_number_of_names() {
     let many = renamed(100_000);
     eprintln!("{few} bytes after 100 renames, {many} after 100,000");
     assert!(many - few < 1 << 20, "{many} bytes against {few}");
+}
+
+/// Where [`thinned`] puts its trips: all in the first hour, so in one
+/// bucket at each width, or each in an hour of its own.
+#[derive(Clone, Copy)]
+enum Hours {
+    One,
+    Each,
+}
+
+/// The trip of `store`'s view from zone `pickup`, in the hour `hours`
+/// gives it.
+fn pickup_row(store: &Store, pickup: i64, hours: Hours) -> Vec<Datum> {
+    let mut row = trip_row(store, pickup, 0);
+    let Hours::Each = hours else {
+        return row;
+    };
+    let columns = store.spec().fact("trips").unwrap().columns();
+    for (value, column) in row.iter_mut().zip(columns) {
+        if column.as_str() == "at" {
+            *value = Datum::Int(pickup * i64::from(HOUR));
+        }
+    }
+    row
+}
+
+/// A store of the trips with day buckets that got a trip from each of
+/// `pickups` pickup zones, in the hours `hours` says, and then lost all
+/// but `kept`.
+fn thinned(pickups: i64, kept: i64, hours: Hours) -> Store {
+    let mut store = Store::new(spec_of(&[24], Zones::Apart));
+    for pickup in 0..pickups {
+        let row = pickup_row(&store, pickup, hours);
+        store.add_row("trips", &row).unwrap();
+    }
+    for pickup in kept..pickups {
+        let row = pickup_row(&store, pickup, hours);
+        store.remove_row("trips", &row).unwrap();
+    }
+    assert_eq!(store.cells("trips"), Some(usize::try_from(kept).unwrap()));
+    store
+}
+
+/// A bucket gives back its room as its cells go, at the hour and the
+/// day: 20,000 cells in one bucket, down to one, hold what 20,000 cells
+/// in buckets of their own, all gone but one, hold; the zone ids' codes
+/// are alike in both. Kept, the index and columns of 20,000 cells would
+/// be MiB.
+#[test]
+fn a_bucket_thinned_to_one_cell_holds_what_one_cell_holds() {
+    const PICKUPS: i64 = 20_000;
+    let spread = held(|| thinned(PICKUPS, 1, Hours::Each));
+    let thinned = held(|| thinned(PICKUPS, 1, Hours::One));
+    eprintln!("{spread} bytes over {PICKUPS} hours, {thinned} in one, thinned to a cell");
+    assert!(
+        thinned - spread < 4 << 10,
+        "{thinned} bytes against {spread}"
+    );
+}
+
+/// The allocations of a thousand rounds of the last of `kept` cells,
+/// left of 20,000 in one bucket, going and coming back.
+fn come_and_go(kept: i64) -> usize {
+    const ROUNDS: usize = 1_000;
+    let mut store = thinned(20_000, kept, Hours::One);
+    let row = pickup_row(&store, kept - 1, Hours::One);
+    allocations_of(|| {
+        for _ in 0..ROUNDS {
+            store.remove_row("trips", &row).unwrap();
+            store.add_row("trips", &row).unwrap();
+        }
+    })
+}
+
+/// A bucket gives back its room only once most of it lies empty, so a
+/// cell that comes and goes at that edge doesn't make it shrink and grow
+/// each time: a thousand rounds there allocate about what they do away
+/// from it, not a new index and columns a round.
+#[test]
+fn a_cell_coming_and_going_at_the_edge_moves_no_room() {
+    // 20,000 cells take 32,768 index slots, which shrink at an eighth.
+    const EDGE: i64 = 32_768 / 8;
+    let away = come_and_go(EDGE + 1_000);
+    let edge = come_and_go(EDGE + 1);
+    eprintln!("{edge} allocations at the edge, {away} away from it");
+    assert!(edge < away + 64, "{edge} allocations against {away}");
 }

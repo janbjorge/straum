@@ -169,6 +169,9 @@ every entry is zero (`Counts`); a column of sums widens from 32 to 64
 to 128 bits as its values need (`Sums`, ADR-0003). An `Index` finds a
 cell by its key codes. It is a table of positions only, and the keys
 stay in their column. A cell goes with its last row (`Rollup::remove`).
+Once a bucket's cells fill an eighth of its index, it indexes them
+anew and gives back the room of the cells gone (`Cells::swap_remove`),
+so a bucket holds about what its cells need, not its peak.
 
 `Aggregate::state_kind` picks the `State` a measure reads, so measures
 over one column share it. A count distinct keeps per-value counts, as a

@@ -187,6 +187,11 @@ impl Cells {
                 }
             }
         }
+        self.reindex();
+    }
+
+    /// Indexes the cells anew, in as few slots as they need.
+    fn reindex(&mut self) {
         self.index = Index::default();
         for cell in 0..self.len() {
             let keys = Keys {
@@ -194,6 +199,25 @@ impl Cells {
                 codes_per_key: self.key_parts,
             };
             self.index.insert(cell, keys);
+        }
+    }
+
+    /// Gives back the room of cells gone once they leave most of it
+    /// empty: at an eighth of the index's slots taken.
+    // Indexed anew, the cells take between three eighths and three
+    // quarters of the slots, so the next rebuild waits for two thirds of
+    // them to go, and a cell that comes and goes at the edge rebuilds
+    // once. A half would put the edge where a rebuild lands, and rebuild
+    // at every cell that goes.
+    fn shrink_if_sparse(&mut self) {
+        if self.len() * 8 > self.index.slots() {
+            return;
+        }
+        self.reindex();
+        self.keys.shrink_to_fit();
+        self.rows.shrink_to_fit();
+        for state in &mut self.states {
+            state.shrink_to_fit();
         }
     }
 
@@ -216,6 +240,7 @@ impl Cells {
         for state in &mut self.states {
             state.swap_remove(cell);
         }
+        self.shrink_if_sparse();
     }
 }
 

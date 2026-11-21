@@ -69,6 +69,11 @@ impl Index {
         (slot + 1) & (self.slots.len() - 1)
     }
 
+    /// How many slots the index holds, taken or not.
+    pub(crate) fn slots(&self) -> usize {
+        self.slots.len()
+    }
+
     /// The place of the cell with `key`, if any cell has it.
     pub(crate) fn get(&self, key: &[u32], keys: Keys<'_>) -> Option<usize> {
         if self.slots.is_empty() {

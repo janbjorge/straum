@@ -47,6 +47,14 @@ impl DistinctCells {
         }
     }
 
+    /// Gives back the room of entries gone.
+    pub(super) fn shrink_to_fit(&mut self) {
+        match self {
+            DistinctCells::Numbers(counts) => counts.shrink_to_fit(),
+            DistinctCells::Values(counts) => counts.shrink_to_fit(),
+        }
+    }
+
     /// Counts one more of `value`, which is not null.
     pub(super) fn add(&mut self, cell: usize, value: &Datum) {
         if let (DistinctCells::Numbers(counts), &Datum::Int(number)) = (&mut *self, value) {
