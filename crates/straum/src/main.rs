@@ -581,6 +581,8 @@ pub(crate) fn write_logged(mut to: impl Write, message: &str) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::Output;
+    use crate::testing::{GET_VIEWS, POST_ASK, answering, args, server};
 
     #[test]
     fn reads_asks_as_straum_sql() {
@@ -756,5 +758,68 @@ mod tests {
         let wrong = refused("HTTP/1.1 400 Bad Request");
         assert_eq!(wrong.exit_code(), ExitCode::FAILURE);
         assert_eq!(Failure::NoDsn.exit_code(), ExitCode::FAILURE);
+    }
+
+    const TOO_MANY_ROWS: &str = "HTTP/1.1 400 Bad Request\r\n\r\n\
+        the answer has 100001 rows, past the 100000 an ask may get; narrow the ask\n";
+
+    const BUSY: &str = "HTTP/1.1 503 Service Unavailable\r\n\r\n\
+        busy: every core is answering an ask; ask again shortly\n";
+
+    /// What `straum ask` fails with at a Straum that replies `reply`:
+    /// the error it prints, and its exit code.
+    fn ask_failure(reply: &'static str) -> (String, ExitCode) {
+        let url = answering(POST_ASK, reply);
+        let command = Command::Ask {
+            server: server(&url),
+            query: "SELECT \"x\"".into(),
+            parameters: args("7 paid true"),
+            output: Output::Text,
+        };
+        let failure = execute(command).unwrap_err();
+        (
+            failure.to_string().replace(&url, "URL"),
+            failure.exit_code(),
+        )
+    }
+
+    /// What `straum views` fails with at a Straum that replies `reply`.
+    fn views_failure(reply: &'static str) -> (String, ExitCode) {
+        let url = answering(GET_VIEWS, reply);
+        let command = Command::Views {
+            server: server(&url),
+            output: Output::Text,
+        };
+        let failure = execute(command).unwrap_err();
+        (
+            failure.to_string().replace(&url, "URL"),
+            failure.exit_code(),
+        )
+    }
+
+    #[test]
+    fn an_ask_past_the_row_cap_fails_with_its_reason() {
+        let (said, code) = ask_failure(TOO_MANY_ROWS);
+        assert_eq!(
+            said,
+            "URL answered \"HTTP/1.1 400 Bad Request\"\n\
+             the answer has 100001 rows, past the 100000 an ask may get; narrow the ask"
+        );
+        assert_eq!(code, ExitCode::FAILURE);
+        assert_ne!(code, ExitCode::from(NOT_READY));
+    }
+
+    #[test]
+    fn a_busy_straum_exits_with_not_ready_and_says_busy() {
+        let busy = "URL answered \"HTTP/1.1 503 Service Unavailable\"\n\
+             busy: every core is answering an ask; ask again shortly";
+        for (said, code) in [ask_failure(BUSY), views_failure(BUSY)] {
+            assert_eq!(said, busy);
+            assert_eq!(code, ExitCode::from(NOT_READY));
+        }
+        // Any other refusal of the views is a failure, not busy.
+        let (said, code) = views_failure("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+        assert_eq!(said, "URL answered \"HTTP/1.1 500 Internal Server Error\"");
+        assert_eq!(code, ExitCode::FAILURE);
     }
 }

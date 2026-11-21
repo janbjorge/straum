@@ -405,6 +405,37 @@ fn the_shell_goes_on_after_an_error_and_leaves_when_told() {
 }
 
 #[test]
+fn the_shell_says_why_an_ask_was_refused_and_goes_on() {
+    let refusals = [
+        (
+            "HTTP/1.1 400 Bad Request\r\n\r\n\
+             the answer has 100001 rows, past the 100000 an ask may get; narrow the ask\n",
+            "straum: URL answered \"HTTP/1.1 400 Bad Request\"\n\
+             straum: the answer has 100001 rows, past the 100000 an ask may get; \
+             narrow the ask\n",
+        ),
+        (
+            "HTTP/1.1 503 Service Unavailable\r\n\r\n\
+             busy: every core is answering an ask; ask again shortly\n",
+            "straum: URL answered \"HTTP/1.1 503 Service Unavailable\"\n\
+             straum: busy: every core is answering an ask; ask again shortly\n",
+        ),
+    ];
+    // `\?` after the refused ask needs no server: the shell still runs.
+    let input = "SELECT \"x\" ; 7 paid true\n\\?\n";
+    for (reply, said) in refusals {
+        let (written, errors, failed) = shelled(POST_ASK, reply, input);
+        assert_eq!(errors, said);
+        assert_eq!(failed, 1);
+        assert_eq!(written, shell_commands());
+    }
+    // An answered ask prints its table and fails nothing.
+    let (written, errors, failed) = shelled(POST_ASK, "HTTP/1.1 200 OK\r\n\r\n    1\n", input);
+    assert_eq!((errors.as_str(), failed), ("", 0));
+    assert_eq!(written, format!("    1\n{}", shell_commands()));
+}
+
+#[test]
 fn a_query_without_a_semicolon_has_no_parameters() {
     // Nothing listens here, so the ask fails and the shell goes on.
     // The blank line ends the ask.
