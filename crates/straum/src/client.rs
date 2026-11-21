@@ -437,32 +437,30 @@ fn fetch_timed(server: &Server, request: &Request) -> Result<Timed, ClientError>
         return Err(ClientError::NotAnHttpUrl(url.to_owned()));
     };
     let sent = Instant::now();
-    let url_owned = url.to_owned();
-    let wanted = request.wanted;
     let reply = match exchange(address, &request_text(address, request), server.timeout) {
         Ok(reply) => reply,
-        Err(Exchange::Failed(error)) => {
-            return Err(ClientError::Unreachable {
-                url: url_owned,
-                wanted,
-                error,
-            });
-        }
-        Err(Exchange::Silent) => {
-            return Err(ClientError::Silent {
-                url: url_owned,
-                wanted,
-                timeout: server.timeout,
-            });
-        }
-        Err(Exchange::NotText) => {
-            return Err(ClientError::NotText {
-                url: url_owned,
-                wanted,
-            });
-        }
+        Err(unanswered) => return Err(unanswered_error(unanswered, server, request.wanted)),
     };
-    let round_trip = sent.elapsed();
+    read_reply(url, &reply, sent.elapsed())
+}
+
+/// What the user is told of an exchange that got no reply to read.
+fn unanswered_error(unanswered: Exchange, server: &Server, wanted: Wanted) -> ClientError {
+    let url = server.url.clone();
+    match unanswered {
+        Exchange::Failed(error) => ClientError::Unreachable { url, wanted, error },
+        Exchange::Silent => ClientError::Silent {
+            url,
+            wanted,
+            timeout: server.timeout,
+        },
+        Exchange::NotText => ClientError::NotText { url, wanted },
+    }
+}
+
+/// The body of a whole reply from `url` and how long it took, or why it
+/// is no answer.
+fn read_reply(url: &str, reply: &str, round_trip: Duration) -> Result<Timed, ClientError> {
     let Some((head, body)) = reply.split_once("\r\n\r\n") else {
         return Err(ClientError::NoReply {
             url: url.to_owned(),
@@ -485,20 +483,20 @@ fn fetch_timed(server: &Server, request: &Request) -> Result<Timed, ClientError>
         });
     }
     let status_line = head.lines().next().unwrap_or_default();
-    if status_code(status_line) == Some(200) {
-        let timing = Timing {
-            round_trip,
-            phases: phases(head),
-        };
-        return Ok(Timed {
-            text: body.to_owned(),
-            timing,
+    if status_code(status_line) != Some(200) {
+        return Err(ClientError::Refused {
+            url: url.to_owned(),
+            status_line: status_line.to_owned(),
+            body: body.to_owned(),
         });
     }
-    Err(ClientError::Refused {
-        url: url.to_owned(),
-        status_line: head.lines().next().unwrap_or_default().to_owned(),
-        body: body.to_owned(),
+    let timing = Timing {
+        round_trip,
+        phases: phases(head),
+    };
+    Ok(Timed {
+        text: body.to_owned(),
+        timing,
     })
 }
 
@@ -507,18 +505,27 @@ fn content_length(head: &str) -> Option<usize> {
     header(head, "content-length")?.parse().ok()
 }
 
-/// The value of the header `name`, in any case, in a reply's head.
+/// The value of the first header `name`, in any case, in a reply's head.
 // 'a: the value lies inside `head`.
 fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    header_values(head, name).first().copied()
+}
+
+/// The value of each header `name` in a reply's head, in the order
+/// written.
+// 'a: the values lie inside `head`.
+fn header_values<'a>(head: &'a str, name: &str) -> Vec<&'a str> {
+    let mut values = Vec::new();
     for line in head.lines().skip(1) {
         let Some((written, value)) = line.split_once(':') else {
             continue;
         };
+        // A header's name is in any case; a proxy may write its own.
         if written.eq_ignore_ascii_case(name) {
-            return Some(value.trim());
+            values.push(value.trim());
         }
     }
-    None
+    values
 }
 
 /// Whether a `transfer-encoding` ends in chunks.
@@ -540,14 +547,7 @@ fn status_code(status_line: &str) -> Option<u16> {
 /// left out, since its time can't be told.
 fn phases(head: &str) -> Vec<Phase> {
     let mut phases = Vec::new();
-    for line in head.lines() {
-        let Some((name, entries)) = line.split_once(':') else {
-            continue;
-        };
-        // A header's name is in any case; a proxy may write its own.
-        if !name.eq_ignore_ascii_case(SERVER_TIMING) {
-            continue;
-        }
+    for entries in header_values(head, SERVER_TIMING) {
         for entry in entries.split(',') {
             if let Some(phase) = phase(entry.trim()) {
                 phases.push(phase);
