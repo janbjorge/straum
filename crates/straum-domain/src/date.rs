@@ -4,7 +4,8 @@
 //! `DateStyle = ISO`: `2024-01-15`, `0044-03-15 BC`, `infinity`. The
 //! stream reads a date's text with [`parse_date`], an ask's parameter is
 //! read the same way, and an answer prints a date with [`format_date`].
-//! [`days_from_civil`] also turns a timestamp's calendar day into days.
+//! [`parse_calendar_day`] holds the grammar of the day itself, so a
+//! timestamp's date part reads by the same rules as a date.
 
 /// `DATEVAL_NOEND` and `DATEVAL_NOBEGIN` in PostgreSQL's `date.h`.
 const DATE_INFINITY: i32 = i32::MAX;
@@ -31,6 +32,13 @@ const DAY_DIGITS: usize = 2;
 const FARTHEST_YEAR: i64 = 1_000_000_000;
 const BEFORE_CHRIST: &str = " BC";
 
+/// Which way a date's year counts: up from 1 AD, or back from 1 BC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Era {
+    AnnoDomini,
+    BeforeChrist,
+}
+
 /// A day of the proleptic Gregorian calendar; year 0 is 1 BC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Civil {
@@ -49,10 +57,23 @@ pub fn parse_date(text: &str) -> Option<i32> {
         "-infinity" => return Some(DATE_MINUS_INFINITY),
         _ => {}
     }
-    let (text, before_christ) = match text.strip_suffix(BEFORE_CHRIST) {
-        Some(text) => (text, true),
-        None => (text, false),
+    let (text, era) = match text.strip_suffix(BEFORE_CHRIST) {
+        Some(text) => (text, Era::BeforeChrist),
+        None => (text, Era::AnnoDomini),
     };
+    let days = parse_calendar_day(text, era)? - PG_EPOCH_DAYS;
+    if !(FIRST_DAY..END_DAY).contains(&days) {
+        return None;
+    }
+    i32::try_from(days).ok()
+}
+
+/// A calendar day's text, `2024-01-15`, with the era its year counts in,
+/// in days since 1970-01-01. `None` for any spelling PostgreSQL doesn't
+/// print, for year 0, and for a day the calendar lacks. A year has four
+/// to seven digits, which holds every date and timestamp PostgreSQL
+/// keeps, and keeps a timestamp's seconds far inside an `i64`.
+pub fn parse_calendar_day(text: &str, era: Era) -> Option<i64> {
     let (year_month, day) = text.rsplit_once('-')?;
     let (year, month) = year_month.rsplit_once('-')?;
     let year_digits = LEAST_YEAR_DIGITS..=MOST_YEAR_DIGITS;
@@ -64,19 +85,16 @@ pub fn parse_date(text: &str) -> Option<i32> {
     if month.len() != MONTH_DIGITS || day.len() != DAY_DIGITS {
         return None;
     }
-    let mut year = digits(year)?;
+    let year = digits(year)?;
     // 1 BC is year 0, 2 BC year -1; there is no year 0 either way.
     if year == 0 {
         return None;
     }
-    if before_christ {
-        year = 1 - year;
-    }
-    let days = days_from_civil(year, digits(month)?, digits(day)?)? - PG_EPOCH_DAYS;
-    if !(FIRST_DAY..END_DAY).contains(&days) {
-        return None;
-    }
-    i32::try_from(days).ok()
+    let year = match era {
+        Era::AnnoDomini => year,
+        Era::BeforeChrist => 1 - year,
+    };
+    days_from_civil(year, digits(month)?, digits(day)?)
 }
 
 /// A date, days since 2000-01-01, as PostgreSQL prints it.
@@ -222,6 +240,39 @@ mod tests {
             assert_eq!(parse_date(&text), Some(days), "{text}");
             assert_ne!(text, previous);
             previous = text;
+        }
+    }
+
+    /// Years of five and six digits, which a timestamp prints, read in
+    /// both eras. Expected days from Howard Hinnant's `days_from_civil`
+    /// run in Python.
+    #[test]
+    fn reads_calendar_days_of_long_years_in_both_eras() {
+        let cases = [
+            ("12345-06-07", Era::AnnoDomini, 3_789_548),
+            ("294276-12-31", Era::AnnoDomini, 106_762_939),
+            ("12345-06-07", Era::BeforeChrist, -5_227_923),
+            ("4714-11-24", Era::BeforeChrist, -2_440_588),
+            ("0001-01-01", Era::BeforeChrist, -719_528),
+        ];
+        for (text, era, days) in cases {
+            assert_eq!(parse_calendar_day(text, era), Some(days), "{text} {era:?}");
+        }
+        let refused = [
+            "0000-01-01",
+            "00000-01-01",
+            "012345-06-07",
+            "123-06-07",
+            "12345678-01-01",
+            "12345-6-07",
+            "12345-06-7",
+            "12345-02-30",
+            "2024-01-15 BC",
+        ];
+        for text in refused {
+            for era in [Era::AnnoDomini, Era::BeforeChrist] {
+                assert_eq!(parse_calendar_day(text, era), None, "{text} {era:?}");
+            }
         }
     }
 

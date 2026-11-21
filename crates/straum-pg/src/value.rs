@@ -9,7 +9,9 @@ use std::fmt::{self, Write as _};
 use std::str;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use straum_domain::{ColumnType, Datum, Identifier, days_from_civil, parse_date, parse_uuid};
+use straum_domain::{
+    ColumnType, Datum, Era, Identifier, parse_calendar_day, parse_date, parse_uuid,
+};
 
 /// An object id: how PostgreSQL names a row of its catalog, such as a
 /// table (`pg_class`), a type (`pg_type`) or an enum label (`pg_enum`).
@@ -306,15 +308,14 @@ fn append_digits(mut value: i128, digits: &str) -> Option<i128> {
 /// `2024-01-15 10:30:00.5+00` is 1705314600. Offsets other than `+00` are
 /// read, though Straum always asks for UTC. A `timestamp` has no offset,
 /// and its text must have none. A ` BC` at the end counts years back from
-/// 1 BC, the year before 1 AD, as the binary form does.
+/// 1 BC, the year before 1 AD, as the binary form does. The date part
+/// reads by the same rules as a `date`.
 fn timestamp(text: &str, zoned: bool) -> Option<i64> {
-    let (text, before_christ) = match text.strip_suffix(" BC") {
-        Some(text) => (text, true),
-        None => (text, false),
+    let (text, era) = match text.strip_suffix(" BC") {
+        Some(text) => (text, Era::BeforeChrist),
+        None => (text, Era::AnnoDomini),
     };
     let (date, rest) = text.split_once(' ')?;
-    let (year_month, day) = date.rsplit_once('-')?;
-    let (year, month) = year_month.rsplit_once('-')?;
     let (clock, offset) = match rest.find(['+', '-']) {
         Some(at) if zoned => rest.split_at(at),
         None if !zoned => (rest, ""),
@@ -328,15 +329,9 @@ fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     if clock.next().is_some() {
         return None;
     }
-    let mut year = number(year)?;
-    // 1 BC is year 0, 2 BC year -1, and there is no 0 BC.
-    if before_christ {
-        if year == 0 {
-            return None;
-        }
-        year = 1 - year;
-    }
-    let days = days_from_civil(year, number(month)?, number(day)?)?;
+    // A date part's year has at most seven digits, so these seconds stay
+    // far inside an `i64`; only the offset needs a checked step.
+    let days = parse_calendar_day(date, era)?;
     let seconds =
         days * SECONDS_PER_DAY + hour * SECONDS_PER_HOUR + minute * SECONDS_PER_MINUTE + second;
     let offset = if zoned { offset_seconds(offset)? } else { 0 };
@@ -657,6 +652,40 @@ mod tests {
         }
     }
 
+    /// The ends of the range a timestamp holds, 4714-11-24 BC to
+    /// 294276-12-31 AD. Expected values from Howard Hinnant's
+    /// `days_from_civil` run in Python.
+    #[test]
+    fn reads_timestamps_at_the_ends_of_their_range() {
+        let zoned = ColumnType::Time { zoned: true };
+        let naive = ColumnType::Time { zoned: false };
+        let cases = [
+            (
+                zoned,
+                "4714-11-24 00:00:00+00 BC",
+                Datum::Int(-210_866_803_200),
+            ),
+            (
+                zoned,
+                "294276-12-31 23:59:59.999999+00",
+                Datum::Int(9_224_318_015_999),
+            ),
+            (
+                naive,
+                "4714-11-24 00:00:00 BC",
+                Datum::Int(-210_866_803_200),
+            ),
+            (
+                naive,
+                "294276-12-31 23:59:59.999999",
+                Datum::Int(9_224_318_015_999),
+            ),
+        ];
+        for (column_type, text, datum) in cases {
+            assert_eq!(read(column_type, text), Ok(datum), "{column_type} {text}");
+        }
+    }
+
     #[test]
     fn reads_dates_and_uuids() {
         let cases = [
@@ -700,6 +729,15 @@ mod tests {
             (zoned, "Infinity"),
             (zoned, "+infinity"),
             (zoned, "0000-01-01 00:00:00+00 BC"),
+            // A date part a `date` would refuse: year zero, or digits of
+            // the wrong width.
+            (zoned, "0000-01-01 00:00:00+00"),
+            (naive, "0000-01-01 00:00:00"),
+            (zoned, "2024-1-15 00:00:00+00"),
+            (zoned, "2024-01-5 00:00:00+00"),
+            (zoned, "24-01-15 00:00:00+00"),
+            (zoned, "02024-01-15 00:00:00+00"),
+            (naive, "12345678-01-01 00:00:00"),
             (zoned, "0044-03-15 12:00:00+00 AD"),
             (zoned, "2024-13-01 00:00:00+00"),
             (zoned, "2024-00-01 00:00:00+00"),
