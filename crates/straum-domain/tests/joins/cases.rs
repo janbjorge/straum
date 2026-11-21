@@ -127,7 +127,7 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
         values(&loaded, &ask(&["n", "q"], &[], vec![])),
         [Value::Int(2), Value::Int(10)]
     );
-    check(&loaded, kinds, &orders, &by_tag);
+    check(&loaded, &orders, &by_tag);
 
     kinds[TAGS] = RefKind::Left;
     let loaded = small(kinds, vec![], &orders);
@@ -146,7 +146,7 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
         values(&loaded, &ask(&["n", "q"], &[], vec![])),
         [Value::Int(3), Value::Int(17)]
     );
-    check(&loaded, kinds, &orders, &by_tag);
+    check(&loaded, &orders, &by_tag);
 }
 
 /// Every measure of one order of quantity 5, counted `rows` times. The
@@ -181,14 +181,14 @@ fn many_matches_multiply_counts_and_sums_only() {
     let mut loaded = small(kinds, vec![], &orders);
     let all = ask(&MEASURES, &[], vec![]);
     assert_eq!(values(&loaded, &all), every_measure_of_five(2));
-    check(&loaded, kinds, &orders, &all);
+    check(&loaded, &orders, &all);
     // A third tag, then one gone: the multiplicity follows the dim.
     loaded.add_dim("tags", vec![Datum::Int(1)], vec![text("new")]);
     assert_eq!(values(&loaded, &all)[0], Value::Int(3));
     loaded.remove_dim("tags", &[Datum::Int(1)], &[text("red")]);
     loaded.remove_dim("tags", &[Datum::Int(1)], &[text("big")]);
     assert_eq!(values(&loaded, &all), every_measure_of_five(1));
-    check(&loaded, kinds, &orders, &all);
+    check(&loaded, &orders, &all);
 }
 
 /// A semi join counts an order once however many rows match, and not at
@@ -203,7 +203,7 @@ fn semi_counts_once_and_anti_counts_the_unmatched() {
     let count = ask(&["n", "q"], &[], vec![]);
     // Order 1: on promo, customer not blocked. Order 2: no promo.
     assert_eq!(values(&loaded, &count), [Value::Int(2), Value::Int(10)]);
-    check(&loaded, kinds, &orders, &count);
+    check(&loaded, &orders, &count);
     // A second promo row for product 1 changes nothing; blocking customer
     // 1 drops the order; unblocking customer 2 still leaves it off promo.
     loaded.add_dim("promos", vec![Datum::Int(1)], vec![text("x2")]);
@@ -214,14 +214,14 @@ fn semi_counts_once_and_anti_counts_the_unmatched() {
     assert_eq!(values(&loaded, &count), [Value::Int(0), Value::Null]);
     loaded.add_dim("promos", vec![Datum::Int(2)], vec![text("x")]);
     assert_eq!(values(&loaded, &count), [Value::Int(1), Value::Int(7)]);
-    check(&loaded, kinds, &orders, &count);
+    check(&loaded, &orders, &count);
 
     // Swapped: semi on blocked, anti on promos.
     kinds[PROMOS] = RefKind::Anti;
     kinds[BLOCKED] = RefKind::Semi;
     let loaded = small(kinds, vec![], &orders);
     assert_eq!(values(&loaded, &count), [Value::Int(1), Value::Int(7)]);
-    check(&loaded, kinds, &orders, &count);
+    check(&loaded, &orders, &count);
 }
 
 /// A join through another dim reads the second dim by the first's column:
@@ -239,7 +239,7 @@ fn a_chain_reads_through_the_first_dim() {
         labels(&loaded, &by_label),
         [labelled(Datum::Null, 32), labelled(text("gold"), 10)]
     );
-    check(&loaded, kinds, &orders, &by_label);
+    check(&loaded, &orders, &by_label);
     // The tier relabelled, then customer 2 moved into it, then the tier
     // row gone: each moves the answer at once.
     loaded.replace_dim(Replaced {
@@ -262,14 +262,14 @@ fn a_chain_reads_through_the_first_dim() {
         labels(&loaded, &by_label),
         [labelled(Datum::Null, 18), labelled(text("vip"), 24)]
     );
-    check(&loaded, kinds, &orders, &by_label);
+    check(&loaded, &orders, &by_label);
     loaded.remove_dim("tiers", &[Datum::Int(10)], &[text("vip")]);
     assert_eq!(labels(&loaded, &by_label), [labelled(Datum::Null, 42)]);
     // Filtered on the chained value too.
     loaded.add_dim("tiers", vec![Datum::Int(10)], vec![text("vip")]);
     let vip = ask(&["n"], &[], vec![condition("label", vec![lit("vip")])]);
     assert_eq!(values(&loaded, &vip), [Value::Int(4)]);
-    check(&loaded, kinds, &orders, &vip);
+    check(&loaded, &orders, &vip);
 }
 
 /// The view's `WHERE` drops rows from every measure of every ask, and
@@ -295,8 +295,8 @@ fn where_drops_rows_from_every_ask() {
         loaded.store.ask(&by_customer).unwrap().rows,
         [key_row(Datum::Int(2), 1)]
     );
-    check(&loaded, kinds, &orders, &all);
-    check(&loaded, kinds, &orders, &by_customer);
+    check(&loaded, &orders, &all);
+    check(&loaded, &orders, &by_customer);
     // Customer 3 gets a row in NO: its order now passes.
     loaded.add_dim(
         "customers",
@@ -304,11 +304,11 @@ fn where_drops_rows_from_every_ask() {
         vec![text("NO"), Datum::Null],
     );
     assert_eq!(values(&loaded, &all), [Value::Int(2), Value::Int(16)]);
-    check(&loaded, kinds, &orders, &all);
+    check(&loaded, &orders, &all);
     // Without the WHERE every order counts, the one with two tags twice.
     let loaded = small(kinds, vec![], &orders);
     assert_eq!(values(&loaded, &all), [Value::Int(4), Value::Int(26)]);
-    check(&loaded, kinds, &orders, &all);
+    check(&loaded, &orders, &all);
 }
 
 /// A chain's key or a semi join's key that is null joins nothing, and an
@@ -325,15 +325,15 @@ fn null_keys_join_nothing() {
     // order has two tags.
     let all = ask(&["n"], &[], vec![]);
     assert_eq!(values(&loaded, &all), [Value::Int(2)]);
-    check(&loaded, kinds, &orders, &all);
+    check(&loaded, &orders, &all);
     let by = ask(&["n"], &["country", "label", "tag"], vec![]);
-    check(&loaded, kinds, &orders, &by);
+    check(&loaded, &orders, &by);
 
     kinds[TAGS] = RefKind::Left;
     kinds[PROMOS] = RefKind::Semi;
     let loaded = small(kinds, vec![], &orders);
     assert_eq!(values(&loaded, &all), [Value::Int(2)]);
-    check(&loaded, kinds, &orders, &all);
+    check(&loaded, &orders, &all);
 }
 
 /// Joined on its `by` keys alone, a fact keeps no bound cells: they
@@ -353,7 +353,7 @@ fn joins_on_by_keys_keep_no_bound_cells() {
         loaded.store.ask(&by_tag).unwrap().rows,
         [text_row("red", 1, 5)]
     );
-    check(&loaded, KINDS, &orders, &by_tag);
+    check(&loaded, &orders, &by_tag);
     // The next ask reads the dims as they are then.
     for (dim, attribute) in [("tags", "big"), ("promos", "x")] {
         loaded.add_dim(dim, vec![Datum::Int(2)], vec![text(attribute)]);
@@ -367,7 +367,7 @@ fn joins_on_by_keys_keep_no_bound_cells() {
         loaded.store.ask(&by_tag).unwrap().rows,
         [text_row("big", 1, 7), text_row("red", 2, 14)]
     );
-    check(&loaded, KINDS, &orders, &by_tag);
+    check(&loaded, &orders, &by_tag);
     assert_eq!(loaded.store.bound_cells("orders"), None);
 }
 
@@ -391,7 +391,7 @@ fn a_max_over_joined_keys_follows_deletes_and_dims() {
         loaded.store.ask(&ends).unwrap().rows,
         [text_row("NO", 9, 5), text_row("SE", 3, 3)]
     );
-    check(&loaded, kinds, &orders, &ends);
+    check(&loaded, &orders, &ends);
 
     let largest = orders.remove(1);
     loaded.store.remove_row("orders", &largest).unwrap();
@@ -399,7 +399,7 @@ fn a_max_over_joined_keys_follows_deletes_and_dims() {
         loaded.store.ask(&ends).unwrap().rows,
         [text_row("NO", 7, 5), text_row("SE", 3, 3)]
     );
-    check(&loaded, kinds, &orders, &ends);
+    check(&loaded, &orders, &ends);
 
     loaded.replace_dim(Replaced {
         dim: "customers",
@@ -411,7 +411,7 @@ fn a_max_over_joined_keys_follows_deletes_and_dims() {
         loaded.store.ask(&ends).unwrap().rows,
         [text_row("SE", 7, 3)]
     );
-    check(&loaded, kinds, &orders, &ends);
+    check(&loaded, &orders, &ends);
 }
 
 /// Joined on a column no `by` key reads, a fact keeps bound cells, fewer
@@ -436,5 +436,5 @@ fn a_join_off_the_by_keys_keeps_fewer_bound_cells() {
         loaded.store.ask(&by_tag).unwrap().rows,
         [key_row(text("big"), 1), key_row(text("red"), 2)]
     );
-    check(&loaded, kinds, &orders, &by_tag);
+    check(&loaded, &orders, &by_tag);
 }

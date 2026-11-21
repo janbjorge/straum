@@ -8,12 +8,11 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::common::{GroupInputs, SPREAD_PLACES, aggregate_value, bucket_key, holds, in_range};
 use crate::view::{
-    AT, BLOCKED, CUSTOMER, CUSTOMERS, DIM_NAMES, Dims, EVEN, HOUR, Kinds, Loaded, PRODUCT,
-    QUANTITY, TAGS, TIERS,
+    AT, BLOCKED, CUSTOMER, CUSTOMERS, Dims, EVEN, HOUR, Loaded, PRODUCT, QUANTITY, TAGS, TIERS,
 };
 use straum_domain::{
-    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Condition, Datum, Identifier, Measure,
-    RefKind, Spec, Value, Via, Width,
+    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Condition, Datum, Fact, Identifier,
+    Measure, RefKind, Spec, Value, Via, Width,
 };
 
 /// One way an order's joins resolve: per ref, the dim row matched.
@@ -26,11 +25,12 @@ struct ViewRow<'a> {
     joined: JoinRow,
 }
 
-/// Every way an order's joins resolve under `kinds`, in ref order, as
-/// PostgreSQL would repeat the row.
-fn join_rows(row: &[Datum], dims: &Dims, kinds: Kinds, chained: bool) -> Vec<JoinRow> {
+/// Every way an order's joins resolve, each ref of the fact by its own
+/// kind, in ref order, as PostgreSQL would repeat the row.
+fn join_rows(row: &[Datum], dims: &Dims, fact: &Fact) -> Vec<JoinRow> {
+    let chained = matches!(fact.refs[TIERS].via[0], Via::Attribute { .. });
     let mut rows: Vec<JoinRow> = vec![Vec::new()];
-    for (index, (dim, kind)) in DIM_NAMES.into_iter().zip(kinds).enumerate() {
+    for (index, reference) in fact.refs.iter().enumerate() {
         let mut next = Vec::new();
         for joined in &rows {
             let key = match index {
@@ -38,17 +38,17 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: Kinds, chained: bool) -> Vec<Joi
                 CUSTOMERS | TIERS | BLOCKED => row[CUSTOMER].clone(),
                 _ => row[PRODUCT].clone(),
             };
-            let found = matching_rows(dims, dim, &key);
+            let found = matching_rows(dims, reference.dim.as_str(), &key);
             // A left join keeps a row no dim row matches, once; a semi
             // join keeps a matched row once, an anti join an unmatched one.
-            let kept_once = match kind {
+            let kept_once = match reference.kind {
                 RefKind::Left | RefKind::Anti => found.is_empty(),
                 RefKind::Semi => !found.is_empty(),
                 RefKind::Inner => false,
             };
             if kept_once {
                 next.push(joined_with(joined, None));
-            } else if matches!(kind, RefKind::Left | RefKind::Inner) {
+            } else if matches!(reference.kind, RefKind::Left | RefKind::Inner) {
                 for matched in found {
                     next.push(joined_with(joined, Some(matched)));
                 }
@@ -127,9 +127,8 @@ fn group_key(ask: &Ask, row: &[Datum], joined: &JoinRow, at: i64) -> Vec<Datum> 
 /// The reference answer: the ask over the raw rows joined as the dims
 /// are: every way each row's joins resolve is one row of the view, as it
 /// would be in PostgreSQL.
-pub fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds: Kinds) -> Answer {
+pub fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
     let fact = spec.fact("orders").unwrap();
-    let chained = matches!(fact.refs[TIERS].via[0], Via::Attribute { .. });
     let mut groups: BTreeMap<Vec<Datum>, Vec<ViewRow<'_>>> = BTreeMap::new();
     if ask.keys.is_empty() {
         groups.insert(Vec::new(), Vec::new());
@@ -139,7 +138,7 @@ pub fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds
         if !in_range(ask, at) {
             continue;
         }
-        for joined in join_rows(row, dims, kinds, chained) {
+        for joined in join_rows(row, dims, fact) {
             if !passes(row, &joined, &fact.filter) || !passes(row, &joined, &ask.filter) {
                 continue;
             }
@@ -245,10 +244,10 @@ fn evens(rows: &[&[Datum]]) -> Vec<bool> {
 }
 
 /// The store's answer to `ask` is the reference's over `rows`.
-pub fn check(loaded: &Loaded, kinds: Kinds, rows: &[Vec<Datum>], ask: &Ask) {
+pub fn check(loaded: &Loaded, rows: &[Vec<Datum>], ask: &Ask) {
     assert_eq!(
         loaded.store.ask(ask).unwrap(),
-        reference(&loaded.spec, ask, rows, &loaded.dims, kinds),
+        reference(&loaded.spec, ask, rows, &loaded.dims),
         "{ask:?}"
     );
 }

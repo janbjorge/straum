@@ -345,7 +345,7 @@ impl Walk {
             let loaded = &self.loaded;
             assert_eq!(
                 loaded.store.ask(&ask).unwrap(),
-                reference(&loaded.spec, &ask, &self.rows, &loaded.dims, kinds),
+                reference(&loaded.spec, &ask, &self.rows, &loaded.dims),
                 "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
             );
         }
