@@ -14,7 +14,6 @@ use super::streams::*;
 use super::support::*;
 use crate::physical::Physical;
 use crate::source::Postgres;
-use crate::wire::{Connection, ConnectionKind};
 
 /// On one server with logical decoding, the physical stream yields the
 /// commits a logical slot yields, byte for byte: inserts, `COPY`, HOT and
@@ -287,7 +286,6 @@ const SESSIONS: u64 = 4;
 /// `s` modulo [`SESSIONS`] and zone `s + 1`.
 struct Workload {
     sessions: Vec<Session>,
-    schema: String,
     next_id: u64,
     added: Vec<String>,
     columns: u64,
@@ -339,7 +337,7 @@ impl Done {
 /// One session of a workload: its connection, whether a transaction is
 /// open, how deep its savepoints go.
 struct Session {
-    connection: Connection,
+    db: Db,
     open: bool,
     savepoints: u32,
     /// A prepared transaction of this session, holding its rows.
@@ -352,7 +350,7 @@ impl Workload {
         let mut sessions = Vec::new();
         for _ in 0..SESSIONS {
             sessions.push(Session {
-                connection: Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap(),
+                db: db.another_connection(),
                 open: false,
                 savepoints: 0,
                 prepared: None,
@@ -360,7 +358,6 @@ impl Workload {
         }
         Workload {
             sessions,
-            schema: db.name.clone(),
             next_id: 1_000,
             added: Vec::new(),
             columns: 0,
@@ -389,7 +386,6 @@ impl Workload {
         }
         // Picks which of the session's rows a statement changes.
         let residue = rng.below(7);
-        let schema = self.schema.clone();
         let statement = match rng.below(12) {
             0..=2 => {
                 self.done.insert += 1;
@@ -427,19 +423,18 @@ impl Workload {
             _ => return self.transaction(rng, db, index),
         };
         let session = &mut self.sessions[index];
-        let sql = statement.replace("$S", &schema);
         if !session.open && rng.chance(50) {
-            session.connection.execute("BEGIN").unwrap();
+            session.db.run("BEGIN");
             session.open = true;
         }
-        execute_or_name(&mut session.connection, &sql);
+        session.db.run(&statement);
     }
 
     /// Savepoints and ends of a session's transaction.
     fn transaction(&mut self, rng: &mut Rng, db: &mut Db, index: usize) {
         let session = &mut self.sessions[index];
         if !session.open {
-            session.connection.execute("BEGIN").unwrap();
+            session.db.run("BEGIN");
             session.open = true;
             return;
         }
@@ -482,7 +477,7 @@ impl Workload {
                 "COMMIT".to_owned()
             }
         };
-        execute_or_name(&mut session.connection, &sql);
+        session.db.run(&sql);
     }
 
     /// What runs between transactions: DDL, once every session's
@@ -519,7 +514,7 @@ impl Workload {
     fn finish(&mut self, db: &mut Db) {
         for session in &mut self.sessions {
             if session.open {
-                session.connection.execute("COMMIT").unwrap();
+                session.db.run("COMMIT");
                 session.open = false;
                 session.savepoints = 0;
             }
@@ -527,13 +522,6 @@ impl Workload {
                 db.run(&format!("COMMIT PREPARED '{gid}'"));
             }
         }
-    }
-}
-
-/// Runs `sql`; panics naming it on an error.
-fn execute_or_name(connection: &mut Connection, sql: &str) {
-    if let Err(error) = connection.execute(sql) {
-        panic!("{error}: {sql}");
     }
 }
 

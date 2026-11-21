@@ -14,9 +14,7 @@ use straum_domain::{AnswerRow, Ask, AskError, ColumnType, Datum, Literal, Value}
 
 use super::references::*;
 use super::support::*;
-use crate::dsn::Dsn;
 use crate::source::{Postgres, Replication, parse_lsn};
-use crate::wire::{Connection, ConnectionKind};
 
 #[test]
 fn follows_the_database() {
@@ -418,7 +416,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
         db.run("TRUNCATE $S.trips");
         let written = Arc::new(AtomicUsize::new(0));
         let done = Arc::new(AtomicBool::new(false));
-        let inserter = insert_trips_in_turn(db.dsn.clone(), db.name.clone(), &written, &done);
+        let inserter = insert_trips_in_turn(db.another_connection(), &written, &done);
         while written.load(Ordering::Acquire) < 50 {
             thread::sleep(Duration::from_millis(1));
         }
@@ -458,23 +456,20 @@ fn the_snapshot_and_the_stream_split_exactly() {
     }
 }
 
-/// A thread inserting 2000 trips into schema `name`, one commit each,
+/// A thread inserting 2000 trips into `db`'s schema, one commit each,
 /// counting them in `written` and setting `done` at the end.
 fn insert_trips_in_turn(
-    dsn: Dsn,
-    name: String,
+    mut db: Db,
     written: &Arc<AtomicUsize>,
     done: &Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     let (written, done) = (Arc::clone(written), Arc::clone(done));
     thread::spawn(move || {
-        let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         for id in 0..2_000 {
-            let sql = format!(
-                "INSERT INTO {name}.trips VALUES ({id}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
+            db.run(&format!(
+                "INSERT INTO $S.trips VALUES ({id}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
                 START + id
-            );
-            connection.execute(&sql).unwrap();
+            ));
             written.fetch_add(1, Ordering::Release);
         }
         done.store(true, Ordering::Release);

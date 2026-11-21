@@ -187,7 +187,7 @@ fn follow(pg: &PostgresContainer, checksums: bool) {
     let stop = Arc::new(AtomicBool::new(false));
     let mut writers = Vec::new();
     for index in 0..3 {
-        writers.push(write_while_starting(&stop, &db, index));
+        writers.push(write_while_starting(&stop, db.another_connection(), index));
     }
     thread::sleep(Duration::from_millis(200));
     let mut writer = db.physical_writer(SPEC);
@@ -219,12 +219,9 @@ fn follow(pg: &PostgresContainer, checksums: bool) {
 /// A writer thread that until `stop` inserts a trip, updates and deletes
 /// earlier ones and changes zone `index + 1`, a commit each; writer 0 also
 /// adds and drops a column now and then.
-fn write_while_starting(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> thread::JoinHandle<()> {
+fn write_while_starting(stop: &Arc<AtomicBool>, mut db: Db, index: u64) -> thread::JoinHandle<()> {
     let stop = Arc::clone(stop);
-    let dsn = db.dsn.clone();
-    let schema = db.name.clone();
     thread::spawn(move || {
-        let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         let mut rng = Rng::new(100 + index);
         let mut id = 1_000_000 * (index + 1);
         while !stop.load(Ordering::Relaxed) {
@@ -238,7 +235,7 @@ fn write_while_starting(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> thread::
                 id - 2,
                 1 + index
             );
-            connection.execute(&sql.replace("$S", &schema)).unwrap();
+            db.run(&sql);
             // DDL while Straum starts: a column comes and goes.
             if index == 0 && id.is_multiple_of(25) {
                 let ddl = format!(
@@ -246,7 +243,7 @@ fn write_while_starting(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> thread::
                      UPDATE $S.trips SET c{id} = 8 WHERE id = {id};
                      ALTER TABLE $S.trips DROP c{id}"
                 );
-                connection.execute(&ddl.replace("$S", &schema)).unwrap();
+                db.run(&ddl);
             }
         }
     })
@@ -595,7 +592,11 @@ fn starts_while_a_checkpoint_runs() {
         "CHECKPOINT",
         "INSERT INTO $S.t SELECT i, repeat('x', 200) FROM generate_series(1, 50) AS i",
     ] {
-        busy.push(run_without_waiting_for_flush(&stop, &db, sql));
+        busy.push(run_without_waiting_for_flush(
+            &stop,
+            db.another_connection(),
+            sql,
+        ));
     }
     for _ in 0..100 {
         let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
@@ -619,15 +620,14 @@ fn starts_while_a_checkpoint_runs() {
 /// don't wait for their flush, so they leave WAL unflushed.
 fn run_without_waiting_for_flush(
     stop: &Arc<AtomicBool>,
-    db: &Db,
+    mut db: Db,
     sql: &str,
 ) -> thread::JoinHandle<()> {
-    let (stop, dsn, sql) = (Arc::clone(stop), db.dsn.clone(), db.sql(sql));
+    let (stop, sql) = (Arc::clone(stop), sql.to_owned());
     thread::spawn(move || {
-        let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
-        connection.execute("SET synchronous_commit = off").unwrap();
+        db.run("SET synchronous_commit = off");
         while !stop.load(Ordering::Relaxed) {
-            connection.execute(&sql).unwrap();
+            db.run(&sql);
         }
     })
 }

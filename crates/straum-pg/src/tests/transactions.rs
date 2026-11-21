@@ -386,7 +386,11 @@ fn lines_the_load_up_with_the_stream() {
     let stop = Arc::new(AtomicBool::new(false));
     let mut writers = Vec::new();
     for index in 0..3 {
-        writers.push(insert_and_delete_until(&stop, &db, index));
+        writers.push(insert_and_delete_until(
+            &stop,
+            db.another_connection(),
+            index,
+        ));
     }
     thread::sleep(Duration::from_millis(200));
     let (stream, _) = Physical::start(&pg.dsn).unwrap();
@@ -562,25 +566,24 @@ fn unseen_through_now(
 
 /// A writer thread inserting and deleting trips in `db` until `stop`,
 /// each transaction with a savepoint rolled back.
-fn insert_and_delete_until(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> thread::JoinHandle<()> {
+fn insert_and_delete_until(
+    stop: &Arc<AtomicBool>,
+    mut db: Db,
+    index: u64,
+) -> thread::JoinHandle<()> {
     let stop = Arc::clone(stop);
-    let dsn = db.dsn.clone();
-    let schema = db.name.clone();
     thread::spawn(move || {
-        let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         let mut id = index * 1_000_000;
         while !stop.load(Ordering::Relaxed) {
             id += 1;
-            connection
-                .execute(&format!(
-                    "BEGIN; INSERT INTO {schema}.trips (id) VALUES ({id}), ({}); SAVEPOINT a;
-                 INSERT INTO {schema}.trips (id) VALUES ({}); ROLLBACK TO a;
-                 DELETE FROM {schema}.trips WHERE id = {}; COMMIT",
-                    id + 500_000,
-                    id + 700_000,
-                    id - 1
-                ))
-                .unwrap();
+            db.run(&format!(
+                "BEGIN; INSERT INTO $S.trips (id) VALUES ({id}), ({}); SAVEPOINT a;
+                 INSERT INTO $S.trips (id) VALUES ({}); ROLLBACK TO a;
+                 DELETE FROM $S.trips WHERE id = {}; COMMIT",
+                id + 500_000,
+                id + 700_000,
+                id - 1
+            ));
         }
     })
 }
