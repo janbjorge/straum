@@ -378,7 +378,8 @@ count(*) FILTER (WHERE e.device_id IS NOT NULL) AS from_devices
 `IS NOT NULL` a column with a null-ness key: the second filter is why
 the view has `has_device`, since Straum keeps nothing else about
 `device_id`. A condition comes once in a `FILTER` or the view's
-`WHERE`; written twice, it is refused by name. A literal must fit its
+`WHERE`; written twice, it is refused by name, as is a literal written
+twice in one `IN`. A literal must fit its
 column. A `date` or `uuid` literal is a string spelled only as
 PostgreSQL prints the value: `'2024-01-15'`, `'0044-03-15 BC'` or
 `'infinity'` for a date, lowercase hex in groups of 8-4-4-4-12 for a

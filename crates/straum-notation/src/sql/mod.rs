@@ -573,7 +573,10 @@ impl Walker {
         kept
     }
 
-    /// `key IN (values)`, every value walked even after one fails.
+    /// `key IN (values)`, every value walked even after one fails; a value
+    /// written again is refused by name, as `without_repeats` refuses a
+    /// condition. `IN (1, 1)` says only that 1 is given twice: once
+    /// dropped, the one-value IN names its own spelling.
     fn in_list(
         &mut self,
         names: &mut Names,
@@ -582,8 +585,16 @@ impl Walker {
     ) -> Result<Condition, Reported> {
         let key = self.condition_key(names, key);
         let mut values: Vec<Literal> = Vec::new();
+        let mut seen: Vec<String> = Vec::with_capacity(list.len());
         let mut failed = false;
         for item in list {
+            let written = item.to_string();
+            if seen.contains(&written) {
+                self.error(line(item), format!("{written} given twice"));
+                failed = true;
+                continue;
+            }
+            seen.push(written);
             match self.condition_value(names, item) {
                 Ok(value) => values.push(value),
                 Err(Reported) => failed = true,

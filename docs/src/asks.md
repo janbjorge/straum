@@ -58,7 +58,8 @@ most once, since the names become the fields of each answer row.
 each list at most 256 names.
 
 `WHERE` takes `=` and `IN` on keys; `IN` lists two parameters or more,
-and for one, write `=`. Only the time takes `>=` and `<`, each at most
+each once, and for one, write `=`: `kind IN ($1, $1)` is refused,
+naming `$1`. Only the time takes `>=` and `<`, each at most
 once, to bound the range; the start must be before the end. Leave one
 out and that end is open: the ask reads from the first bucket held, or
 to the end of the last. With no `WHERE` it reads every bucket held;

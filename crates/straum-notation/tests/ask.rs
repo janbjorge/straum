@@ -214,6 +214,14 @@ fn a_condition_comes_once() {
             "line 1: kind IN ($1, $2) given twice",
         ),
         (
+            "SELECT trips FROM t WHERE kind IN ($1, $2, $1)",
+            "line 1: $1 given twice",
+        ),
+        (
+            "SELECT trips FROM t WHERE kind IN ($1, $1)",
+            "line 1: $1 given twice",
+        ),
+        (
             "SELECT trips FROM t HAVING trips > $1 AND trips > $1",
             "line 1: trips > $1 given twice",
         ),
@@ -222,6 +230,8 @@ fn a_condition_comes_once() {
     }
     let ask = parse_ask("SELECT trips FROM t WHERE kind = $1 AND kind = $2", &two).unwrap();
     assert_eq!(ask.filter.len(), 2);
+    let ask = parse_ask("SELECT trips FROM t WHERE kind IN ($1, $2)", &two).unwrap();
+    assert_eq!(ask.filter, [condition("kind", two.to_vec())]);
     let ask = parse_ask("SELECT trips FROM t HAVING trips > $1 AND trips < $2", &two).unwrap();
     assert_eq!(ask.having.len(), 2);
 }
@@ -850,10 +860,14 @@ fn a_long_chain_of_operators_is_refused_before_it_is_parsed() {
     }
 }
 
-/// An ask that names `$1` `times` in one IN list.
+/// An ask that names `$1` `times`, each on a key of its own: one IN list
+/// takes each value once.
 fn named(times: usize) -> String {
-    let list = vec!["$1"; times].join(", ");
-    format!("SELECT trips FROM t WHERE kind IN ({list})")
+    let mut conditions = Vec::with_capacity(times);
+    for index in 0..times {
+        conditions.push(format!("k{index} = $1"));
+    }
+    format!("SELECT trips FROM t WHERE {}", conditions.join(" AND "))
 }
 
 /// Each use of a parameter is a copy of it, so the text they come to is
@@ -863,16 +877,16 @@ fn named(times: usize) -> String {
 fn the_text_parameters_come_to_at_most_a_mebibyte() {
     let long = text(&"x".repeat(50_000));
     let ask = parse_ask(&named(20), std::slice::from_ref(&long)).unwrap();
-    assert_eq!(ask.filter[0].values.len(), 20);
+    assert_eq!(ask.filter.len(), 20);
     assert_eq!(
-        errors(&named(300), &[long]),
+        errors(&named(200), &[long]),
         [
             "line 1: the text parameters, as the ask uses them, come to more than 1048576 bytes; \
           use each once"
         ]
     );
-    let ask = parse_ask(&named(300), &[text("cab")]).unwrap();
-    assert_eq!(ask.filter[0].values.len(), 300);
+    let ask = parse_ask(&named(200), &[text("cab")]).unwrap();
+    assert_eq!(ask.filter.len(), 200);
 }
 
 /// An ask keeps its first 50 errors and counts the rest, so its reply

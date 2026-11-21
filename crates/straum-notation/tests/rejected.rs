@@ -294,6 +294,12 @@ fn select_clauses_outside_the_subset_are_rejected() {
             "filter condition, write = or IN joined by AND,",
         ),
         (
+            "\nGROUP BY",
+            "\nWHERE f.a IN (1, 1)\nGROUP BY",
+            6,
+            "1 given twice",
+        ),
+        (
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY 1, 2, 3, 4 HAVING count(*) > 1",
             2,
@@ -679,7 +685,19 @@ fn measure_filters_take_one_condition_form() {
             3,
             "literal, use an integer, 'text', true or false, `x`",
         ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a IN (1, 2, 1)) AS n",
+            3,
+            "1 given twice",
+        ),
     ]);
+    // Each value once is read.
+    let distinct = base(
+        "count(*) AS n",
+        "count(*) FILTER (WHERE f.a IN (1, 2)) AS n",
+    );
+    assert!(parse(&distinct).is_ok());
 }
 
 /// The view's time: one `buckets` item, a fact column and its widths.
