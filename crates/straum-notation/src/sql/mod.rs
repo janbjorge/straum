@@ -19,7 +19,7 @@ use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::keywords::Keyword;
 use sqlparser::parser::{Parser, ParserError};
-use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
+use sqlparser::tokenizer::{Location, Token, TokenWithSpan, Tokenizer};
 use straum_domain::{Condition, Identifier, Literal};
 
 mod ask;
@@ -668,6 +668,28 @@ fn all_digits(text: &str) -> bool {
         }
     }
     true
+}
+
+/// Where `location` is in `text`, as a byte offset; the end of `text` for
+/// a location past it. Lines and columns count from 1, as `sqlparser`
+/// counts them, and columns in characters, not bytes.
+// Seeks only as far as the location's line: a scan of the whole text per
+// call made reading a long ask quadratic.
+fn byte_offset(text: &str, location: Location) -> usize {
+    let mut line_start = 0;
+    let mut line = 1;
+    while line < location.line {
+        let Some(newline) = text[line_start..].find('\n') else {
+            return text.len();
+        };
+        line_start += newline + 1;
+        line += 1;
+    }
+    let characters = usize::try_from(location.column.saturating_sub(1)).unwrap_or(usize::MAX);
+    match text[line_start..].char_indices().nth(characters) {
+        Some((offset, _)) => line_start + offset,
+        None => text.len(),
+    }
 }
 
 /// The items printed and joined by `, `.

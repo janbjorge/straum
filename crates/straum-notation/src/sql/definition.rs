@@ -9,6 +9,8 @@
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 
+use super::byte_offset;
+
 /// Each statement of `text` in order, as written; none for a text the
 /// tokenizer refuses, which a spec that parsed never is.
 pub(crate) fn statement_texts(text: &str) -> Vec<String> {
@@ -58,6 +60,8 @@ pub(crate) fn statement_texts(text: &str) -> Vec<String> {
 }
 
 /// The byte offset at which each line of a text starts.
+// Every token of a spec is located, so a seek from the text's start for
+// each, as `byte_offset` does alone, would be quadratic in the spec.
 struct LineStarts(Vec<usize>);
 
 impl LineStarts {
@@ -71,17 +75,14 @@ impl LineStarts {
         LineStarts(starts)
     }
 
-    /// Where a token's location is in `text`. Lines count from 1 and
-    /// columns from 1 in characters, not bytes.
+    /// Where a token's location is in `text`: its line's start from the
+    /// table, then its column from there.
     fn offset(&self, text: &str, location: Location) -> usize {
         let line_index = usize::try_from(location.line.saturating_sub(1)).unwrap_or(usize::MAX);
         let Some(&line_start) = self.0.get(line_index) else {
             return text.len();
         };
-        let characters = usize::try_from(location.column.saturating_sub(1)).unwrap_or(usize::MAX);
-        match text[line_start..].char_indices().nth(characters) {
-            Some((offset, _)) => line_start + offset,
-            None => text.len(),
-        }
+        let column = Location::new(1, location.column);
+        line_start + byte_offset(&text[line_start..], column)
     }
 }

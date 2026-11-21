@@ -32,7 +32,8 @@ use straum_domain::{
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
-    NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
+    NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, byte_offset, line,
+    statements,
     without_leading_zeros,
 };
 
@@ -446,7 +447,7 @@ impl Walker {
             let value = self.parameter(right, parameters);
             // sqlparser reads != as <>, and prints it so; the text tells.
             if comparison == Comparison::NotEqual
-                && spelled_with_bang(&written_between(text, left.span().end, right.span().start))
+                && spelled_with_bang(written_between(text, left.span().end, right.span().start))
             {
                 self.error(line(part), "write <> for not equal, not !=".into());
                 continue;
@@ -650,27 +651,12 @@ fn comparison(operator: &sql::BinaryOperator) -> Option<Comparison> {
     }
 }
 
-/// The text from `start` to `end`, located as sqlparser does: lines and
-/// columns from 1, columns in characters.
-// Reads only the lines from `start` to `end`: one scan of the whole text
-// per comparison made reading a long ask quadratic.
-fn written_between(text: &str, start: Location, end: Location) -> String {
-    let mut between = String::new();
-    let first_line = usize::try_from(start.line.saturating_sub(1)).unwrap_or(usize::MAX);
-    let lines = text.lines().enumerate().skip(first_line);
-    for (line_index, line_text) in lines {
-        let line_number = line_index as u64 + 1;
-        if line_number > end.line {
-            break;
-        }
-        for (column_index, character) in line_text.chars().enumerate() {
-            let at = Location::new(line_number, column_index as u64 + 1);
-            if at >= start && at < end {
-                between.push(character);
-            }
-        }
-    }
-    between
+/// The text from `start` to `end`, located as sqlparser does.
+fn written_between(text: &str, start: Location, end: Location) -> &str {
+    let start = byte_offset(text, start);
+    // An end before the start is no text, never a panic.
+    let end = byte_offset(text, end).max(start);
+    &text[start..end]
 }
 
 /// A comment or a trailing `;` in an ask: it is one statement, written
