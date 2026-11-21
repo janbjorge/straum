@@ -385,7 +385,9 @@ impl<'s> Expander<'s> {
             ViaFrom::Through {
                 reference,
                 attribute,
-            } => self.plans[reference].projection.value_in(attribute, row[reference]),
+            } => self.plans[reference]
+                .projection
+                .value_in(attribute, row[reference]),
         }
     }
 }
