@@ -1,12 +1,14 @@
 //! Helpers the unit tests of several files share, compiled only for
 //! tests. `answering` stands in for a running Straum: it takes one request
 //! on a socket and sends a scripted reply, so `client.rs` and `shell.rs`
-//! can be tested without a server. The request constants are the exact
-//! bytes the client sends, with `ADDRESS` where the socket's goes.
+//! can be tested without a server. `serving` hands its one connection to
+//! a function instead, for a server that is slow, silent or sends bytes
+//! no Straum would. The request constants are the exact bytes the client
+//! sends, with `ADDRESS` where the socket's goes.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::thread;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::thread::{self, JoinHandle};
 
 use crate::client::{Server, TIMEOUT};
 
@@ -29,6 +31,30 @@ pub(crate) fn answering(request: &str, reply: &'static str) -> String {
         }
     });
     url
+}
+
+/// A server on a thread, which hands the one connection it takes to a
+/// handler.
+pub(crate) struct Serving {
+    pub(crate) address: SocketAddr,
+    pub(crate) url: String,
+    /// Ends when the handler returns.
+    pub(crate) thread: JoinHandle<()>,
+}
+
+/// A server that hands the one connection it takes to `handler`.
+pub(crate) fn serving(handler: fn(TcpStream)) -> Serving {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let thread = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        handler(stream);
+    });
+    Serving {
+        address,
+        url: format!("http://{address}"),
+        thread,
+    }
 }
 
 /// `straum status`'s request.

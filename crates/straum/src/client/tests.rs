@@ -1,9 +1,12 @@
 //! The tests of `client.rs`: requests written and replies read against
 //! a fake Straum that answers on a local socket.
 
+use std::thread;
+
 use super::*;
 use crate::testing::{
     GET_READYZ, GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, POST_ASK_JSON, answering, args, server,
+    serving,
 };
 
 /// What the user reads: a reply's body, or an error's words.
@@ -73,19 +76,66 @@ fn asks_for_the_status() {
     );
 }
 
+/// The timeout of the tests that wait it out: a second, so they stay
+/// quick.
+const SHORT_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Takes the connection, then neither reads nor answers for three
+/// timeouts, well past when the client gives up.
+fn hold_silent(stream: TcpStream) {
+    thread::sleep(SHORT_TIMEOUT * 3);
+    drop(stream);
+}
+
+/// The wait between the bytes `trickle` sends: shorter than the timeout.
+const TRICKLE_GAP: Duration = Duration::from_millis(250);
+
+/// Reads the request, then sends twelve bytes and closes. At one byte
+/// per gap the total is well past the timeout, and each gap is shorter
+/// than it.
+fn trickle(mut stream: TcpStream) {
+    stream.set_nodelay(true).unwrap();
+    let mut buf = [0u8; 1024];
+    let _ = stream.read(&mut buf);
+    for byte in b"HTTP/1.1 200" {
+        if stream.write_all(&[*byte]).is_err() {
+            return;
+        }
+        thread::sleep(TRICKLE_GAP);
+    }
+}
+
+/// The wait halfway through the reply `pause_mid_reply` sends.
+const PAUSE: Duration = Duration::from_millis(200);
+
+/// Reads the request, then sends half a reply, waits, and sends the rest.
+fn pause_mid_reply(mut stream: TcpStream) {
+    let mut buf = [0u8; 1024];
+    let _ = stream.read(&mut buf);
+    let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nok\n";
+    let mid = reply.len() / 2;
+    stream.write_all(&reply[..mid]).unwrap();
+    thread::sleep(PAUSE);
+    stream.write_all(&reply[mid..]).unwrap();
+}
+
+/// Reads the request, then answers with a body that is not UTF-8.
+fn reply_not_utf8(mut stream: TcpStream) {
+    let mut buf = [0u8; 1024];
+    let _ = stream.read(&mut buf);
+    let mut reply = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+    reply.push(0xff);
+    let _ = stream.write_all(&reply);
+}
+
 /// A server that takes the connection and never answers is given the
 /// timeout, and the error says no reply came within it, with no hint
 /// about the URL, which was right.
 #[test]
 fn a_silent_server_is_given_the_timeout() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let timeout = Duration::from_secs(1);
-    let holder = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        std::thread::sleep(timeout * 3);
-        drop(stream);
-    });
+    let holder = serving(hold_silent);
+    let url = holder.url.clone();
+    let timeout = SHORT_TIMEOUT;
     let clock = Instant::now();
     let silent = Server {
         url: url.clone(),
@@ -98,37 +148,22 @@ fn a_silent_server_is_given_the_timeout() {
         said,
         format!("asking {url} for its status: no reply came within 1 s")
     );
-    holder.join().unwrap();
+    holder.thread.join().unwrap();
 }
 
 /// Gaps shorter than the timeout, over a reply that takes longer, are
 /// still cut off: the timeout bounds the whole reply, not each read.
 #[test]
 fn a_trickling_reply_is_cut_off_at_the_timeout() {
-    let timeout = Duration::from_secs(1);
-    let gap = Duration::from_millis(250);
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let holder = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream.set_nodelay(true).unwrap();
-        let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf);
-        // Twelve bytes, then close. At one byte per gap the total is
-        // well past the timeout, and each gap is shorter than it.
-        for byte in b"HTTP/1.1 200" {
-            if stream.write_all(&[*byte]).is_err() {
-                return;
-            }
-            std::thread::sleep(gap);
-        }
-    });
+    let timeout = SHORT_TIMEOUT;
+    let holder = serving(trickle);
+    let url = holder.url.clone();
     let slow = Server {
         url: url.clone(),
         timeout,
     };
     let (send, recv) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    thread::spawn(move || {
         let started = Instant::now();
         let result = status(&slow, Output::Text).map_err(|error| error.to_string());
         let _ = send.send((started.elapsed(), result));
@@ -147,31 +182,20 @@ fn a_trickling_reply_is_cut_off_at_the_timeout() {
             "asking {url} for its status: no reply came within 1 s"
         ))
     );
-    holder.join().unwrap();
+    holder.thread.join().unwrap();
 }
 
 /// A reply that arrives slowly, but whole before the timeout, is read.
 #[test]
 fn a_slow_reply_within_the_timeout_is_read() {
-    let timeout = Duration::from_secs(1);
-    let pause = Duration::from_millis(200);
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let holder = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf);
-        let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nok\n";
-        let mid = reply.len() / 2;
-        stream.write_all(&reply[..mid]).unwrap();
-        std::thread::sleep(pause);
-        stream.write_all(&reply[mid..]).unwrap();
-    });
+    let timeout = SHORT_TIMEOUT;
+    let holder = serving(pause_mid_reply);
+    let url = holder.url.clone();
     let started = Instant::now();
     let body = status(&Server { url, timeout }, Output::Text).unwrap();
     assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
     assert_eq!(body, "ok\n");
-    holder.join().unwrap();
+    holder.thread.join().unwrap();
 }
 
 /// No time left is the deadline, not a zero socket timeout, which the
@@ -189,14 +213,8 @@ fn a_deadline_already_past_is_silent() {
 /// A peer that never reads, and a deadline already past, end the write.
 #[test]
 fn a_write_that_cannot_finish_ends_the_exchange() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let holder = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        std::thread::sleep(Duration::from_secs(1));
-        drop(stream);
-    });
-    let mut stream = TcpStream::connect(address).unwrap();
+    let holder = serving(hold_silent);
+    let mut stream = TcpStream::connect(holder.address).unwrap();
     let deadline = Instant::now() + Duration::from_millis(300);
     let big = vec![0u8; 8 * 1024 * 1024];
     let started = Instant::now();
@@ -214,29 +232,21 @@ fn a_write_that_cannot_finish_ends_the_exchange() {
         write_within(&mut stream, b"x", past),
         Err(Exchange::Silent)
     ));
-    holder.join().unwrap();
+    holder.thread.join().unwrap();
 }
 
 /// A reply whose bytes are not UTF-8 is named as such, not as a server
 /// that cannot be reached.
 #[test]
 fn a_reply_that_is_not_utf8_is_not_text() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let holder = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf);
-        let mut reply = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
-        reply.push(0xff);
-        let _ = stream.write_all(&reply);
-    });
+    let holder = serving(reply_not_utf8);
+    let url = holder.url.clone();
     let said = status(&server(&url), Output::Text).unwrap_err().to_string();
     assert_eq!(
         said,
         format!("asking {url} for its status: the reply is not UTF-8 text")
     );
-    holder.join().unwrap();
+    holder.thread.join().unwrap();
 }
 
 #[test]
