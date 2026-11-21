@@ -29,7 +29,7 @@ pub(crate) const U256_DIGITS: usize = 78;
 const TEN_TO_19: u128 = 10_000_000_000_000_000_000;
 
 impl U256 {
-    pub const ZERO: U256 = U256 { high: 0, low: 0 };
+    pub(crate) const ZERO: U256 = U256 { high: 0, low: 0 };
 
     /// The whole product of two `u128`s, which no `u128` holds.
     pub fn product(left: u128, right: u128) -> U256 {
@@ -48,7 +48,7 @@ impl U256 {
     }
 
     #[must_use]
-    pub fn wrapping_add(self, other: U256) -> U256 {
+    pub(crate) fn wrapping_add(self, other: U256) -> U256 {
         let (low, carry) = self.low.overflowing_add(other.low);
         U256 {
             high: self
@@ -60,7 +60,7 @@ impl U256 {
     }
 
     #[must_use]
-    pub fn wrapping_sub(self, other: U256) -> U256 {
+    pub(crate) fn wrapping_sub(self, other: U256) -> U256 {
         let (low, borrow) = self.low.overflowing_sub(other.low);
         U256 {
             high: self
