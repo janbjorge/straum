@@ -125,9 +125,9 @@ impl Stream {
             reader,
             commits,
             shared: Arc::clone(&shared),
-            sent: start.0,
-            idle: start.0,
-            reported: start.0,
+            sent: start,
+            idle: start,
+            reported: start,
             last_report: Instant::now(),
         };
         let thread = thread::Builder::new()
@@ -259,13 +259,13 @@ struct StreamThread {
     commits: SyncSender<Result<Commit, Error>>,
     shared: Arc<Shared>,
     /// The LSN of the last commit queued.
-    sent: u64,
+    sent: Lsn,
     /// The server's position at the last keepalive between transactions.
     /// Every commit up to it has been queued.
-    idle: u64,
+    idle: Lsn,
     /// The last position reported. A physical slot moves its restart
     /// point to whatever is reported, back too, so no report goes below.
-    reported: u64,
+    reported: Lsn,
     last_report: Instant,
 }
 
@@ -330,13 +330,7 @@ impl StreamThread {
         };
         let (sight, commits) = replay.pipeline.see(snapshot, at)?;
         *self.shared.sight.lock().map_err(|_| Error::Stopped)? = Some(sight);
-        for commit in commits {
-            self.sent = commit.lsn.0;
-            if !self.deliver(Ok(commit))? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        self.deliver_commits(commits)
     }
 
     /// `false` once the writer is gone.
@@ -350,20 +344,27 @@ impl StreamThread {
                         .collect(),
                     Reader::Physical(replay) => replay.feed(start, bytes)?,
                 };
-                for commit in commits {
-                    self.sent = commit.lsn.0;
-                    if !self.deliver(Ok(commit))? {
-                        return Ok(false);
-                    }
-                }
+                return self.deliver_commits(commits);
             }
             CopyMessage::Keepalive { end, reply } => {
                 if !self.reader.in_transaction() {
-                    self.idle = self.idle.max(end);
+                    self.idle = self.idle.max(Lsn(end));
                 }
                 if reply {
                     self.report()?;
                 }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Queues each commit in order. `false` once the writer is gone or the
+    /// stream is stopping.
+    fn deliver_commits(&mut self, commits: Vec<Commit>) -> Result<bool, Error> {
+        for commit in commits {
+            self.sent = commit.lsn;
+            if !self.deliver(Ok(commit))? {
+                return Ok(false);
             }
         }
         Ok(true)
@@ -410,12 +411,12 @@ impl StreamThread {
     /// it. With every queued commit applied and no transaction open, that is
     /// everything up to the last keepalive.
     fn report(&mut self) -> Result<(), Error> {
-        let applied = self.shared.applied.load(Ordering::Acquire);
+        let applied = Lsn(self.shared.applied.load(Ordering::Acquire));
         // A physical keepalive may name WAL not read yet; the replay
         // knows what it has read.
         let idle = match &self.reader {
             Reader::Logical(_) => self.idle,
-            Reader::Physical(replay) => replay.read(),
+            Reader::Physical(replay) => Lsn(replay.read()),
         };
         let done = if applied >= self.sent && !self.reader.in_transaction() {
             applied.max(idle)
@@ -424,7 +425,7 @@ impl StreamThread {
         };
         self.reported = self.reported.max(done);
         self.connection
-            .send_copy_data(&status_update(self.reported))?;
+            .send_copy_data(&status_update(self.reported.0))?;
         self.last_report = Instant::now();
         Ok(())
     }
@@ -495,9 +496,9 @@ mod tests {
             reader: Reader::Logical(Decoder::new(Vec::new(), 1)),
             commits,
             shared: Arc::clone(&shared),
-            sent: 0,
-            idle: 0,
-            reported: 0,
+            sent: Lsn(0),
+            idle: Lsn(0),
+            reported: Lsn(0),
             last_report: Instant::now(),
         };
         let stream = Stream {
