@@ -381,7 +381,9 @@ fn tasks_of_a_gone_group_read_null(app: &App) {
 fn a_poison_value_names_its_column() {
     let pg = postgres();
     let mut db = Db::new(&pg, "poison", TABLES);
-    db.run("INSERT INTO $S.trips VALUES (1, to_timestamp(1705276800), 'cab', 1, 'NaN', 'ann', 2)");
+    db.run(&format!(
+        "INSERT INTO $S.trips VALUES (1, to_timestamp({START}), 'cab', 1, 'NaN', 'ann', 2)"
+    ));
     let mut writer = db.writer(SPEC);
     let error = writer.step().unwrap_err().to_string();
     assert!(
@@ -502,7 +504,9 @@ fn no_longer_fits(table: &str) -> String {
 fn an_unfit_change_stops_the_writer() {
     let pg = postgres();
     let mut db = Db::new(&pg, "unfit", TABLES);
-    db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
+    db.run(&format!(
+        "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
+    ));
     let mut writer = db.writer(SPEC);
     writer.step().unwrap();
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
@@ -527,7 +531,9 @@ fn an_unfit_change_stops_the_writer() {
     writer = db.writer(SPEC);
     started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
-    db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
+    db.run(&format!(
+        "INSERT INTO $S.logins VALUES (2, to_timestamp({START}), 3)"
+    ));
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
@@ -672,7 +678,9 @@ fn a_changed_column_type_stops_the_writer() {
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
     db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
-    db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
+    db.run(&format!(
+        "INSERT INTO $S.trips VALUES (2, to_timestamp({START}), 'cab', 1, 2.125, 'bo', 3)"
+    ));
     let error = writer.step().unwrap_err().to_string();
     assert_eq!(error, no_longer_fits("trips"));
     writer = db.writer(SPEC);
@@ -683,10 +691,10 @@ fn a_changed_column_type_stops_the_writer() {
 
     // A column Straum reads is gone: Straum stops and the setup check says why.
     db.run("ALTER TABLE $S.trips DROP COLUMN rider");
-    db.run(
+    db.run(&format!(
         "INSERT INTO $S.trips (id, at, kind, zone_id, fare, tip)
-         VALUES (4, to_timestamp(1705276800), 'cab', 1, 1.000, 1)",
-    );
+         VALUES (4, to_timestamp({START}), 'cab', 1, 1.000, 1)"
+    ));
     let error = writer.step().unwrap_err().to_string();
     assert!(error.contains("column rider of"), "{error}");
     writer = db.writer(SPEC);
@@ -702,12 +710,12 @@ fn a_value_left_out_comes_from_the_old_row() {
     let pg = postgres();
     let mut db = Db::new(&pg, "toast", TABLES);
     db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
-    db.run(
+    db.run(&format!(
         "INSERT INTO $S.trips
-         SELECT 1, to_timestamp(1705276800), 'cab', 1, 1.00,
+         SELECT 1, to_timestamp({START}), 'cab', 1, 1.00,
                 string_agg(md5(random()::text), ''), 2
-           FROM generate_series(1, 2000)",
-    );
+           FROM generate_series(1, 2000)"
+    ));
     let mut writer = db.writer(SPEC);
     writer.step().unwrap();
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");

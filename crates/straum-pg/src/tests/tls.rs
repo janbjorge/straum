@@ -21,7 +21,9 @@ fn follows_the_database_over_tls() {
     for id in 0..50 {
         db.run(&rng.trip(id));
     }
-    db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
+    db.run(&format!(
+        "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
+    ));
     let mut writer = db.writer(SPEC);
     started(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
@@ -36,7 +38,9 @@ fn follows_the_database_over_tls() {
     // new TLS connection. The new Relation comes with the next change to
     // the table.
     db.run("ALTER TABLE $S.logins ADD COLUMN note text");
-    db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 1)");
+    db.run(&format!(
+        "INSERT INTO $S.logins VALUES (2, to_timestamp({START}), 1)"
+    ));
     applied_or_started_again(&db, SPEC, &mut writer);
     for id in 60..70 {
         db.run(&rng.trip(id));

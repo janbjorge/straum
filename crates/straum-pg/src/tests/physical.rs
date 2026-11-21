@@ -550,7 +550,9 @@ fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
     });
     // A commit after the DDL's, which comes out once Straum has the
     // layouts the DDL left.
-    let written = db.run_committed("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
+    let written = db.run_committed(&format!(
+        "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
+    ));
     while !applied_through(&writer, written) {
         assert!(Instant::now() < deadline, "never applied {written}");
         applied(&mut writer);
