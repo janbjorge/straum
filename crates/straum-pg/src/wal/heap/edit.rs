@@ -511,10 +511,10 @@ fn updated(data: &[u8], flags: u8, old: &HeapTuple) -> Option<HeapTuple> {
 /// `count` rows, each an `xl_multi_insert_tuple` at a 2-byte boundary
 /// and then its bytes from the null bitmap on.
 fn multi_insert_tuples(data: &[u8], count: usize) -> Option<Vec<HeapTuple>> {
-    let mut at = 0;
+    let mut at: usize = 0;
     let mut tuples = Vec::with_capacity(count);
     for _ in 0..count {
-        at += at % MULTI_INSERT_TUPLE_ALIGNMENT;
+        at = at.next_multiple_of(MULTI_INSERT_TUPLE_ALIGNMENT);
         let header = data.get(at..at + MULTI_INSERT_TUPLE)?;
         let length = usize::from(read_u16(&header[MULTI_INSERT_TUPLE_LENGTH]));
         at += MULTI_INSERT_TUPLE;

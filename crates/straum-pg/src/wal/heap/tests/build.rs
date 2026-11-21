@@ -192,9 +192,8 @@ pub(super) fn multi_insert_main(count: u16, listed: &[SlotNumber]) -> Vec<u8> {
 pub(super) fn multi_insert_data(rows: &[HeapTuple]) -> Vec<u8> {
     let mut data = Vec::new();
     for row in rows {
-        if data.len() % MULTI_INSERT_TUPLE_ALIGNMENT == 1 {
-            data.push(ALIGNMENT_FILLER);
-        }
+        let aligned = data.len().next_multiple_of(MULTI_INSERT_TUPLE_ALIGNMENT);
+        data.resize(aligned, ALIGNMENT_FILLER);
         let mut header = vec![0; MULTI_INSERT_TUPLE];
         let length = u16::try_from(row.body.len()).unwrap();
         header[MULTI_INSERT_TUPLE_LENGTH].copy_from_slice(&length.to_le_bytes());
