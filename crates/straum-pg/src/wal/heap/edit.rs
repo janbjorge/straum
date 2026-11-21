@@ -196,9 +196,17 @@ impl Heap {
         Ok(page)
     }
 
+    /// The page `block` names, to read, or the error `page_mut` gives.
+    fn page_for(&self, lsn: u64, block: &Block) -> Result<&Page, WalError> {
+        let Some(page) = self.pages.get(&page_id(block)) else {
+            return Err(at(lsn, Problem::PageWithoutImage));
+        };
+        Ok(page)
+    }
+
     /// A copy of the row in `slot`; the copy shares the row's bytes.
-    fn row(&mut self, lsn: u64, block: &Block, slot: SlotNumber) -> Result<HeapTuple, WalError> {
-        let Some(tuple) = self.page_mut(lsn, block)?.get(slot) else {
+    fn row(&self, lsn: u64, block: &Block, slot: SlotNumber) -> Result<HeapTuple, WalError> {
+        let Some(tuple) = self.page_for(lsn, block)?.get(slot) else {
             return Err(at(lsn, Problem::MissingRow));
         };
         Ok(tuple.clone())
