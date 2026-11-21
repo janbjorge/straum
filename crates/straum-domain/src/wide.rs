@@ -31,13 +31,6 @@ const TEN_TO_19: u128 = 10_000_000_000_000_000_000;
 impl U256 {
     pub const ZERO: U256 = U256 { high: 0, low: 0 };
 
-    pub const fn from_u128(number: u128) -> U256 {
-        U256 {
-            high: 0,
-            low: number,
-        }
-    }
-
     /// The whole product of two `u128`s, which no `u128` holds.
     pub fn product(left: u128, right: u128) -> U256 {
         let (left_high, left_low) = (left >> 64, left & LOW_64);
@@ -79,7 +72,7 @@ impl U256 {
     }
 
     /// `self * factor` modulo 2^256, and whether it passed 2^256.
-    pub fn overflowing_mul(self, factor: u64) -> (U256, bool) {
+    pub(crate) fn overflowing_mul(self, factor: u64) -> (U256, bool) {
         let low = U256::product(self.low, factor.into());
         let high = U256::product(self.high, factor.into());
         let (top, carried) = high.low.overflowing_add(low.high);
@@ -91,14 +84,14 @@ impl U256 {
     }
 
     /// The number as a `u128`, if it fits.
-    pub fn to_u128(self) -> Option<u128> {
+    pub(crate) fn to_u128(self) -> Option<u128> {
         if self.high == 0 { Some(self.low) } else { None }
     }
 
     /// The quotient and remainder of dividing by `divisor`, which is not 0.
-    pub fn div_rem(self, divisor: u128) -> (U256, u128) {
+    pub(crate) fn div_rem(self, divisor: u128) -> (U256, u128) {
         if self.high == 0 {
-            return (U256::from_u128(self.low / divisor), self.low % divisor);
+            return (U256::from(self.low / divisor), self.low % divisor);
         }
         // Long division a bit at a time: the high half is set only for
         // values near the ends of `bigint`, so speed matters little here.
@@ -123,7 +116,7 @@ impl U256 {
     }
 
     /// The largest whole number whose square is at most `self`.
-    pub fn sqrt(self) -> u128 {
+    pub(crate) fn sqrt(self) -> u128 {
         if self.high == 0 {
             return self.low.isqrt();
         }
@@ -191,7 +184,10 @@ impl U256 {
 
 impl From<u128> for U256 {
     fn from(number: u128) -> U256 {
-        U256::from_u128(number)
+        U256 {
+            high: 0,
+            low: number,
+        }
     }
 }
 
