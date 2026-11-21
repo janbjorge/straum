@@ -226,8 +226,47 @@ pub(super) struct ConditionCheck<'s> {
     /// The values the key may have; copied from the condition, so the
     /// check borrows nothing but the store.
     pub(super) wanted: Wanted,
-    /// Per code of the key.
-    pub(super) memo: Vec<Known>,
+    pub(super) memo: KnownMemo,
+}
+
+/// Whether the condition holds, per code of its key: in a list of every
+/// code when the ask reads as many cells as there are codes, else in a
+/// map of the codes met.
+pub(super) enum KnownMemo {
+    Dense(Vec<Known>),
+    Sparse(FastMap<u32, Known>),
+}
+
+impl KnownMemo {
+    /// A memo of `codes` codes for an ask of `cells` cells.
+    pub(super) fn new(codes: usize, cells: usize) -> KnownMemo {
+        // A list of every code costs per value ever seen: only an ask
+        // that reads as many cells as there are codes pays for one.
+        if codes <= cells {
+            KnownMemo::Dense(vec![Known::Unknown; codes])
+        } else {
+            KnownMemo::Sparse(FastMap::default())
+        }
+    }
+
+    fn get(&self, code: u32) -> Known {
+        match self {
+            KnownMemo::Dense(codes) => codes[code as usize],
+            KnownMemo::Sparse(map) => match map.get(&code) {
+                Some(known) => *known,
+                None => Known::Unknown,
+            },
+        }
+    }
+
+    fn set(&mut self, code: u32, known: Known) {
+        match self {
+            KnownMemo::Dense(codes) => codes[code as usize] = known,
+            KnownMemo::Sparse(map) => {
+                map.insert(code, known);
+            }
+        }
+    }
 }
 
 /// Whether a condition holds for a code, once worked out.
@@ -245,7 +284,7 @@ impl ConditionCheck<'_> {
     pub(super) fn pass(&mut self, rollup: &Rollup, cells: &Cells, groups: &mut [u32]) {
         for (cell, group) in groups.iter_mut().enumerate() {
             let code = self.lookup.code(rollup, cells, cell);
-            let mut known = self.memo[code as usize];
+            let mut known = self.memo.get(code);
             if known == Known::Unknown && *group != 0 {
                 known = self.resolve(rollup, code);
             }
@@ -262,7 +301,7 @@ impl ConditionCheck<'_> {
         row: &JoinRow<'_>,
     ) -> bool {
         let code = self.lookup.code_in(cells, cell, row);
-        let mut known = self.memo[code as usize];
+        let mut known = self.memo.get(code);
         if known == Known::Unknown {
             known = self.resolve(rollup, code);
         }
@@ -276,7 +315,7 @@ impl ConditionCheck<'_> {
         } else {
             Known::Fails
         };
-        self.memo[code as usize] = known;
+        self.memo.set(code, known);
         known
     }
 }

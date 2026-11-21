@@ -16,8 +16,8 @@ use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefIndex, RefKind
 use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, Rows, ViaFrom};
 use super::groups::{Grouping, Groups};
 use super::lookup::{
-    AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, Known, Lookup, Memo, UNKNOWN,
-    Wanted,
+    AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, KnownMemo, Lookup, Memo,
+    UNKNOWN, Wanted,
 };
 use crate::value::{ColumnType, Threshold, Value};
 
@@ -305,7 +305,7 @@ impl Store {
         cells: usize,
     ) -> Vec<ConditionCheck<'s>> {
         // Conditions on one key fold into one check, of the values they
-        // share: each check keeps a memo the size of its key's codes, and
+        // share: each check keeps a memo of its key's codes, and
         // an ask may repeat a condition a thousand times.
         let mut checks: Vec<ConditionCheck<'s>> = Vec::new();
         let mut keys: Vec<&Identifier> = Vec::new();
@@ -318,7 +318,7 @@ impl Store {
             keys.push(&condition.key);
             let lookup = self.lookup(fact, read, &condition.key, cells);
             checks.push(ConditionCheck {
-                memo: vec![Known::Unknown; lookup.bound(read.rollup())],
+                memo: KnownMemo::new(lookup.bound(read.rollup()), cells),
                 lookup,
                 wanted,
             });

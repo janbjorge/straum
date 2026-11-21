@@ -4,8 +4,8 @@
 //! Each test reads the heap through the counting allocator of `main.rs`.
 
 use super::{
-    Datum, HOUR, RefKind, Spec, Store, ZONES, Zones, ask, borough, held, load_zones, peak, spec,
-    spec_of, trip_row,
+    Condition, Datum, HOUR, Literal, RefKind, Spec, Store, ZONES, Zones, ask, borough, held, id,
+    load_zones, peak, spec, spec_of, trip_row,
 };
 
 /// A truncate gives back the codes of the values the view held, not only
@@ -68,6 +68,30 @@ fn an_ask_of_a_dim_value_holds_what_its_cells_name() {
     let many = store_of_ids(100_000);
     let (few, many) = (peak_by_borough(&few, 10), peak_by_borough(&many, 10));
     eprintln!("10 hours by borough: {few} bytes, {many} with 100 times the ids");
+    assert_eq!(few, many, "the memo grows with the ids");
+}
+
+/// The heap an ask over the first `hours`, filtered on one pickup zone,
+/// reaches at its most.
+fn peak_of_one_pickup(store: &Store, hours: i64) -> isize {
+    let mut ask = ask(&[], 0, hours);
+    ask.filter = vec![Condition {
+        key: id("pu"),
+        values: vec![Literal::Int(1)],
+    }];
+    peak(|| drop(store.ask(&ask).unwrap()))
+}
+
+/// A condition is worked out once per code of its key the ask meets, in
+/// a memo of the codes it read, not of every code the key ever had: 100
+/// times the ids cost an ask of a few cells nothing, where a memo of
+/// every id would be a byte an id.
+#[test]
+fn a_filtered_ask_holds_what_its_cells_name() {
+    let few = store_of_ids(1_000);
+    let many = store_of_ids(100_000);
+    let (few, many) = (peak_of_one_pickup(&few, 10), peak_of_one_pickup(&many, 10));
+    eprintln!("10 hours of one pickup: {few} bytes, {many} with 100 times the ids");
     assert_eq!(few, many, "the memo grows with the ids");
 }
 
