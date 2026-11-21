@@ -18,9 +18,8 @@ use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Definition, Start, Window};
 
-use crate::host::Hosts;
 use crate::json::quoted;
-use crate::{AskSyntax, DescribeAskError, answer, ask, status, views};
+use crate::{AskSyntax, DescribeAskError, Served, answer, ask, status, views};
 
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
@@ -113,11 +112,14 @@ impl Format {
 /// The reply to one request.
 pub(crate) async fn handle(
     request: Request<Incoming>,
-    app: Arc<App>,
-    syntax: AskSyntax,
-    definitions: Arc<[Definition]>,
-    hosts: Hosts,
+    served: Arc<Served>,
 ) -> Result<Reply, Infallible> {
+    let Served {
+        app,
+        syntax,
+        definitions,
+        hosts,
+    } = &*served;
     let (parts, body) = request.into_parts();
     // 421, as for a name this server does not serve: the request was not
     // meant for it. 403 would say the client lacks a right it could have.
@@ -130,18 +132,18 @@ pub(crate) async fn handle(
         (&Method::POST, "/ask") => {
             let format = Format::of(accept, Format::Json);
             if is_json(parts.headers.get(CONTENT_TYPE)) {
-                post_ask(body, &app, syntax, format).await
+                post_ask(body, app, *syntax, format).await
             } else {
                 let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
                 format.errors(StatusCode::UNSUPPORTED_MEDIA_TYPE, &[error])
             }
         }
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
-        (&Method::GET, "/readyz") => get_readyz(&app),
-        (&Method::GET, "/status") => get_status(&app, Format::of(accept, Format::Text)),
+        (&Method::GET, "/readyz") => get_readyz(app),
+        (&Method::GET, "/status") => get_status(app, Format::of(accept, Format::Text)),
         (&Method::GET, "/views") => {
             let format = Format::of(accept, Format::Text);
-            let app = Arc::clone(&app);
+            let app = app.clone();
             // The views are read under the store's lock, which a long ask
             // or a writer can hold: the health routes don't queue behind.
             match tokio::task::spawn_blocking(move || get_views(&app, format)).await {
@@ -154,8 +156,8 @@ pub(crate) async fn handle(
         (&Method::GET, path) if path.starts_with(ROWS_PREFIX) => {
             let named = &path[ROWS_PREFIX.len()..];
             match named.strip_suffix(SPEC_SUFFIX) {
-                Some(view) => get_spec(&definitions, view),
-                None => get_rows(&app, syntax.describe, named, parts.uri.query()).await,
+                Some(view) => get_spec(definitions, view),
+                None => get_rows(app, syntax.describe, named, parts.uri.query()).await,
             }
         }
         (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET"),

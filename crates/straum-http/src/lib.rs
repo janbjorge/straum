@@ -104,6 +104,15 @@ pub struct AskSyntax {
     pub describe: DescribeAskError,
 }
 
+/// What every request is answered from: the app, the syntax its asks are
+/// read in, each view's definition, and the hosts it answers to.
+struct Served {
+    app: App,
+    syntax: AskSyntax,
+    definitions: Vec<Definition>,
+    hosts: Hosts,
+}
+
 /// Serves `app` on `listener`, and each view's `definitions`, until
 /// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
@@ -119,8 +128,12 @@ pub async fn serve(
     let hosts = Hosts::of(listener.local_addr()?);
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
-    let app = Arc::new(app);
-    let definitions: Arc<[Definition]> = Arc::from(definitions);
+    let served = Arc::new(Served {
+        app,
+        syntax,
+        definitions,
+        hosts,
+    });
     let graceful = GracefulShutdown::new();
     let mut shutdown = pin!(shutdown);
     loop {
@@ -133,7 +146,7 @@ pub async fn serve(
         match accepted {
             None => break,
             Some(Ok((stream, _))) => {
-                spawn_connection(stream, &app, syntax, &definitions, hosts, &graceful);
+                spawn_connection(stream, &served, &graceful);
             }
             Some(Err(_)) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
@@ -220,30 +233,14 @@ async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {
     .await;
 }
 
-fn spawn_connection(
-    stream: TcpStream,
-    app: &Arc<App>,
-    syntax: AskSyntax,
-    definitions: &Arc<[Definition]>,
-    hosts: Hosts,
-    graceful: &GracefulShutdown,
-) {
+fn spawn_connection(stream: TcpStream, served: &Arc<Served>, graceful: &GracefulShutdown) {
     // Nagle would hold an answer's second write until the client acks
     // the first, which a client that delays acks makes 40 ms.
     stream.set_nodelay(true).ok();
-    let app = Arc::clone(app);
-    let definitions = Arc::clone(definitions);
+    let served = Arc::clone(served);
     // hyper takes the handler as a closure; each request gets its own
-    // handle on the app and the definitions.
-    let service = service_fn(move |request| {
-        routes::handle(
-            request,
-            Arc::clone(&app),
-            syntax,
-            Arc::clone(&definitions),
-            hosts,
-        )
-    });
+    // handle on what is served.
+    let service = service_fn(move |request| routes::handle(request, Arc::clone(&served)));
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
         .serve_connection(TokioIo::new(stream), service);
