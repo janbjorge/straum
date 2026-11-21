@@ -10,7 +10,7 @@ use postgres_protocol::escape::escape_literal;
 
 use super::{Checked, EnumLabel, is_true, shape};
 use crate::error::Error;
-use crate::problem::{Problem, TableNames, TableProblem};
+use crate::problem::{Problem, TableProblem};
 use crate::source::Replication;
 use crate::value::Oid;
 use crate::wire::Connection;
@@ -64,10 +64,7 @@ pub(crate) fn still_followed(
     let mut problems = Vec::new();
     for (table, row) in followed.tables.iter().zip(rows) {
         let [oid, published] = row.try_into().map_err(|_| shape("followed tables"))?;
-        let names = TableNames {
-            name: table.name.clone(),
-            qualified: table.qualified(),
-        };
+        let names = table.names();
         let Some(oid) = oid else {
             problems.push(names.table_problem(TableProblem::Missing));
             continue;
@@ -130,11 +127,7 @@ fn relabelled(
     for table in followed.tables {
         for type_oid in &changed {
             if table.enums.contains(type_oid) {
-                let names = TableNames {
-                    name: table.name.clone(),
-                    qualified: table.qualified(),
-                };
-                problems.push(names.table_problem(TableProblem::Relabelled));
+                problems.push(table.names().table_problem(TableProblem::Relabelled));
                 break;
             }
         }
@@ -244,11 +237,7 @@ fn altered(
         if let (Some(loaded), Some(current)) = (loaded, current)
             && loaded.is_altered_in(current)
         {
-            let names = TableNames {
-                name: table.name.clone(),
-                qualified: table.qualified(),
-            };
-            problems.push(names.table_problem(TableProblem::Altered));
+            problems.push(table.names().table_problem(TableProblem::Altered));
         }
     }
     Ok(())

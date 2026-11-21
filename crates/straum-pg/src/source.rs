@@ -22,7 +22,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
 use crate::physical::{self, Physical};
-use crate::problem::{Problem, TableNames, TableProblem, WaitProblem};
+use crate::problem::{Problem, TableProblem, WaitProblem};
 use crate::stream::{Reader, Stream};
 use crate::unexpected::Unexpected;
 use crate::wal::pipeline::{Pipeline, Sight};
@@ -441,11 +441,7 @@ pub(crate) fn hold_tables(connection: &mut Connection, tables: &Tables) -> Resul
         let oid = table.oid.to_string();
         for row in &rewritten {
             if row.first().and_then(Option::as_deref) == Some(oid.as_str()) {
-                let names = TableNames {
-                    name: table.name.clone(),
-                    qualified: table.qualified(),
-                };
-                problems.push(names.table_problem(TableProblem::Rewritten));
+                problems.push(table.names().table_problem(TableProblem::Rewritten));
             }
         }
     }

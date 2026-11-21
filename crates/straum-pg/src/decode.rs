@@ -13,7 +13,7 @@ use straum_domain::{ColumnType, Datum, FastMap, Identifier};
 use crate::catalog::Checked;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, RelationColumn, Tuple};
-use crate::problem::{ColumnProblem, Problem, TableNames};
+use crate::problem::{ColumnProblem, Problem};
 use crate::unexpected::Unexpected;
 use crate::value::{Oid, read, type_of};
 
@@ -207,10 +207,7 @@ fn position_in(relation: &Relation, column: &Identifier) -> Option<usize> {
 
 fn changed(table: &Checked, column: &Identifier) -> Error {
     Error::Setup(vec![Problem::Column {
-        table: TableNames {
-            name: table.name.clone(),
-            qualified: table.qualified(),
-        },
+        table: table.names(),
         column: column.clone(),
         problem: ColumnProblem::Changed,
     }])

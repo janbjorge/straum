@@ -71,7 +71,15 @@ impl Checked {
 
     /// `schema.table`, unquoted, for messages.
     pub(crate) fn qualified(&self) -> String {
-        format!("{}.{}", self.schema, self.table_name)
+        qualified(&self.schema, &self.table_name)
+    }
+
+    /// How a problem names it.
+    pub(crate) fn names(&self) -> TableNames {
+        TableNames {
+            name: self.name.clone(),
+            qualified: self.qualified(),
+        }
     }
 
     /// `name`, reading `columns` of `public.table`, none an enum.
@@ -102,6 +110,11 @@ fn identifiers(names: &[&str]) -> Vec<Identifier> {
         identifiers.push(Identifier::new(name).unwrap());
     }
     identifiers
+}
+
+/// `schema.table`, unquoted, for messages.
+fn qualified(schema: &Identifier, table: &Identifier) -> String {
+    format!("{schema}.{table}")
 }
 
 /// `"schema"."table"`, quoted for SQL.
@@ -531,7 +544,7 @@ fn check_table(
     let logical = replication == Replication::Logical;
     let names = TableNames {
         name: name.clone(),
-        qualified: format!("{}.{}", table.schema, table.name),
+        qualified: qualified(&table.schema, &table.name),
     };
     let Some(class) = catalog.class(table.schema.as_str(), table.name.as_str()) else {
         problems.push(names.table_problem(TableProblem::Missing));
