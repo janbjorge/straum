@@ -510,6 +510,15 @@ fn holds_the_marker(rows: &[AnswerRow]) -> bool {
     false
 }
 
+/// What the writer says when a change to `table` no longer fits it.
+fn no_longer_fits(table: &str) -> String {
+    format!(
+        "a change no longer fits {table}: \
+         the stream no longer carries what Straum reads of it: \
+         the table was altered or rewritten, or a change came without its old row"
+    )
+}
+
 #[test]
 fn an_unfit_change_stops_the_writer() {
     let pg = postgres();
@@ -524,14 +533,7 @@ fn an_unfit_change_stops_the_writer() {
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY DEFAULT");
     db.run("UPDATE $S.logins SET zone_id = 2");
     let error = writer.step().unwrap_err().to_string();
-    let carries = "the stream no longer carries what Straum reads of it";
-    assert_eq!(
-        error,
-        format!(
-            "a change no longer fits logins: {carries}: \
-         the table was altered or rewritten, or a change came without its old row"
-        )
-    );
+    assert_eq!(error, no_longer_fits("logins"));
     assert_eq!(
         writer.app().ask(&ask("trips", &["trips"], &[])),
         Err(AnswerError::NotReady)
@@ -556,14 +558,7 @@ fn an_unfit_change_stops_the_writer() {
     db.run("ALTER TABLE $S.zones REPLICA IDENTITY DEFAULT");
     db.run("UPDATE $S.zones SET borough = 'Staten Island' WHERE id = 1");
     let error = writer.step().unwrap_err().to_string();
-    let carries = "the stream no longer carries what Straum reads of it";
-    assert_eq!(
-        error,
-        format!(
-            "a change no longer fits zones: {carries}: \
-         the table was altered or rewritten, or a change came without its old row"
-        )
-    );
+    assert_eq!(error, no_longer_fits("zones"));
     writer = db.writer(SPEC);
     let error = writer.step().unwrap_err().to_string();
     assert!(
@@ -700,14 +695,7 @@ fn a_changed_column_type_stops_the_writer() {
     db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
     db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
     let error = writer.step().unwrap_err().to_string();
-    let carries = "the stream no longer carries what Straum reads of it";
-    assert_eq!(
-        error,
-        format!(
-            "a change no longer fits trips: {carries}: \
-         the table was altered or rewritten, or a change came without its old row"
-        )
-    );
+    assert_eq!(error, no_longer_fits("trips"));
     writer = db.writer(SPEC);
     writer.step().unwrap();
     db.run(&Rng::new(2).trip(3));
