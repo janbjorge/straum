@@ -75,7 +75,6 @@ pub(crate) struct Following {
     pub(crate) wal: Wal,
 }
 
-
 /// An ask's answer, and how fresh it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answered {
@@ -198,13 +197,12 @@ impl App {
 impl Following {
     /// As [`Answered::as_of`].
     fn as_of(&self) -> SystemTime {
-        let since = Instant::now().saturating_duration_since(self.lag.caught_up());
+        let since = self.lag.behind(Instant::now());
         // A clock set before 1970 gets the earliest time there is, which is
         // still true.
         (SystemTime::now().checked_sub(since)).unwrap_or(SystemTime::UNIX_EPOCH)
     }
 }
-
 
 /// Why an ask got no answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,7 +292,6 @@ pub(crate) mod tests {
             bounded: None,
         }
     }
-
 
     /// How long a call here may take before it counts as waiting on the
     /// store's lock.
