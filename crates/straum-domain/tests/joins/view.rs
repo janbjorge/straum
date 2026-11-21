@@ -5,13 +5,17 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::{condition, dim, dim_row, id, lit, measure, names, percentile, table};
+use crate::common::{
+    attribute, by_key, condition, dim, dim_row, id, lit, measure, names, percentile, table,
+};
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Fact, Measure, Ref,
-    RefKind, Spec, Store, Via, Width,
+    Aggregate, Ask, AskKey, Attribute, ColumnType, Condition, Datum, Fact, Measure, Ref, RefKind,
+    Spec, Store, Via, Width,
 };
 
 pub const HOUR: i64 = 3_600;
+/// The view's bucket width, [`HOUR`] seconds.
+pub const HOUR_WIDTH: Width = Width { seconds: 3_600 };
 /// 2024-01-01 00:00 UTC.
 pub const START: i64 = 1_704_067_200;
 pub const END: i64 = START + 48 * HOUR;
@@ -85,31 +89,16 @@ pub enum Shape {
     Bound,
 }
 
-fn attribute(name: &str) -> Attribute {
-    Attribute {
-        name: id(name),
-        column: id(name),
-    }
-}
-
 /// Orders by customer and product, joined to customers (and through them
 /// to tiers), to tags of any cardinality, and to promos and blocked
 /// customers which keep no column, each join of the kind given; `filter`
-/// is the view's `WHERE`.
-pub fn spec(kinds: Kinds, filter: Vec<Condition>) -> Spec {
-    spec_with(kinds, filter, Shape::Chained)
-}
-
-/// As [`spec`], in the `shape` given; unless chained, tiers are joined on
-/// the customer id itself, so every ref joins on a fact column.
-pub fn spec_with(kinds: Kinds, filter: Vec<Condition>, shape: Shape) -> Spec {
+/// is the view's `WHERE`. Unless the `shape` is chained, tiers are joined
+/// on the customer id itself, so every ref joins on a fact column.
+pub fn spec(kinds: Kinds, filter: Vec<Condition>, shape: Shape) -> Spec {
     let mut by_keys = Vec::new();
     for key in ["customer", "product"] {
         if keyed(shape, key) {
-            by_keys.push(ByKey::Column {
-                column: id(key),
-                name: id(key),
-            });
+            by_keys.push(by_key(key));
         }
     }
     let orders = Fact {
@@ -118,11 +107,9 @@ pub fn spec_with(kinds: Kinds, filter: Vec<Condition>, shape: Shape) -> Spec {
         table: table("orders"),
         time: straum_domain::Time {
             column: id("at"),
-            width: Width {
-                seconds: u32::try_from(HOUR).unwrap(),
-            },
+            width: HOUR_WIDTH,
             wider: vec![Width {
-                seconds: 24 * u32::try_from(HOUR).unwrap(),
+                seconds: 24 * HOUR_WIDTH.seconds,
             }],
             name: id("bucket"),
         },
@@ -162,26 +149,31 @@ fn refs(kinds: Kinds, shape: Shape) -> Vec<Ref> {
             kinds[CUSTOMERS],
             "customers",
             Via::Fact(id("customer")),
-            vec![attribute("country")],
+            vec![attribute("country", "country")],
         ),
-        join(kinds[TIERS], "tiers", tiers_via, vec![attribute("label")]),
+        join(
+            kinds[TIERS],
+            "tiers",
+            tiers_via,
+            vec![attribute("label", "label")],
+        ),
         join(
             kinds[TAGS],
             "tags",
             Via::Fact(id("product")),
-            vec![attribute("tag")],
+            vec![attribute("tag", "tag")],
         ),
         join(
             kinds[PROMOS],
             "promos",
             Via::Fact(id("product")),
-            vec![attribute("note")],
+            vec![attribute("note", "note")],
         ),
         join(
             kinds[BLOCKED],
             "blocked",
             Via::Fact(id("customer")),
-            vec![attribute("reason")],
+            vec![attribute("reason", "reason")],
         ),
     ]
 }
@@ -278,10 +270,7 @@ pub fn order(at: i64, customer: Datum, product: Datum, quantity: Datum) -> Vec<D
 pub fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
     let mut keys = Vec::with_capacity(by.len());
     for key in by {
-        keys.push(match *key {
-            "bucket" => AskKey::Key(id("bucket")),
-            name => AskKey::Key(id(name)),
-        });
+        keys.push(AskKey::Key(id(key)));
     }
     Ask {
         view: id("orders"),

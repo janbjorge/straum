@@ -7,7 +7,7 @@ use crate::common::{Rng, condition, id, lit, text};
 use crate::reference::reference;
 use crate::view::{
     AT, DIM_NAMES, Dims, FILTERED, HOUR, KEYS, Kinds, Loaded, MEASURES, START, Shape, ask, keyed,
-    load, order, spec_with,
+    load, order, spec,
 };
 use straum_domain::{Ask, AskKey, Datum, Literal, RefKind, Width};
 
@@ -239,7 +239,7 @@ impl Walk {
         } else {
             Vec::new()
         };
-        let spec = spec_with(run.kinds, filter, run.shape);
+        let spec = spec(run.kinds, filter, run.shape);
         Walk {
             seed,
             run,

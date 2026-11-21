@@ -6,7 +6,7 @@ use crate::common::{condition, lit, text};
 use crate::reference::check;
 use crate::view::{
     BLOCKED, Dims, HOUR, KINDS, Kinds, Loaded, MEASURES, PROMOS, Replaced, START, Shape, TAGS, ask,
-    load, order, spec, spec_with,
+    load, order, spec,
 };
 use straum_domain::{AnswerRow, Ask, Condition, Datum, Literal, RefKind, Value};
 
@@ -33,7 +33,7 @@ fn small_dims() -> Dims {
 
 /// A store over [`small_dims`] and the orders given.
 fn small(kinds: Kinds, filter: Vec<Condition>, orders: &[Vec<Datum>]) -> Loaded {
-    load(spec(kinds, filter), small_dims(), orders)
+    load(spec(kinds, filter, Shape::Chained), small_dims(), orders)
 }
 
 /// [`small_dims`] with one row a key: product 1 has the one tag.
@@ -343,7 +343,7 @@ fn null_keys_join_nothing() {
 #[test]
 fn joins_on_by_keys_keep_no_bound_cells() {
     let orders = [order_of(1, 1, 5), order_of(1, 2, 7), order_of(2, 1, 9)];
-    let spec = spec_with(KINDS, vec![], Shape::ByKeys);
+    let spec = spec(KINDS, vec![], Shape::ByKeys);
     let mut loaded = load(spec, one_row_dims(), &orders);
     assert_eq!(loaded.store.cells("orders"), Some(3));
     assert_eq!(loaded.store.bound_cells("orders"), None);
@@ -383,7 +383,7 @@ fn a_max_over_joined_keys_follows_deletes_and_dims() {
         order_of(2, 1, 3),
     ];
     let kinds = [RefKind::Left; 5];
-    let spec = spec_with(kinds, vec![], Shape::ByKeys);
+    let spec = spec(kinds, vec![], Shape::ByKeys);
     let mut loaded = load(spec, one_row_dims(), &orders);
     assert_eq!(loaded.store.bound_cells("orders"), None);
     let ends = ask(&["q_max", "q_min"], &["country"], vec![]);
@@ -426,7 +426,7 @@ fn a_join_off_the_by_keys_keeps_fewer_bound_cells() {
         tags.insert(vec![Datum::Int(product)], vec![vec![text(tag)]]);
     }
     dims.remove("promos");
-    let spec = spec_with(kinds, vec![], Shape::Bound);
+    let spec = spec(kinds, vec![], Shape::Bound);
     let loaded = load(spec, dims, &orders);
     // A cell a product; products 1 and 2 are both red.
     assert_eq!(loaded.store.cells("orders"), Some(3));

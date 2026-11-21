@@ -8,11 +8,12 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::common::{GroupInputs, SPREAD_PLACES, aggregate_value, bucket_key, holds, in_range};
 use crate::view::{
-    AT, BLOCKED, CUSTOMER, CUSTOMERS, Dims, EVEN, HOUR, Loaded, PRODUCT, QUANTITY, TAGS, TIERS,
+    AT, BLOCKED, CUSTOMER, CUSTOMERS, Dims, EVEN, HOUR_WIDTH, Loaded, PRODUCT, QUANTITY, TAGS,
+    TIERS,
 };
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Condition, Datum, Fact, Identifier,
-    Measure, RefKind, Spec, Value, Via, Width,
+    Measure, RefKind, Spec, Value, Via,
 };
 
 /// One way an order's joins resolve: per ref, the dim row matched.
@@ -113,12 +114,9 @@ fn passes(row: &[Datum], joined: &JoinRow, filter: &[Condition]) -> bool {
 fn group_key(ask: &Ask, row: &[Datum], joined: &JoinRow, at: i64) -> Vec<Datum> {
     let mut key = Vec::with_capacity(ask.keys.len());
     for ask_key in &ask.keys {
-        let hour = Width {
-            seconds: u32::try_from(HOUR).unwrap(),
-        };
         key.push(match ask_key {
             AskKey::Key(name) if name.as_str() != "bucket" => value(row, joined, name),
-            bucket => bucket_key(bucket, hour, at),
+            bucket => bucket_key(bucket, HOUR_WIDTH, at),
         });
     }
     key
