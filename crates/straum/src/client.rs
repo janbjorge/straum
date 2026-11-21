@@ -309,11 +309,7 @@ pub(crate) struct RowWindow {
 
 /// A view's rows, as `GET /views/NAME` writes them.
 pub(crate) fn rows(server: &Server, view: &str, window: RowWindow) -> Result<Timed, ClientError> {
-    // The name goes into the request line as it is.
-    if Identifier::new(view).is_none() {
-        return Err(ClientError::NotAViewName(view.to_owned()));
-    }
-    let mut path = format!("/views/{view}");
+    let mut path = view_path(view)?;
     let mut separator = '?';
     if let Some(start) = window.start {
         let _ = write!(path, "{separator}start={start}");
@@ -328,12 +324,18 @@ pub(crate) fn rows(server: &Server, view: &str, window: RowWindow) -> Result<Tim
 
 /// A view's `CREATE VIEW` statement, as `GET /views/NAME/spec` writes it.
 pub(crate) fn spec(server: &Server, view: &str) -> Result<String, ClientError> {
+    let path = format!("{}/spec", view_path(view)?);
+    let request = Request::get(Wanted::Spec, path, Output::Text);
+    fetch(server, &request)
+}
+
+/// `/views/NAME`, for a name that is a view's.
+fn view_path(view: &str) -> Result<String, ClientError> {
     // The name goes into the request line as it is.
     if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
     }
-    let request = Request::get(Wanted::Spec, format!("/views/{view}/spec"), Output::Text);
-    fetch(server, &request)
+    Ok(format!("/views/{view}"))
 }
 
 /// Sends an ask and returns its answer, as a table or as JSON.
