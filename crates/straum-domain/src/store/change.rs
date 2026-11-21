@@ -10,15 +10,11 @@ use crate::value::{ColumnType, Datum};
 use super::bound::{Bound, KeyedCell, Overlay, cell_holds};
 use super::{DimIndex, FactIndex, IN_SPEC, POURED, Store};
 
-/// How a dim row changes its projection: [`Projection::add`] or
-/// [`Projection::remove`].
-type DimChange = fn(&mut Projection, &[Datum]) -> Result<(), RowError>;
-
-/// One dim row and how it changes the projection.
+/// One dim row and whether it goes into the projection or out of it.
 struct DimRowChange<'r> {
     // Borrows the row of the change at hand.
     row: &'r [Datum],
-    change: DimChange,
+    direction: Direction,
 }
 
 impl Store {
@@ -95,7 +91,7 @@ impl Store {
         let dim = self.dim_index(table).expect(IN_SPEC);
         let change = DimRowChange {
             row,
-            change: Projection::add,
+            direction: Direction::Add,
         };
         self.change_dim(dim, &[change])
     }
@@ -116,7 +112,7 @@ impl Store {
         let dim = self.dim_index(table).expect(IN_SPEC);
         let change = DimRowChange {
             row,
-            change: Projection::remove,
+            direction: Direction::Remove,
         };
         self.change_dim(dim, &[change])
     }
@@ -155,11 +151,11 @@ impl Store {
                 let changes = [
                     DimRowChange {
                         row: old,
-                        change: Projection::remove,
+                        direction: Direction::Remove,
                     },
                     DimRowChange {
                         row: new,
-                        change: Projection::add,
+                        direction: Direction::Add,
                     },
                 ];
                 return self.change_dim(dim, &changes);
@@ -210,7 +206,11 @@ impl Store {
         // the projection has moved on.
         let old = self.projections[dim.0].matches(key).to_vec();
         for change in changes {
-            (change.change)(&mut self.projections[dim.0], change.row)?;
+            let projection = &mut self.projections[dim.0];
+            match change.direction {
+                Direction::Add => projection.add(change.row)?,
+                Direction::Remove => projection.remove(change.row)?,
+            }
         }
         if old == self.projections[dim.0].matches(key) {
             return Ok(());
