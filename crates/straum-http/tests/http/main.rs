@@ -74,12 +74,12 @@ fn serve_with(app: App, read_ask: ReadAsk) -> Server {
 }
 
 fn serve_in(app: App, syntax: AskSyntax) -> Server {
-    serve_on(app, syntax, "127.0.0.1:0")
+    serve_on(app, syntax, "127.0.0.1:0", Vec::new())
 }
 
-/// Serves `app` on `listen`, reached through loopback whatever address
-/// it listens on.
-fn serve_on(app: App, syntax: AskSyntax, listen: &str) -> Server {
+/// Serves `app` on `listen`, answering `named_hosts` if any, reached
+/// through loopback whatever address it listens on.
+fn serve_on(app: App, syntax: AskSyntax, listen: &str, named_hosts: Vec<String>) -> Server {
     let listener = TcpListener::bind(listen).unwrap();
     let port = listener.local_addr().unwrap().port();
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -95,6 +95,7 @@ fn serve_on(app: App, syntax: AskSyntax, listen: &str) -> Server {
             app,
             syntax,
             definitions,
+            named_hosts,
             async {
                 stopped.await.ok();
             },

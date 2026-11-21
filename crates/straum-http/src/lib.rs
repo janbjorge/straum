@@ -61,6 +61,7 @@ use straum_app::App;
 use straum_domain::{Ask, AskError, Definition, Literal};
 
 use crate::host::Hosts;
+pub use crate::host::is_host;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -118,16 +119,18 @@ struct Served {
 /// Serves `app` on `listener`, and each view's `definitions`, until
 /// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
-/// time enabled.
+/// time enabled. With `named_hosts`, each `NAME[:PORT]`, a request whose
+/// `Host` is none of them gets 421; with none, the address decides.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 pub async fn serve(
     listener: net::TcpListener,
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
+    named_hosts: Vec<String>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    let hosts = Hosts::of(listener.local_addr()?);
+    let hosts = Hosts::of(listener.local_addr()?, named_hosts);
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
     let served = Arc::new(Served {
@@ -166,12 +169,14 @@ pub async fn serve(
 /// or SIGINT, then finishes the requests in flight, for at most
 /// [`DRAIN_DEADLINE`], and returns; a second signal returns at once. The
 /// caller stays synchronous, since only this crate runs tokio (ADR-0002).
-/// `stopping` runs when the first signal arrives.
+/// `stopping` runs when the first signal arrives; `named_hosts` as for
+/// [`serve`].
 pub fn serve_until_signal(
     listener: net::TcpListener,
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
+    named_hosts: Vec<String>,
     stopping: fn(),
 ) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -197,7 +202,7 @@ pub fn serve_until_signal(
         either_signal(&mut terminate_again, &mut interrupt_again).await;
         either_signal(&mut terminate_again, &mut interrupt_again).await;
     };
-    let served = serve(listener, app, syntax, definitions, shutdown);
+    let served = serve(listener, app, syntax, definitions, named_hosts, shutdown);
     let result = runtime.block_on(until_done_or(served, second));
     // An answer still running on a blocking thread is not waited for.
     runtime.shutdown_background();

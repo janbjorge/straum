@@ -18,6 +18,9 @@ services:
       - /run/secrets/dsn
       - --listen
       - 0.0.0.0:8080
+      # Only these Host names, so a page rebound to 127.0.0.1 can't ask.
+      - --allow-hosts
+      - localhost:8080,127.0.0.1:8080
     secrets:
       - dsn
     volumes:

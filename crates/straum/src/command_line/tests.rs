@@ -57,6 +57,7 @@ fn reads_run_and_plan() {
         Ok(Command::Run(Run {
             spec: "s.sql".into(),
             listen: LISTEN.into(),
+            allow_hosts: Vec::new(),
             replication: Replication::Logical,
             publication: PUBLICATION.into(),
             dsn_file: None,
@@ -74,6 +75,7 @@ fn reads_run_and_plan() {
         Ok(Command::Run(Run {
             spec: "s".into(),
             listen: "127.0.0.1:9".into(),
+            allow_hosts: Vec::new(),
             replication: Replication::Physical {
                 max_page_memory: 256 << 20,
             },
@@ -107,6 +109,40 @@ fn max_memory_is_off_unless_set() {
     assert_eq!(
         usage("plan s --wal logical --max-memory 1Gi"),
         "straum plan takes no \"--max-memory\""
+    );
+}
+
+/// `--allow-hosts` takes `Host` names split at commas, and is empty
+/// unless set.
+#[test]
+fn allow_hosts_takes_names_with_their_port() {
+    let cases = [
+        ("run s --wal logical", vec![]),
+        (
+            "run s --wal logical --allow-hosts localhost:8080,127.0.0.1:8080",
+            vec!["localhost:8080", "127.0.0.1:8080"],
+        ),
+        ("run s --wal logical --allow-hosts=straum", vec!["straum"]),
+    ];
+    for (line, expected) in cases {
+        let Ok(Command::Run(run)) = command_of(&args(line)) else {
+            panic!("{line}");
+        };
+        assert_eq!(run.allow_hosts, expected, "{line}");
+    }
+    for value in ["localhost:8080,", ",x", "localhost:x", ":8080"] {
+        assert_eq!(
+            usage(&format!("run s --wal logical --allow-hosts={value}")),
+            format!(
+                "--allow-hosts takes names with their port, as \
+                 localhost:8080,127.0.0.1:8080, not {value:?}"
+            ),
+            "{value}"
+        );
+    }
+    assert_eq!(
+        usage("plan s --wal logical --allow-hosts localhost:8080"),
+        "straum plan takes no \"--allow-hosts\""
     );
 }
 

@@ -433,6 +433,7 @@ fn run(
     Run {
         spec,
         listen,
+        allow_hosts,
         replication,
         publication,
         dsn_file,
@@ -488,8 +489,15 @@ fn run(
         read: read_ask,
         describe: straum_notation::describe_ask_error,
     };
-    straum_http::serve_until_signal(listener, app, syntax, definitions, say_stopping)
-        .map_err(Failure::Serving)?;
+    straum_http::serve_until_signal(
+        listener,
+        app,
+        syntax,
+        definitions,
+        allow_hosts,
+        say_stopping,
+    )
+    .map_err(Failure::Serving)?;
     log("stopped");
     // Leaving closes the replication connections, and PostgreSQL drops
     // their temporary slots.

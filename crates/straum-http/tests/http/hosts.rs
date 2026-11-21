@@ -1,12 +1,12 @@
 //! The `Host` a request may name, end to end. On loopback Straum answers
 //! only the names of this machine with its port, so a page whose name was
 //! rebound to 127.0.0.1 can't read it; on any other address it answers
-//! every name.
+//! every name, unless told which names to answer.
 
 use std::net::SocketAddr;
 
 use crate::fake::writer;
-use crate::{Reply, notation, send, serve, serve_on};
+use crate::{Reply, Server, notation, send, serve, serve_on};
 
 /// `GET /livez` naming `host`, which `{port}` in it becomes the port.
 fn livez(address: SocketAddr, host: &str) -> Reply {
@@ -65,7 +65,7 @@ fn on_loopback_any_other_name_is_misdirected() {
 
 #[test]
 fn off_loopback_every_name_is_answered() {
-    let server = serve_on(writer().app().clone(), notation(), "0.0.0.0:0");
+    let server = serve_on(writer().app().clone(), notation(), "0.0.0.0:0", Vec::new());
     for host in ["evil.example:{port}", "straum", "10.0.0.7:8080"] {
         let reply = livez(server.address, host);
         assert_eq!(
@@ -73,6 +73,46 @@ fn off_loopback_every_name_is_answered() {
             (200, "live\n"),
             "{host}"
         );
+    }
+    server.stop();
+}
+
+/// Straum on every address, told to answer `localhost:8080` and
+/// `straum`, whatever port it listens on: behind a published port the
+/// `Host` names the port published, not Straum's.
+fn serve_named() -> Server {
+    let named = vec!["localhost:8080".to_owned(), "straum".to_owned()];
+    serve_on(writer().app().clone(), notation(), "0.0.0.0:0", named)
+}
+
+#[test]
+fn told_names_are_answered_off_loopback() {
+    let server = serve_named();
+    for host in ["localhost:8080", "LOCALHOST:8080", "straum", "straum:80"] {
+        let reply = livez(server.address, host);
+        assert_eq!(
+            (reply.status, reply.body.as_str()),
+            (200, "live\n"),
+            "{host}"
+        );
+    }
+    server.stop();
+}
+
+#[test]
+fn any_name_not_told_is_misdirected_off_loopback() {
+    let server = serve_named();
+    for host in [
+        "evil.example:8080",
+        "127.0.0.1:8080",
+        "localhost:{port}",
+        "localhost",
+        "straum:8080",
+    ] {
+        let reply = livez(server.address, host);
+        let name = host.replace("{port}", &server.address.port().to_string());
+        let body = format!("Straum answers Host localhost:8080 or straum, not {name:?}\n");
+        assert_eq!((reply.status, reply.body), (421, body), "{host}");
     }
     server.stop();
 }

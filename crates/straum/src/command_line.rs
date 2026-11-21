@@ -36,6 +36,7 @@ const OUT_FLAG: &str = "--out";
 // Each flag is written once, here: a misspelt name at a read site
 // fails to compile, where a literal would silently take the default.
 const LISTEN_FLAG: &str = "--listen";
+const ALLOW_HOSTS_FLAG: &str = "--allow-hosts";
 const WAL_FLAG: &str = "--wal";
 const PUBLICATION_FLAG: &str = "--publication";
 const ROLE_FLAG: &str = "--role";
@@ -70,6 +71,8 @@ const TIMEOUT_TAKES: &str = "whole seconds from 1 to 86400";
 /// What `--max-retained-wal` and `--max-memory` take, as their errors
 /// say.
 const BYTE_LIMIT_TAKES: &str = "bytes above 0, as 4294967296 or 4Gi";
+/// What `--allow-hosts` takes, as its error says.
+const ALLOW_HOSTS_TAKES: &str = "names with their port, as localhost:8080,127.0.0.1:8080";
 
 /// A command's name, the first word after `straum`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +131,7 @@ impl Name {
         match self {
             Name::Run => &[
                 LISTEN_FLAG,
+                ALLOW_HOSTS_FLAG,
                 WAL_FLAG,
                 PUBLICATION_FLAG,
                 DSN_FILE_FLAG,
@@ -191,6 +195,9 @@ pub(crate) enum Command {
 pub(crate) struct Run {
     pub(crate) spec: String,
     pub(crate) listen: String,
+    /// The `Host` names, each `NAME[:PORT]`, that requests may name;
+    /// empty, the default, leaves it to the listen address.
+    pub(crate) allow_hosts: Vec<String>,
     pub(crate) replication: Replication,
     pub(crate) publication: String,
     pub(crate) dsn_file: Option<String>,
@@ -567,6 +574,9 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     Ok(Command::Run(Run {
         spec,
         listen: flags.text_or(LISTEN_FLAG, LISTEN),
+        allow_hosts: flags
+            .parsed_if_given(ALLOW_HOSTS_FLAG, host_names, ALLOW_HOSTS_TAKES)?
+            .unwrap_or_default(),
         replication,
         publication: flags.publication(),
         dsn_file: flags.text(DSN_FILE_FLAG),
@@ -805,6 +815,19 @@ fn timeout(text: &str) -> Option<Duration> {
         return None;
     }
     Some(timeout)
+}
+
+/// `--allow-hosts`, split at its commas, or `None` if any part is no
+/// `Host` name.
+fn host_names(text: &str) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    for name in text.split(',') {
+        if !straum_http::is_host(name) {
+            return None;
+        }
+        names.push(name.to_owned());
+    }
+    Some(names)
 }
 
 fn count(text: &str) -> Option<usize> {

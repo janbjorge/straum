@@ -56,12 +56,26 @@ that authenticates and ends TLS, or a service mesh.
 ([errors](asks.md#errors)), so a page on another site can't make a
 visitor's browser run asks.
 
-On loopback Straum answers only a request whose `Host` is
-`localhost`, `127.0.0.1`, `[::1]` or the address it listens on, with
-its port; any other gets 421 Misdirected Request on every endpoint, so
-DNS rebinding can't read a Straum on a laptop. On any other address,
-`0.0.0.0` too, every `Host` is answered, since whoever reaches the
-port can ask by any name that points at it.
+A page can still reach a Straum on a laptop by DNS rebinding: its own
+name, rebound to 127.0.0.1, makes the visitor's browser read and ask
+as if the page were Straum's own. The `Host` the browser sends then
+names the page's site, so Straum checks it. A request whose `Host` it
+doesn't answer gets 421 Misdirected Request on every endpoint.
+
+- With `--allow-hosts`, Straum answers only the names it lists, each
+  with the port the client writes: `localhost:8080,127.0.0.1:8080`.
+- Without it, on loopback, Straum answers `localhost`, `127.0.0.1`,
+  `[::1]` or the address it listens on, with its port.
+- Without it, on any other address, `0.0.0.0` too, every `Host` is
+  answered, since whoever reaches the port can ask by any name that
+  points at it.
+
+A port published or forwarded to the host's loopback is reached as
+loopback is, but Straum listens on `0.0.0.0` behind it and can't tell.
+So give `--allow-hosts` there, as the Compose files do for their
+`127.0.0.1:8080:8080`. The chart gives none, since pods reach Straum
+by whatever name the Service has; while a `kubectl port-forward` to it
+runs, a rebound page in a browser on that machine can read it.
 
 ## States
 
@@ -184,7 +198,8 @@ runs a release's image, named by `STRAUM_VERSION`. The spec is
 secret so it never sits in the environment. User 65532, the image's
 user, must be able to read both. Straum listens on `0.0.0.0:8080`
 inside the container, and Compose publishes it on the host's
-`127.0.0.1:8080` only ([Who can ask](#who-can-ask)). Compose restarts
+`127.0.0.1:8080` only, so `--allow-hosts` names `localhost:8080` and
+`127.0.0.1:8080` ([Who can ask](#who-can-ask)). Compose restarts
 it unless it was stopped. The health check is `straum status`; a
 failed check does not restart it, since a load or a lag must not.
 
