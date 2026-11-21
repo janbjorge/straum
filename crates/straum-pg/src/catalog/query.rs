@@ -7,7 +7,10 @@
 use postgres_protocol::escape::escape_literal;
 use straum_domain::Spec;
 
-use super::{Catalog, Class, Column, EnumLabel, OLDEST_VERSION_NUM, ReadScope, is_true, shape};
+use super::{
+    Catalog, Class, Column, EnumLabel, OLDEST_VERSION_NUM, PublicationState, ReadScope, is_true,
+    shape,
+};
 use crate::error::Error;
 use crate::wire::Connection;
 
@@ -104,9 +107,19 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_compression: wal_compression.unwrap_or_default(),
         server_encoding: server_encoding.unwrap_or_default(),
         in_recovery: in_recovery.as_deref().is_some_and(is_true),
-        publication: published.as_deref().map(is_true),
+        publication: publication_state(published.as_deref()),
         ..Catalog::default()
     })
+}
+
+/// What `pg_publication` says of the publication: no row when it doesn't
+/// exist, else whether it publishes all four actions.
+fn publication_state(all_actions: Option<&str>) -> PublicationState {
+    match all_actions {
+        None => PublicationState::Missing,
+        Some(text) if is_true(text) => PublicationState::AllActions,
+        Some(_) => PublicationState::SomeActions,
+    }
 }
 
 /// The spec's tables as `pg_class` has them, with no columns yet.

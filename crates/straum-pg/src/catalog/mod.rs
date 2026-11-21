@@ -180,12 +180,21 @@ pub(crate) struct Catalog {
     /// `pg_is_in_recovery()`: a standby, which has no current WAL
     /// position to read.
     pub(crate) in_recovery: bool,
-    /// Whether the publication publishes inserts, updates, deletes and
-    /// truncates; `None` when it doesn't exist.
-    pub(crate) publication: Option<bool>,
+    pub(crate) publication: PublicationState,
     pub(crate) classes: Vec<Class>,
     /// Every label of every enum type a spec column has, in type order.
     pub(crate) labels: Vec<EnumLabel>,
+}
+
+/// Whether the publication exists, and which changes it publishes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PublicationState {
+    #[default]
+    Missing,
+    /// It leaves out inserts, updates, deletes or truncates.
+    SomeActions,
+    /// It publishes inserts, updates, deletes and truncates.
+    AllActions,
 }
 
 /// One value of an enum type, as `pg_enum` lists it.
@@ -414,13 +423,17 @@ fn check_server(
     let publication = publication.to_owned();
     match replication {
         Replication::Logical => match catalog.publication {
-            None => problems.push(Problem::Server(ServerProblem::NoPublication {
-                publication,
-            })),
-            Some(false) => problems.push(Problem::Server(ServerProblem::PublicationActions {
-                publication,
-            })),
-            Some(true) => {}
+            PublicationState::Missing => {
+                problems.push(Problem::Server(ServerProblem::NoPublication {
+                    publication,
+                }));
+            }
+            PublicationState::SomeActions => {
+                problems.push(Problem::Server(ServerProblem::PublicationActions {
+                    publication,
+                }));
+            }
+            PublicationState::AllActions => {}
         },
         Replication::Physical { .. } => {
             if catalog.server_version >= NEWER_THAN_PHYSICAL_VERSION_NUM {
@@ -561,8 +574,8 @@ fn check_table(
         // The physical WAL holds every table, every column.
         _ if !logical => None,
         (Some(published), _) => Some(published.as_slice()),
-        (None, None) => None,
-        (None, Some(_)) => {
+        (None, PublicationState::Missing) => None,
+        (None, PublicationState::SomeActions | PublicationState::AllActions) => {
             problems.push(names.table_problem(TableProblem::NotPublished {
                 publication: publication.to_owned(),
             }));

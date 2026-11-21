@@ -706,7 +706,7 @@ fn checks_what_the_physical_wal_needs() {
     let mut catalog = catalog::query(&mut db.connection, &spec, "needs").unwrap();
     assert_eq!(
         (catalog.full_page_writes.as_str(), catalog.publication),
-        ("on", None)
+        ("on", catalog::PublicationState::Missing)
     );
     assert_eq!(physical_problems(&spec, &catalog), None);
     let logical = catalog::check(&spec, &catalog, "needs", Replication::Logical).unwrap_err();
