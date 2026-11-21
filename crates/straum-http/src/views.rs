@@ -23,7 +23,7 @@ use straum_app::{Held, HeldDim, HeldView, ViewKey};
 use straum_domain::{ColumnType, Identifier};
 
 use crate::json::quoted;
-use crate::time::rfc3339;
+use crate::time::{rfc3339, rfc3339_or_unix_second};
 
 /// Every view, then every dim, as blocks of plain text.
 pub(crate) fn write(held: &Held) -> String {
@@ -100,7 +100,12 @@ fn view_text(view: &HeldView) -> String {
     if let Some(range) = &view.range {
         // The end is the first second past the last bucket, which is what
         // an ask's `<time> < $n` takes.
-        let _ = write!(holds, ", {} to {}", time(range.start), time(range.end));
+        let _ = write!(
+            holds,
+            ", {} to {}",
+            rfc3339_or_unix_second(range.start),
+            rfc3339_or_unix_second(range.end)
+        );
     }
     let time = &view.time;
     let mut keys = vec![format!("{} {}", time.name, column_type(time.column_type))];
@@ -161,14 +166,6 @@ fn column_type(column_type: ColumnType) -> String {
     match column_type {
         ColumnType::Numeric { scale } => format!("numeric scale {scale}"),
         other => type_name(other).to_owned(),
-    }
-}
-
-fn time(seconds: i64) -> String {
-    match rfc3339(seconds) {
-        Some(text) => text,
-        // PostgreSQL keeps times past jiff's year 9999.
-        None => format!("Unix second {seconds}"),
     }
 }
 
@@ -358,19 +355,5 @@ dim public.zones
             assert!(!view.contains(&dropped.to_owned()), "{dropped}");
             assert!(!names(&top).contains(&dropped.to_owned()), "{dropped}");
         }
-    }
-
-    #[test]
-    fn a_time_jiff_cannot_write_is_its_unix_second() {
-        let held = Held {
-            views: vec![HeldView {
-                range: Some(0..i64::MAX),
-                ..trips()
-            }],
-            dims: Vec::new(),
-        };
-        let text = write(&held);
-        let range = "1970-01-01T00:00:00Z to Unix second 9223372036854775807\n";
-        assert!(text.contains(range), "{text}");
     }
 }

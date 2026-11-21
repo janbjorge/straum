@@ -44,7 +44,7 @@ use straum_domain::{
 };
 
 use crate::json::quoted;
-use crate::time::{rfc3339, rfc3339_of};
+use crate::time::{rfc3339_of, rfc3339_or_unix_second};
 
 /// How far an ask's range stays clear of the earliest time jiff can write,
 /// so a time key that starts up to a month before it still prints.
@@ -186,7 +186,7 @@ fn push_key_json(out: &mut String, column: &AnswerColumn, key: &Datum, last_time
     match key {
         &Datum::Int(seconds) if column.is_time => {
             if last_time.seconds != Some(seconds) {
-                last_time.quoted = quoted(&time_key(seconds));
+                last_time.quoted = quoted(&rfc3339_or_unix_second(seconds));
                 last_time.seconds = Some(seconds);
             }
             out.push_str(&last_time.quoted);
@@ -202,15 +202,6 @@ fn as_of_text(as_of: SystemTime) -> String {
         // Past jiff's year 9999, which only a broken clock gives; 1970 is
         // still a true lower bound.
         None => "1970-01-01T00:00:00Z".to_owned(),
-    }
-}
-
-fn time_key(seconds: i64) -> String {
-    match rfc3339(seconds) {
-        Some(text) => text,
-        // PostgreSQL keeps times past jiff's year 9999, and an open end
-        // reads them.
-        None => format!("Unix second {seconds}"),
     }
 }
 
@@ -278,7 +269,7 @@ fn row_cells(columns: &[AnswerColumn], row: &AnswerRow) -> Vec<Cell> {
 
 fn key_cell(column: &AnswerColumn, key: &Datum) -> Cell {
     let text = match key {
-        &Datum::Int(seconds) if column.is_time => time_key(seconds),
+        &Datum::Int(seconds) if column.is_time => rfc3339_or_unix_second(seconds),
         Datum::Text(text) => escaped(text),
         Datum::Date(days) => format_date(*days),
         Datum::Uuid(bytes) => format_uuid(bytes),
@@ -805,12 +796,6 @@ bucket | shared | fare
         let errors = range_errors(&ask_over(None, Some(i64::MAX)));
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().starts_with("range end "));
-    }
-
-    #[test]
-    fn a_time_key_past_jiff_is_written_in_unix_seconds() {
-        assert_eq!(time_key(0), "1970-01-01T00:00:00Z");
-        assert_eq!(time_key(i64::MAX), "Unix second 9223372036854775807");
     }
 
     fn written(sum: i128, count: u64, scale: u32) -> String {
