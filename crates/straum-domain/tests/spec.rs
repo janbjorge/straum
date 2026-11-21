@@ -56,6 +56,20 @@ fn fact() -> Fact {
     }
 }
 
+/// The spec of the dim and the view, which checks.
+fn spec() -> Spec {
+    Spec::new(vec![dim()], vec![fact()]).unwrap()
+}
+
+/// The text of each error of a spec of `dims` and `facts`.
+fn shown(dims: Vec<Dim>, facts: Vec<Fact>) -> Vec<String> {
+    let mut texts = Vec::new();
+    for error in Spec::new(dims, facts).unwrap_err() {
+        texts.push(error.to_string());
+    }
+    texts
+}
+
 #[test]
 fn what_each_measure_reads() {
     let cases = [
@@ -103,7 +117,7 @@ fn valid() {
 /// ref has no value of its own, and reads only what it declares.
 #[test]
 fn names_resolve_to_by_keys_and_attributes() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     let view = spec.fact("t").unwrap();
     assert_eq!(view.resolve(&id("a")), Some(Key::ByKey(&view.by_keys[0])));
     assert_eq!(
@@ -197,10 +211,8 @@ fn buckets_widen_by_whole_multiples() {
         Width { seconds: 86_400 },
         Width { seconds: 86_400 },
     ];
-    let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
-    let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
-        shown,
+        refused(view),
         [
             "view t: bucket of 90 minutes is not a wider multiple of 1 hour",
             "view t: bucket of 1 day is not a wider multiple of 1 day",
@@ -297,10 +309,10 @@ fn every_error_is_reported_and_displayed() {
     keyless.name = id("w");
     keyless.key = vec![];
 
-    let errors = Spec::new(vec![twice, keyless], vec![bad_view(), bad_joins()]).unwrap_err();
-    let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    let dims = vec![twice, keyless];
+    let facts = vec![bad_view(), bad_joins()];
     assert_eq!(
-        shown,
+        shown(dims.clone(), facts.clone()),
         [
             "z declared twice: views and dims share one namespace, and a dim goes by its \
              table's name without the schema",
@@ -327,6 +339,7 @@ fn every_error_is_reported_and_displayed() {
             "view u: no measures",
         ]
     );
+    let errors = Spec::new(dims, facts).unwrap_err();
     assert!(matches!(
         errors[7],
         SpecError::Join {
@@ -381,10 +394,10 @@ fn a_ref_name_used_twice_is_refused() {
     let mut view = fact();
     let again = view.refs[0].clone();
     view.refs.push(again);
-    let shown: Vec<String> = (Spec::new(vec![dim()], vec![view]).unwrap_err().iter())
-        .map(ToString::to_string)
-        .collect();
-    assert_eq!(shown, ["t: r declared twice", "t: name declared twice"]);
+    assert_eq!(
+        refused(view),
+        ["t: r declared twice", "t: name declared twice"]
+    );
 }
 
 /// A semi join that reads nothing, a join through a column the dim
@@ -410,8 +423,7 @@ fn chained() -> Fact {
 
 /// The errors of a spec of the dim and `view`.
 fn refused(view: Fact) -> Vec<String> {
-    let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
-    errors.iter().map(ToString::to_string).collect()
+    shown(vec![dim()], vec![view])
 }
 
 /// [`chained`], its second ref joined through `column` of join `through`.
@@ -528,7 +540,7 @@ fn ask() -> Ask {
 
 #[test]
 fn an_ask_by_every_key_form_checks() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     assert_eq!(spec.check_ask(&ask()).unwrap().name, id("t"));
 }
 
@@ -574,6 +586,7 @@ fn rows_at_a_kept_width_on_its_edges_check() {
 
 #[test]
 fn rows_at_a_width_not_kept_or_the_narrowest_width_are_refused() {
+    let only_hours = spec();
     let spec = days_and_weeks();
     let two_days = rows_of(2 * DAY, 0, 2 * DAY_START);
     assert_eq!(
@@ -613,7 +626,6 @@ fn rows_at_a_width_not_kept_or_the_narrowest_width_are_refused() {
         }]
     );
     // A view that keeps no wider width keeps none to ask by.
-    let only_hours = Spec::new(vec![dim()], vec![fact()]).unwrap();
     assert_eq!(
         only_hours
             .check_ask(&rows_of(DAY, 0, DAY_START))
@@ -672,7 +684,7 @@ fn rows_wider_than_a_bound_s_bucket_are_refused() {
 
 #[test]
 fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     let unheld = Ask {
         measures: vec![id("n"), id("tips"), id("n")],
         keys: vec![
@@ -714,7 +726,7 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
 
 #[test]
 fn a_key_selected_without_group_by_says_to_group_by_it() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     let ungrouped = Ask {
         measures: vec![id("n"), id("name"), id("tips")],
         keys: vec![AskKey::Key(id("a"))],
@@ -734,7 +746,7 @@ fn a_key_selected_without_group_by_says_to_group_by_it() {
 
 #[test]
 fn an_unknown_name_offers_the_one_near_it_else_every_name() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     let slipped = Ask {
         view: id("tt"),
         ..ask()
@@ -764,7 +776,7 @@ fn an_unknown_name_offers_the_one_near_it_else_every_name() {
 
 #[test]
 fn an_ask_of_a_bad_shape_is_rejected() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     let unknown = Ask {
         view: id("nope"),
         ..ask()
@@ -828,7 +840,7 @@ fn an_ask_of_a_bad_shape_is_rejected() {
 
 #[test]
 fn an_open_end_needs_no_bound_and_the_other_is_still_checked() {
-    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let spec = spec();
     for (from, to) in [(None, None), (Some(3_600), None), (None, Some(3_600))] {
         let open = Ask { from, to, ..ask() };
         assert!(spec.check_ask(&open).is_ok(), "{from:?}..{to:?}");
