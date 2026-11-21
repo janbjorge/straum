@@ -11,7 +11,7 @@ use std::fmt;
 
 use crate::aggregate::Aggregate;
 use crate::identifier::Identifier;
-use crate::spec_error::{JoinError, SpecError};
+use crate::spec_error::{JoinError, SpecError, ViaColumn};
 use crate::width::Width;
 
 /// Seconds per day. The narrowest width divides it, so its buckets lie
@@ -593,7 +593,7 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
     let mut seen = HashSet::new();
     for via in &join.via {
         if !seen.insert(via) {
-            let column = via_name(via, &fact.refs);
+            let column = ViaColumn::new(via, &fact.refs);
             errors.push(join_error(fact, join, JoinError::ViaReused { column }));
         }
         let Via::Attribute { through, column } = via else {
@@ -610,7 +610,7 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
             errors.push(join_error(fact, join, error));
         } else if !carried_before(fact, position, dims, *through, column) {
             let error = JoinError::ChainColumn {
-                column: via_name(via, &fact.refs),
+                column: ViaColumn::new(via, &fact.refs),
             };
             errors.push(join_error(fact, join, error));
         }
@@ -765,20 +765,6 @@ fn check_filter(
                 measure: measure.cloned(),
                 key: condition.key.clone(),
             });
-        }
-    }
-}
-
-/// A via column as a message names it: the fact's, or `ref.column`.
-fn via_name(via: &Via, refs: &[Ref]) -> String {
-    match via {
-        Via::Fact(column) => column.to_string(),
-        Via::Attribute { through, column } => {
-            let through = match refs.get(*through) {
-                Some(join) => join.alias.as_str(),
-                None => "?",
-            };
-            format!("{through}.{column}")
         }
     }
 }

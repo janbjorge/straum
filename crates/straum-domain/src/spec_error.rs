@@ -6,7 +6,7 @@
 use std::fmt;
 
 use crate::identifier::Identifier;
-use crate::spec::RefKind;
+use crate::spec::{Ref, RefKind, Via};
 use crate::width::Width;
 
 /// One thing wrong with a spec. `Spec::new` reports every one it finds.
@@ -63,7 +63,7 @@ pub enum SpecError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinError {
     /// The join is on one column twice.
-    ViaReused { column: String },
+    ViaReused { column: ViaColumn },
     /// The join is on another number of columns than its dim's key has.
     KeyLength {
         via: usize,
@@ -78,7 +78,7 @@ pub enum JoinError {
     ReadsColumns { kind: RefKind },
     /// The join goes through a dim column that no join before it carries,
     /// named `ref.column` as a via column is.
-    ChainColumn { column: String },
+    ChainColumn { column: ViaColumn },
     /// The join reads a column its dim has not.
     UnknownAttribute {
         attribute: Identifier,
@@ -89,6 +89,51 @@ pub enum JoinError {
     ReadsKey { column: Identifier },
     /// The join goes through a semi or anti join, which keeps no row.
     ThroughExists { through: Identifier, kind: RefKind },
+}
+
+/// A column a join is on, as an error names it: the fact's, or
+/// `join.column` for a column a join before it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViaColumn {
+    Fact(Identifier),
+    /// `join` is `None` when the via points past the view's joins; the
+    /// text then names the join `?`.
+    Joined {
+        join: Option<Identifier>,
+        column: Identifier,
+    },
+}
+
+impl ViaColumn {
+    /// The via column `via` of a join among `refs`, as an error names it.
+    pub(crate) fn new(via: &Via, refs: &[Ref]) -> ViaColumn {
+        match via {
+            Via::Fact(column) => ViaColumn::Fact(column.clone()),
+            Via::Attribute { through, column } => {
+                let join = match refs.get(*through) {
+                    Some(join) => Some(join.alias.clone()),
+                    None => None,
+                };
+                ViaColumn::Joined {
+                    join,
+                    column: column.clone(),
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Display for ViaColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ViaColumn::Fact(column) => write!(f, "{column}"),
+            ViaColumn::Joined {
+                join: Some(join),
+                column,
+            } => write!(f, "{join}.{column}"),
+            ViaColumn::Joined { join: None, column } => write!(f, "?.{column}"),
+        }
+    }
 }
 
 impl fmt::Display for SpecError {
