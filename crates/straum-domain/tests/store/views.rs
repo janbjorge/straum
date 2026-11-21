@@ -151,8 +151,6 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
             filter: vec![condition("pay", vec![Literal::Int(1)])],
             ..measure("card_tip_p90", percentile(90, 2, "tip"))
         },
-        // Beside the fare's sum and the distance's average, so they share
-        // one state; the tip's on its own.
         // Beside the tip's min, max and percentiles, so it reads their
         // counts; the distance's on its own.
         measure("tip_mode", Aggregate::Mode(id("tip"))),
@@ -173,6 +171,8 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
             filter: vec![condition("pay", vec![Literal::Int(1)])],
             ..measure("card_distinct_tip", Aggregate::AvgDistinct(id("tip")))
         },
+        // Beside the fare's sum and the distance's average, so they share
+        // one state; the tip's on its own.
         measure("fare_var", Aggregate::VarSamp(id("fare"))),
         measure("tip_var_pop", Aggregate::VarPop(id("tip"))),
         measure("distance_sd", Aggregate::StddevSamp(id("dist"))),
