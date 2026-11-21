@@ -3,7 +3,6 @@
 //! `pageinspect` sees on each page, and the values a `SELECT` reads.
 
 use std::fmt::Write as _;
-use std::time::Instant;
 
 use straum_app::Lsn;
 use straum_domain::{ColumnType, Datum};
@@ -39,19 +38,9 @@ fn reads_the_wal_pg_waldump_reads() {
         db.run("CHECKPOINT");
         write_records_of_every_kind(&mut db);
     }
-    let last = db.insert_lsn();
-    db.run("SELECT pg_switch_wal()");
     let mut read = Vec::new();
-    let deadline = Instant::now() + LONG;
-    loop {
-        assert!(Instant::now() < deadline, "no switch record past {last}");
-        let Some(record) = physical.next_record().unwrap() else {
-            continue;
-        };
-        read.push(dumped(&record));
-        if record.is_switch() && record.lsn >= last.0 {
-            break;
-        }
+    for record in &records_to_switch(&mut db, &mut physical).records {
+        read.push(dumped(record));
     }
     let switch = read.last().unwrap().lsn;
     let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
@@ -271,20 +260,11 @@ struct Followed {
 /// far, and how many changes to its rows that was.
 fn follow_to_now(db: &mut Db, physical: &mut Physical, relation: RelationFile) -> Followed {
     let mut heap = Heap::new([relation].into(), physical.major());
-    let last = db.insert_lsn();
-    db.run("SELECT pg_switch_wal()");
-    let deadline = Instant::now() + LONG;
     let mut changes = 0;
-    loop {
-        assert!(Instant::now() < deadline, "no switch record past {last}");
-        let Some(record) = physical.next_record().unwrap() else {
-            continue;
-        };
-        changes += heap.apply(&record).unwrap().len();
-        if record.is_switch() && record.lsn >= last.0 {
-            return Followed { heap, changes };
-        }
+    for record in &records_to_switch(db, physical).records {
+        changes += heap.apply(record).unwrap().len();
     }
+    Followed { heap, changes }
 }
 
 /// Rows of every type `$S.v` holds, ids `from` to `to`.

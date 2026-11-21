@@ -6,7 +6,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use super::support::*;
 use crate::physical::Physical;
@@ -43,18 +42,8 @@ fn capture_heap_fixture() {
         }
     }
     let TableFile { relation, .. } = relation_file(&mut db, "t");
-    let last = db.insert_lsn();
-    db.run("SELECT pg_switch_wal()");
     let mut records = Vec::new();
-    let deadline = Instant::now() + LONG;
-    loop {
-        assert!(Instant::now() < deadline, "no switch record past {last}");
-        let Some(record) = physical.next_record().unwrap() else {
-            continue;
-        };
-        if record.is_switch() && record.lsn >= last.0 {
-            break;
-        }
+    for record in &records_to_switch(&mut db, &mut physical).records {
         let mut ours = false;
         for block in &record.blocks {
             ours = ours || block.file == relation;

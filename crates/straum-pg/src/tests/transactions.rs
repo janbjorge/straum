@@ -7,9 +7,9 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use straum_app::{Commit, Drift, Lsn};
+use straum_app::{Commit, Drift};
 use straum_domain::{ColumnType, Datum};
 
 use super::decoding::Pipeline;
@@ -18,6 +18,7 @@ use super::support::*;
 use crate::physical::Physical;
 use crate::source::parse_lsn;
 use crate::value::{self};
+use crate::wal::Record;
 use crate::wal::heap::{Heap, HeapChange};
 use crate::wal::transactions::{Committed, Consistency, TransactionSnapshot, Transactions};
 use crate::wal::xact::{self, Event};
@@ -47,9 +48,9 @@ fn reads_the_endings_pg_waldump_reads() {
     db.run("ALTER TABLE $S.t ADD note text DEFAULT 'x'");
     db.run("CREATE INDEX ON $S.t (id)");
     db.run("ANALYZE $S.t");
-    let last = db.insert_lsn();
-    db.run("SELECT pg_switch_wal()");
-    let ours = endings_read_before(&mut physical, last);
+    let read = records_to_switch(&mut db, &mut physical);
+    let ours = endings_before(&read, physical.major());
+    let last = read.last;
     let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
     let arguments = [
         "-s".to_owned(),
@@ -71,28 +72,21 @@ fn reads_the_endings_pg_waldump_reads() {
     assert_every_way_of_ending(&ours);
 }
 
-/// The endings the physical stream reads up to the switch record past
-/// `last`, of those before `last`.
-fn endings_read_before(physical: &mut Physical, last: Lsn) -> Vec<Ending> {
+/// The endings among the records of `read`, a server at `major` wrote,
+/// of those before where WAL stood at the switch.
+fn endings_before(read: &ReadToSwitch, major: u32) -> Vec<Ending> {
     let mut endings = Vec::new();
-    let deadline = Instant::now() + LONG;
-    loop {
-        assert!(Instant::now() < deadline, "no switch record past {last}");
-        let Some(record) = physical.next_record().unwrap() else {
-            continue;
-        };
-        if let Some(event) = xact::event(&record, physical.major()).unwrap()
-            && record.lsn < last.0
+    for record in &read.records {
+        if let Some(event) = xact::event(record, major).unwrap()
+            && record.lsn < read.last.0
         {
             endings.push(Ending {
                 lsn: record.lsn,
                 text: described_event(&event),
             });
         }
-        if record.is_switch() && record.lsn >= last.0 {
-            return endings;
-        }
     }
+    endings
 }
 
 /// Commits, aborts and `RUNNING_XACTS`, one transaction with 100
@@ -420,9 +414,7 @@ fn lines_the_load_up_with_the_stream() {
     }
     let unseen_before = unseen_in(&before, &snapshot);
     checkpoint_then_stop(&mut db, &stop, writers);
-    let last = db.insert_lsn();
-    db.run("SELECT pg_switch_wal()");
-    let unseen_after = unseen_through(&mut reader, &snapshot, last);
+    let unseen_after = unseen_through_now(&mut db, &mut reader, &snapshot);
     let total: i64 = db.rows("SELECT count(*) FROM $S.trips")[0][0]
         .as_deref()
         .unwrap()
@@ -517,19 +509,21 @@ impl WalReader {
                 record: None,
             };
         };
-        let mut changes = self.heap.apply(&record).unwrap();
-        self.transactions.hold(record.xid, record.lsn, &mut changes);
-        let committed = match xact::event(&record, self.stream.major()).unwrap() {
-            Some(event) => self
-                .transactions
-                .event(event, record.lsn, record.next())
-                .unwrap(),
-            None => None,
-        };
         Advanced {
-            committed,
+            committed: self.apply(&record),
             record: Some(record),
         }
+    }
+
+    /// Applies `record` to the pages and the held transactions, and gives
+    /// the transaction it commits whole, if it does.
+    fn apply(&mut self, record: &Record) -> Option<Committed> {
+        let mut changes = self.heap.apply(record).unwrap();
+        self.transactions.hold(record.xid, record.lsn, &mut changes);
+        let event = xact::event(record, self.stream.major()).unwrap()?;
+        self.transactions
+            .event(event, record.lsn, record.next())
+            .unwrap()
     }
 }
 
@@ -555,30 +549,18 @@ fn unseen_in(committed: &[Committed], snapshot: &TransactionSnapshot) -> Unseen 
     unseen
 }
 
-/// Reads to the switch record at or past `last`, counting the commits
-/// `snapshot` doesn't see.
-fn unseen_through(reader: &mut WalReader, snapshot: &TransactionSnapshot, last: Lsn) -> Unseen {
-    let mut unseen = Unseen {
-        rows: 0,
-        commits: 0,
-    };
-    let deadline = Instant::now() + LONG;
-    loop {
-        assert!(Instant::now() < deadline, "no switch record past {last}");
-        let Advanced { committed, record } = reader.advance();
-        if let Some(committed) = committed
-            && !snapshot.sees(committed.xid)
-        {
-            unseen.rows += net_rows(&committed);
-            unseen.commits += 1;
-        }
-        if let Some(record) = record
-            && record.is_switch()
-            && record.lsn >= last.0
-        {
-            return unseen;
-        }
+/// Reads all WAL written so far, counting the commits `snapshot` doesn't
+/// see.
+fn unseen_through_now(
+    db: &mut Db,
+    reader: &mut WalReader,
+    snapshot: &TransactionSnapshot,
+) -> Unseen {
+    let mut committed = Vec::new();
+    for record in &records_to_switch(db, &mut reader.stream).records {
+        committed.extend(reader.apply(record));
     }
+    unseen_in(&committed, snapshot)
 }
 
 /// A writer thread inserting and deleting trips in `db` until `stop`,

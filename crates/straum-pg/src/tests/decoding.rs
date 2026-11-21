@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use straum_app::{Commit, Lsn, Source, Step};
 use straum_domain::Spec;
@@ -625,23 +625,14 @@ impl Pipeline {
 
     /// The commits of all WAL written so far.
     pub(super) fn through_now(&mut self, db: &mut Db, stream: &mut Physical) -> Vec<Commit> {
-        let last = db.insert_lsn();
-        db.run("SELECT pg_switch_wal()");
         let mut commits = Vec::new();
-        let deadline = Instant::now() + LONG;
-        loop {
-            assert!(Instant::now() < deadline, "no switch record past {last}");
-            let Some(record) = stream.next_record().unwrap() else {
-                continue;
-            };
-            commits.extend(self.record(&record));
-            if record.is_switch() && record.lsn >= last.0 {
-                assert_eq!(
-                    self.inner.consistency(),
-                    crate::wal::transactions::Consistency::Consistent
-                );
-                return commits;
-            }
+        for record in &records_to_switch(db, stream).records {
+            commits.extend(self.record(record));
         }
+        assert_eq!(
+            self.inner.consistency(),
+            crate::wal::transactions::Consistency::Consistent
+        );
+        commits
     }
 }
