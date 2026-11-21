@@ -18,7 +18,7 @@
 
 use std::fmt;
 
-use straum_domain::Literal;
+use straum_domain::{Literal, MAX_SCALE};
 
 use crate::json::{Json, JsonError};
 
@@ -157,11 +157,6 @@ fn literal(index: ParameterIndex, value: &Json) -> Result<Literal, BodyError> {
     }
 }
 
-/// The most digits after the point a number may have: what `numeric`'s
-/// scale at 38 digits of precision allows. Printing one past it, as an
-/// error does, wrote every zero of `1e-100000000`.
-const MAX_SCALE: u32 = 38;
-
 /// A JSON number as a decimal, exactly: the digits as written, the point
 /// moved by the exponent, trailing zeros after it dropped. `None` past
 /// what an `i128` holds, or past [`MAX_SCALE`] digits after the point.
@@ -176,6 +171,8 @@ fn exact(number: &str) -> Option<Literal> {
     let scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
     if scale >= 0 {
         let scale = u32::try_from(scale).ok()?;
+        // Printing a scale past it, as an error does, wrote every zero of
+        // `1e-100000000`.
         if scale > MAX_SCALE {
             return None;
         }
