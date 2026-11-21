@@ -31,12 +31,11 @@ use straum_domain::{
 };
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
-use crate::ask_error::comparison_text;
 use super::{
-    NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, byte_offset, line,
-    statements,
-    without_leading_zeros,
+    NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, byte_offset,
+    line, statements, without_leading_zeros,
 };
+use crate::ask_error::comparison_text;
 
 const MEASURE_CONDITION: &str =
     "HAVING condition, write a measure, = <> < <= > or >=, and $n, joined by AND,";

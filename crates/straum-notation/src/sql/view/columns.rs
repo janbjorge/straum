@@ -70,7 +70,6 @@ pub(super) enum Unreadable {
     },
 }
 
-
 /// `(column IS NULL)` or `(column IS NOT NULL)`, as written.
 // Borrows the column from the tree, which outlives the walk.
 struct NullTestOf<'tree> {
@@ -150,13 +149,7 @@ impl Walker {
 
     /// A column is one spelling throughout a view: with `::text` or
     /// without, as its type decides.
-    fn same_spelling(
-        &mut self,
-        scope: &Scope,
-        expression: &sql::Expr,
-        column: &Via,
-        cast: Cast,
-    ) {
+    fn same_spelling(&mut self, scope: &Scope, expression: &sql::Expr, column: &Via, cast: Cast) {
         for other in &scope.keys {
             if other.column == *column && other.cast != cast {
                 self.error(
@@ -418,12 +411,7 @@ impl Walker {
 
 /// Adds a key item to the view's keys: a fact column or its null-ness to
 /// the rollup keys, a dim column to its ref's reads.
-fn record_key(
-    selected: &mut SelectedKeys,
-    name: &Identifier,
-    column: &Via,
-    form: KeyForm,
-) {
+fn record_key(selected: &mut SelectedKeys, name: &Identifier, column: &Via, form: KeyForm) {
     match column {
         Via::Fact(fact_column) => {
             let by_key = match form {
