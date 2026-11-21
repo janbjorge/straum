@@ -366,7 +366,7 @@ fn write_column(
             let fix = match fix {
                 ColumnFix::DropText => ", not an enum; drop the ::text".to_owned(),
                 ColumnFix::WriteText => format!(", an enum; write {column}::text"),
-                ColumnFix::Needs(purpose) => format!("; {}", purpose.needs()),
+                ColumnFix::Needs(purpose) => format!("; {}", needs(*purpose)),
                 ColumnFix::Padded => "; PostgreSQL compares it without its trailing spaces, \
                                       and Straum can't: make it text or varchar"
                     .to_owned(),
@@ -388,6 +388,23 @@ fn write_column(
             formatter,
             "{name}: column {column} of {qualified} was dropped or changed type"
         ),
+    }
+}
+
+/// What to change about a column of the wrong type for `purpose`, after
+/// what the column is.
+fn needs(purpose: Purpose) -> &'static str {
+    match purpose {
+        Purpose::Time => "Straum needs timestamptz or timestamp there",
+        Purpose::Number => "Straum needs an integer type or numeric(p, s) with p at most 18 there",
+        Purpose::Key => {
+            "Straum needs an integer type, numeric(p, s), boolean, text, date or uuid there"
+        }
+        Purpose::Boolean => "Straum needs boolean there",
+        Purpose::Nullness => {
+            "Straum needs a type it reads there: an integer type, numeric(p, s), \
+             boolean, text, timestamptz, timestamp, date or uuid"
+        }
     }
 }
 

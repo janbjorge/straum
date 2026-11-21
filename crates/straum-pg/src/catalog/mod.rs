@@ -304,26 +304,6 @@ impl Purpose {
             Purpose::Nullness => true,
         }
     }
-
-    /// What to change, after what the column is.
-    pub(crate) fn needs(self) -> String {
-        match self {
-            Purpose::Time => "Straum needs timestamptz or timestamp there".into(),
-            Purpose::Number => {
-                "Straum needs an integer type or numeric(p, s) with p at most 18 there".into()
-            }
-            Purpose::Key => {
-                "Straum needs an integer type, numeric(p, s), boolean, text, date or uuid there"
-                    .into()
-            }
-            Purpose::Boolean => "Straum needs boolean there".into(),
-            Purpose::Nullness => {
-                "Straum needs a type it reads there: an integer type, numeric(p, s), \
-                               boolean, text, timestamptz, timestamp, date or uuid"
-                    .into()
-            }
-        }
-    }
 }
 
 /// Checks the catalog against the spec and returns every problem found,
