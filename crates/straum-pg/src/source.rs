@@ -16,7 +16,7 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
-use crate::catalog::{self, Checked, ColumnVersions, EnumLabel, Followed, Tables};
+use crate::catalog::{self, Checked, ColumnVersions, Followed, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
@@ -92,11 +92,7 @@ pub struct Postgres {
     slot: String,
     /// The spec's tables as the last [`Source::open`] checked them, which
     /// each reading of the WAL checks are still those tables.
-    followed: Vec<Checked>,
-    /// The labels of their enums, as loaded.
-    labels: Vec<EnumLabel>,
-    /// The versions of the columns read, as loaded, on the logical stream.
-    versions: Vec<ColumnVersions>,
+    followed: Followed,
     /// Reads the server's WAL, since the stream's connection is busy
     /// streaming. Connects again after an error.
     plain: Option<Connection>,
@@ -149,9 +145,7 @@ impl Postgres {
             }),
             state: State::Closed,
             slot: String::new(),
-            followed: Vec::new(),
-            labels: Vec::new(),
-            versions: Vec::new(),
+            followed: Followed::default(),
             plain: None,
         }
     }
@@ -566,9 +560,11 @@ impl Source for Postgres {
         };
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
-        self.followed = followed(&snapshot.tables);
-        self.labels.clone_from(&snapshot.tables.labels);
-        self.versions.clone_from(&snapshot.versions);
+        self.followed = Followed {
+            tables: followed(&snapshot.tables),
+            labels: snapshot.tables.labels.clone(),
+            versions: snapshot.versions.clone(),
+        };
         self.state = State::Loading(Box::new(snapshot));
         Ok(at)
     }
@@ -619,15 +615,14 @@ impl Postgres {
     /// still the ones loaded and published; its connection goes after a
     /// failure.
     fn read_wal_once(&mut self) -> Result<Wal, Error> {
-        let followed = Followed {
-            tables: &self.followed,
-            labels: &self.labels,
-            versions: &self.versions,
-            publication: &self.publication,
-            replication: self.replication,
-        };
         let wal = match plain(&mut self.plain, &self.dsn) {
-            Ok(connection) => read_wal_and_check(connection, &self.slot, &followed),
+            Ok(connection) => read_wal_and_check(
+                connection,
+                &self.slot,
+                &self.followed,
+                &self.publication,
+                self.replication,
+            ),
             Err(error) => Err(error),
         };
         if wal.is_err() {
@@ -681,10 +676,12 @@ fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), Error> {
 fn read_wal_and_check(
     connection: &mut Connection,
     slot: &str,
-    followed: &Followed<'_>,
+    followed: &Followed,
+    publication: &str,
+    replication: Replication,
 ) -> Result<Wal, Error> {
     let wal = read_wal(connection, slot)?;
-    catalog::still_followed(connection, followed)?;
+    catalog::still_followed(connection, followed, publication, replication)?;
     Ok(wal)
 }
 

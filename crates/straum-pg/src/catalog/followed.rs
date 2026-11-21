@@ -15,16 +15,16 @@ use crate::source::Replication;
 use crate::value::Oid;
 use crate::wire::Connection;
 
-/// The spec's tables a stream follows, and how.
-pub(crate) struct Followed<'a> {
-    pub(crate) tables: &'a [Checked],
+/// The spec's tables a stream follows, as loaded.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Followed {
+    /// The facts, then the dims.
+    pub(crate) tables: Vec<Checked>,
     /// The labels of their enums, as loaded.
-    pub(crate) labels: &'a [EnumLabel],
+    pub(crate) labels: Vec<EnumLabel>,
     /// The versions of the columns read, as loaded; none on the physical
     /// stream, which reads a rewrite in the WAL.
-    pub(crate) versions: &'a [ColumnVersions],
-    pub(crate) publication: &'a str,
-    pub(crate) replication: Replication,
+    pub(crate) versions: Vec<ColumnVersions>,
 }
 
 /// Fails once a table the stream follows is gone from under its name,
@@ -34,7 +34,9 @@ pub(crate) struct Followed<'a> {
 /// old one. The setup check of the next start says what is wrong.
 pub(crate) fn still_followed(
     connection: &mut Connection,
-    followed: &Followed<'_>,
+    followed: &Followed,
+    publication: &str,
+    replication: Replication,
 ) -> Result<(), Error> {
     if followed.tables.is_empty() {
         return Ok(());
@@ -56,7 +58,7 @@ pub(crate) fn still_followed(
                   ON p.pubname = {} AND p.schemaname = t.schema AND p.tablename = t.name
           ORDER BY t.at",
         values.join(", "),
-        escape_literal(followed.publication)
+        escape_literal(publication)
     ))?;
     if rows.len() != followed.tables.len() {
         return Err(shape("followed tables"));
@@ -72,12 +74,12 @@ pub(crate) fn still_followed(
         let oid: Oid = oid.parse().map_err(|_| shape("followed tables"))?;
         let problem = match oid {
             oid if oid == table.oid => {
-                let logical = followed.replication == Replication::Logical;
+                let logical = replication == Replication::Logical;
                 if !logical || published.as_deref().is_some_and(is_true) {
                     continue;
                 }
                 TableProblem::NotPublished {
-                    publication: followed.publication.to_owned(),
+                    publication: publication.to_owned(),
                 }
             }
             _ => TableProblem::Replaced,
@@ -96,14 +98,14 @@ pub(crate) fn still_followed(
 /// another, or gone. A label added is no problem: no row loaded has it.
 fn relabelled(
     connection: &mut Connection,
-    followed: &Followed<'_>,
+    followed: &Followed,
     problems: &mut Vec<Problem>,
 ) -> Result<(), Error> {
     if followed.labels.is_empty() {
         return Ok(());
     }
     let mut oids = Vec::new();
-    for label in followed.labels {
+    for label in &followed.labels {
         oids.push(label.oid.to_string());
     }
     let rows = connection.rows(&format!(
@@ -119,12 +121,12 @@ fn relabelled(
         now.insert(oid, label);
     }
     let mut changed = Vec::new();
-    for label in followed.labels {
+    for label in &followed.labels {
         if now.get(&label.oid) != Some(&label.label) && !changed.contains(&label.type_oid) {
             changed.push(label.type_oid);
         }
     }
-    for table in followed.tables {
+    for table in &followed.tables {
         for type_oid in &changed {
             if table.enums.contains(type_oid) {
                 problems.push(table.names().table_problem(TableProblem::Relabelled));
@@ -214,16 +216,16 @@ pub(crate) fn column_versions(
 /// A table gone or replaced has its own problem already.
 fn altered(
     connection: &mut Connection,
-    followed: &Followed<'_>,
+    followed: &Followed,
     problems: &mut Vec<Problem>,
 ) -> Result<(), Error> {
     if followed.versions.is_empty() {
         return Ok(());
     }
-    let now = column_versions(connection, followed.tables)?;
-    for table in followed.tables {
+    let now = column_versions(connection, &followed.tables)?;
+    for table in &followed.tables {
         let mut loaded = None;
-        for versions in followed.versions {
+        for versions in &followed.versions {
             if versions.oid == table.oid {
                 loaded = Some(versions);
             }
