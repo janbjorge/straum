@@ -1,6 +1,8 @@
 //! Helpers the test binaries share: builders for spec pieces, the SQL
-//! rules a reference needs (`=`, `percentile_disc`, `mode`, the variances and an
-//! ask's range), and a seeded random number source.
+//! rules a reference needs (`=`, each aggregate over a group's values, a
+//! bucket's start and an ask's range), and a seeded random number source.
+//! Each reference reads its own columns into a [`GroupInputs`], and
+//! [`aggregate_value`] answers a measure from it.
 
 // Every test binary compiles this module and uses only some of it.
 // `#[expect(dead_code)]` would fail in a binary that uses all of it,
@@ -8,8 +10,8 @@
 #![allow(dead_code)]
 
 use straum_domain::{
-    Aggregate, Ask, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal, Measure,
-    Table, Value,
+    Aggregate, Ask, AskKey, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal,
+    Measure, Table, Value, Width,
 };
 
 /// Whether a row at `at` is in the ask's range, as PostgreSQL reads
@@ -24,6 +26,77 @@ pub fn in_range(ask: &Ask, at: i64) -> bool {
         None => true,
     };
     after_start && before_end
+}
+
+/// The start of the bucket a bucket key names for a row at `at`: the
+/// view's own `width` for its bucket, the width asked for a wider one.
+pub fn bucket_key(key: &AskKey, width: Width, at: i64) -> Datum {
+    let width = match key {
+        AskKey::WiderBucket { width, .. } => *width,
+        AskKey::Key(_) => width,
+    };
+    Datum::Int(width.bucket_start(at).unwrap())
+}
+
+/// What a reference reads of one group for one measure: the rows that
+/// pass the measure's filter, and the values of its input among them.
+pub struct GroupInputs {
+    /// Rows in the group.
+    pub rows: usize,
+    /// The input's integers, one per row that has one.
+    pub ints: Vec<i128>,
+    /// The input's booleans, one per row that has one.
+    pub bools: Vec<bool>,
+    /// Rows whose input is not null, of any type.
+    pub not_null: usize,
+    /// Distinct values of the input that are not null, of any type.
+    pub distinct: usize,
+}
+
+/// A measure over one group, as SQL works it out from the group's inputs.
+pub fn aggregate_value(aggregate: &Aggregate, group: GroupInputs) -> Value {
+    match aggregate {
+        Aggregate::Count => Value::Int(group.rows as i128),
+        Aggregate::CountNotNull(_) => Value::Int(group.not_null as i128),
+        Aggregate::CountDistinct(_) => Value::Int(group.distinct as i128),
+        Aggregate::Sum(_) => sum(&group.ints),
+        Aggregate::Avg(_) => average(&group.ints),
+        Aggregate::Min(_) => int_or_null(group.ints.into_iter().min()),
+        Aggregate::Max(_) => int_or_null(group.ints.into_iter().max()),
+        Aggregate::BoolAnd(_) => bool_or_null(group.bools.into_iter().min()),
+        Aggregate::BoolOr(_) => bool_or_null(group.bools.into_iter().max()),
+        Aggregate::PercentileDisc { fraction, .. } => percentile_disc(group.ints, *fraction),
+        Aggregate::Mode(_) => mode(group.ints),
+        Aggregate::SumDistinct(_) => distinct(&group.ints, Distinct::Sum),
+        Aggregate::AvgDistinct(_) => distinct(&group.ints, Distinct::Avg),
+        Aggregate::VarSamp(_)
+        | Aggregate::VarPop(_)
+        | Aggregate::StddevSamp(_)
+        | Aggregate::StddevPop(_) => spread(aggregate, &group.ints),
+    }
+}
+
+/// `sum(c)`: null for no value.
+fn sum(values: &[i128]) -> Value {
+    if values.is_empty() {
+        return Value::Null;
+    }
+    let mut total = 0;
+    for value in values {
+        total += value;
+    }
+    Value::Int(total)
+}
+
+/// `avg(c)`, as its sum and count: null for no value.
+fn average(values: &[i128]) -> Value {
+    let Value::Int(total) = sum(values) else {
+        return Value::Null;
+    };
+    Value::Avg {
+        sum: total,
+        count: values.len() as u64,
+    }
 }
 
 /// `percentile_disc(units / 10^places)` over `column`.

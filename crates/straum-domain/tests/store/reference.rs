@@ -5,10 +5,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{
-    Distinct, SPREAD_PLACES, bool_or_null, distinct, holds, in_range, int_or_null, mode,
-    percentile_disc, spread,
-};
+use crate::common::{GroupInputs, SPREAD_PLACES, aggregate_value, bucket_key, holds, in_range};
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
 use straum_domain::{
@@ -203,11 +200,8 @@ fn groups<'r>(fact: &Fact, ask: &Ask, rows: &'r [Vec<Datum>], dims: &Dims) -> Gr
         let mut key = Vec::with_capacity(ask.keys.len());
         for asked in &ask.keys {
             key.push(match asked {
-                AskKey::Key(name) if name.as_str() == "bucket" => {
-                    Datum::Int(Width { seconds: WIDTH }.bucket_start(time).unwrap())
-                }
-                AskKey::Key(name) => value(row, name, dims),
-                AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(time).unwrap()),
+                AskKey::Key(name) if name.as_str() != "bucket" => value(row, name, dims),
+                bucket => bucket_key(bucket, Width { seconds: WIDTH }, time),
             });
         }
         groups.entry(key).or_default().push(row);
@@ -292,46 +286,29 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
             kept.push(*row);
         }
     }
-    let rows = kept;
-    match &measure.aggregate {
-        Aggregate::Count => Value::Int(rows.len() as i128),
-        Aggregate::CountNotNull(input) => Value::Int(not_null_in(&rows, input).len() as i128),
-        Aggregate::Sum(input) => {
-            let values = ints_in(&rows, input);
-            if values.is_empty() {
-                return Value::Null;
-            }
-            Value::Int(values.iter().sum())
-        }
-        Aggregate::Avg(input) => {
-            let values = ints_in(&rows, input);
-            if values.is_empty() {
-                return Value::Null;
-            }
-            Value::Avg {
-                sum: values.iter().sum(),
-                count: values.len() as u64,
-            }
-        }
-        Aggregate::Min(input) => int_or_null(ints_in(&rows, input).into_iter().min()),
-        Aggregate::Max(input) => int_or_null(ints_in(&rows, input).into_iter().max()),
-        Aggregate::CountDistinct(input) => {
-            let distinct: HashSet<&Datum> = not_null_in(&rows, input).into_iter().collect();
-            Value::Int(distinct.len() as i128)
-        }
-        Aggregate::BoolAnd(input) => bool_or_null(bools_in(&rows, input).into_iter().min()),
-        Aggregate::BoolOr(input) => bool_or_null(bools_in(&rows, input).into_iter().max()),
-        Aggregate::PercentileDisc { fraction, column } => {
-            percentile_disc(ints_in(&rows, column), *fraction)
-        }
-        Aggregate::Mode(input) => mode(ints_in(&rows, input)),
-        Aggregate::SumDistinct(input) => distinct(&ints_in(&rows, input), Distinct::Sum),
-        Aggregate::AvgDistinct(input) => distinct(&ints_in(&rows, input), Distinct::Avg),
-        Aggregate::VarSamp(input)
-        | Aggregate::VarPop(input)
-        | Aggregate::StddevSamp(input)
-        | Aggregate::StddevPop(input) => spread(&measure.aggregate, &ints_in(&rows, input)),
+    let Some(input) = measure.aggregate.input() else {
+        let group = GroupInputs {
+            rows: kept.len(),
+            ints: Vec::new(),
+            bools: Vec::new(),
+            not_null: 0,
+            distinct: 0,
+        };
+        return aggregate_value(&measure.aggregate, group);
+    };
+    let not_null = not_null_in(&kept, input);
+    let mut distinct = HashSet::new();
+    for value in &not_null {
+        distinct.insert(*value);
     }
+    let group = GroupInputs {
+        rows: kept.len(),
+        ints: ints_in(&kept, input),
+        bools: bools_in(&kept, input),
+        not_null: not_null.len(),
+        distinct: distinct.len(),
+    };
+    aggregate_value(&measure.aggregate, group)
 }
 
 /// The values of a column that are not null, one per row that has one.

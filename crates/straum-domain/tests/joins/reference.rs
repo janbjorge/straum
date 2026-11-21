@@ -6,10 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{
-    Distinct, SPREAD_PLACES, bool_or_null, distinct, holds, in_range, int_or_null, mode,
-    percentile_disc, spread,
-};
+use crate::common::{GroupInputs, SPREAD_PLACES, aggregate_value, bucket_key, holds, in_range};
 use crate::view::{
     AT, BLOCKED, CUSTOMER, CUSTOMERS, DIM_NAMES, Dims, EVEN, HOUR, Kinds, Loaded, PRODUCT,
     QUANTITY, TAGS, TIERS,
@@ -116,16 +113,12 @@ fn passes(row: &[Datum], joined: &JoinRow, filter: &[Condition]) -> bool {
 fn group_key(ask: &Ask, row: &[Datum], joined: &JoinRow, at: i64) -> Vec<Datum> {
     let mut key = Vec::with_capacity(ask.keys.len());
     for ask_key in &ask.keys {
+        let hour = Width {
+            seconds: u32::try_from(HOUR).unwrap(),
+        };
         key.push(match ask_key {
-            AskKey::Key(name) if name.as_str() == "bucket" => Datum::Int(
-                Width {
-                    seconds: u32::try_from(HOUR).unwrap(),
-                }
-                .bucket_start(at)
-                .unwrap(),
-            ),
-            AskKey::Key(name) => value(row, joined, name),
-            AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(at).unwrap()),
+            AskKey::Key(name) if name.as_str() != "bucket" => value(row, joined, name),
+            bucket => bucket_key(bucket, hour, at),
         });
     }
     key
@@ -207,40 +200,26 @@ fn reference_value(measure: &Measure, group: &[ViewRow<'_>]) -> Value {
             rows.push(row.order);
         }
     }
-    match &measure.aggregate {
-        Aggregate::Count => Value::Int(rows.len() as i128),
-        Aggregate::CountNotNull(_) => Value::Int(quantities(&rows).len() as i128),
-        Aggregate::Sum(_) => {
-            let values = quantities(&rows);
-            if values.is_empty() {
-                Value::Null
-            } else {
-                Value::Int(values.iter().sum())
-            }
-        }
-        Aggregate::Max(_) => int_or_null(quantities(&rows).into_iter().max()),
-        Aggregate::Min(_) => int_or_null(quantities(&rows).into_iter().min()),
-        Aggregate::PercentileDisc { fraction, .. } => percentile_disc(quantities(&rows), *fraction),
-        Aggregate::Mode(_) => mode(quantities(&rows)),
-        Aggregate::SumDistinct(_) => distinct(&quantities(&rows), Distinct::Sum),
-        Aggregate::AvgDistinct(_) => distinct(&quantities(&rows), Distinct::Avg),
-        Aggregate::CountDistinct(_) => {
-            let mut seen = HashSet::new();
-            for row in &rows {
-                if row[PRODUCT] != Datum::Null {
-                    seen.insert(&row[PRODUCT]);
-                }
-            }
-            Value::Int(seen.len() as i128)
-        }
-        Aggregate::VarSamp(_)
-        | Aggregate::VarPop(_)
-        | Aggregate::StddevSamp(_)
-        | Aggregate::StddevPop(_) => spread(&measure.aggregate, &quantities(&rows)),
-        Aggregate::BoolAnd(_) => bool_or_null(evens(&rows).into_iter().min()),
-        Aggregate::BoolOr(_) => bool_or_null(evens(&rows).into_iter().max()),
-        Aggregate::Avg(_) => unreachable!("no average here"),
+    if let Aggregate::Avg(_) = measure.aggregate {
+        unreachable!("no average here");
     }
+    // The view's one count of distinct values is of the products; every
+    // other measure reads the quantity, or whether it is even.
+    let quantities = quantities(&rows);
+    let mut products = HashSet::new();
+    for row in &rows {
+        if row[PRODUCT] != Datum::Null {
+            products.insert(&row[PRODUCT]);
+        }
+    }
+    let group = GroupInputs {
+        rows: rows.len(),
+        not_null: quantities.len(),
+        ints: quantities,
+        bools: evens(&rows),
+        distinct: products.len(),
+    };
+    aggregate_value(&measure.aggregate, group)
 }
 
 /// The quantities of the rows that have one.
