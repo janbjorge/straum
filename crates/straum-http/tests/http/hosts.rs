@@ -5,10 +5,8 @@
 
 use std::net::SocketAddr;
 
-use straum_http::AskSyntax;
-
 use crate::fake::writer;
-use crate::{Reply, read_with_notation, send, serve, serve_on};
+use crate::{Reply, notation, send, serve, serve_on};
 
 /// `GET /livez` naming `host`, which `{port}` in it becomes the port.
 fn livez(address: SocketAddr, host: &str) -> Reply {
@@ -67,11 +65,7 @@ fn on_loopback_any_other_name_is_misdirected() {
 
 #[test]
 fn off_loopback_every_name_is_answered() {
-    let syntax = AskSyntax {
-        read: read_with_notation,
-        describe: straum_notation::describe_ask_error,
-    };
-    let server = serve_on(writer().app().clone(), syntax, "0.0.0.0:0");
+    let server = serve_on(writer().app().clone(), notation(), "0.0.0.0:0");
     for host in ["evil.example:{port}", "straum", "10.0.0.7:8080"] {
         let reply = livez(server.address, host);
         assert_eq!(

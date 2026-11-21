@@ -53,18 +53,24 @@ fn read_with_notation(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<Qu
     Err(errors)
 }
 
+/// Straum SQL, as the binary picks it.
+fn notation() -> AskSyntax {
+    AskSyntax {
+        read: read_with_notation,
+        describe: straum_notation::describe_ask_error,
+    }
+}
+
 fn serve(app: App) -> Server {
-    serve_with(app, read_with_notation)
+    serve_in(app, notation())
 }
 
 fn serve_with(app: App, read_ask: ReadAsk) -> Server {
-    serve_in(
-        app,
-        AskSyntax {
-            read: read_ask,
-            describe: straum_notation::describe_ask_error,
-        },
-    )
+    let syntax = AskSyntax {
+        read: read_ask,
+        ..notation()
+    };
+    serve_in(app, syntax)
 }
 
 fn serve_in(app: App, syntax: AskSyntax) -> Server {
