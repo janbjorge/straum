@@ -112,7 +112,7 @@ fn no_load_once_the_stream_runs() {
     let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(commit.lsn > start);
     let mut store = Store::new(spec.clone());
-    let error = source.load(&id("trips"), &mut store);
+    let error = source.load(&[id("trips")], &mut store);
     assert_eq!(
         error.unwrap_err().to_string(),
         "the replication stream stopped"
@@ -134,16 +134,38 @@ fn a_failed_load_closes_the_source() {
           WHERE application_name = 'straum' AND pid <> pg_backend_pid()",
     );
     let mut store = Store::new(spec.clone());
-    assert!(source.load(&id("zones"), &mut store).is_err());
+    assert!(source.load(&[id("zones")], &mut store).is_err());
     let stopped = "the replication stream stopped";
     assert_eq!(source.wal().unwrap_err().to_string(), stopped);
     assert_eq!(
         source
-            .load(&id("trips"), &mut store)
+            .load(&[id("trips")], &mut store)
             .unwrap_err()
             .to_string(),
         stopped
     );
+}
+
+/// A fact table two views read is copied once for both: PostgreSQL counts
+/// one scan of it, and each view answers as PostgreSQL does.
+#[test]
+fn a_table_two_views_read_is_scanned_once() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "onescan", TASKS);
+    insert_task_tables(&mut db, &mut Rng::new(29), 200);
+    let mut writer = db.writer(&[TASKS_SPEC, PICKS_SPEC].concat());
+    started(&mut writer);
+    let app = writer.app().clone();
+    // PostgreSQL counts a session's scans for certain once it has ended.
+    drop(writer);
+    let scans = db.sql(
+        "SELECT seq_scan FROM pg_stat_user_tables
+          WHERE schemaname = '$S' AND relname = 'tasks' AND seq_scan > 0",
+    );
+    wait_for(&mut db.connection, &scans);
+    assert_eq!(db.rows(&scans), [[Some("1".to_owned())]]);
+    compare(&mut db, &app, &task_oracles()).expect("tasks ready");
+    compare(&mut db, &app, &picks_oracles()).expect("picks ready");
 }
 
 /// Timeouts the database sets for every session cancel none of Straum's

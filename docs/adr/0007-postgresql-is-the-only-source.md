@@ -1,6 +1,6 @@
 # ADR-0007: PostgreSQL is the only source
 
-Status: Accepted 2026-11-10; revised 2026-11-21
+Status: Accepted 2026-11-10; revised 2026-11-22
 
 ## Context
 
@@ -23,9 +23,15 @@ load and stream meet at one point; a second plain connection reads the
 WAL position and the catalog.
 
 A load is `COPY (SELECT <columns> FROM <table>) TO STDOUT (FORMAT
-binary)` per view and per dim, so a table two views read is copied
-twice, and Straum groups the rows. A reader thread decodes batches of
-8192 rows, four in flight; each width fills on its own thread. The snapshot commits right after the last load.
+binary)` per dim and per fact table. One copy of a fact table carries
+each column any of its views reads, once; Straum hands each view its
+own columns and groups the rows. A copy per view was dropped on
+2026-11-22: PostgreSQL 18 took 1802 ms to send the taxi month once for
+each of the benchmark's two views, and 1304 ms to send the columns of
+both once. A table read as a dim and as a fact table is still copied
+for each, since dims load first. A reader thread decodes batches of
+8192 rows, four in flight; each width fills on its own thread. The
+snapshot commits right after the last load.
 
 Every table a spec names, fact or dim, has `REPLICA IDENTITY FULL` and
 is in the publication; `straum plan` prints both and every start checks

@@ -26,11 +26,13 @@ pub trait Source {
     /// are in the snapshot, later ones are streamed.
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
 
-    /// Adds the table's rows to the store, which holds none of it yet, as
-    /// of the LSN [`Source::open`] returned: every commit up to it and none
-    /// after. Rows hold [`Fact::columns`] or [`Dim::columns`] and go
-    /// through [`Store::add_rows`].
-    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError>;
+    /// Adds the rows of `tables` to the store, which holds none of them
+    /// yet: one dim, or the views that read one fact table, which the
+    /// source reads once for all of them. The rows are as of the LSN
+    /// [`Source::open`] returned: every commit up to it and none after.
+    /// They hold [`Fact::columns`] or [`Dim::columns`] and go through
+    /// [`Store::add_rows`].
+    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
     /// last one is applied, so PostgreSQL may recycle the WAL before it.

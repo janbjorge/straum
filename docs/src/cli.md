@@ -90,8 +90,8 @@ changes and answers [asks](asks.md) over HTTP.
 | `--max-memory BYTES` | Off | Resident memory Straum may hold before it [stops](deploy.md#states). Linux only: it reads `VmRSS` in `/proc/self/status` about once a second from the start on, loads included, and where that file can't be read a set limit fails the start. Set it under the memory limit of the pod or host ([Kubernetes](deploy.md#kubernetes)). |
 
 It logs to stderr, each line starting `straum: `: the address it
-listens on, the stream it opened, each table as it finishes loading
-with how long it took, then that it streams. A failure logs a line per
+listens on, the stream it opened, each dim and each fact table's views
+as they finish loading with how long it took, then that it streams. A failure logs a line per
 problem and exits with 1. A failed connection names the host and port
 it tried, as does a server that sends nothing for 10 s while the
 connection starts.

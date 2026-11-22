@@ -11,11 +11,11 @@ streams every commit the snapshot did not see, and applies each of them
 exactly once. How the two meet depends on [the logical stream](#the-logical-stream) or [the
 physical stream](#the-physical-stream).
 
-The load is one binary `COPY` per view and one per dim, grouped into
-cells as rows arrive, so Straum never holds a table's rows. A table two
-views read is copied once for each. It installs nothing in PostgreSQL
-and writes nothing to disk. The slot is temporary, so every start loads
-again.
+The load is one binary `COPY` per dim and one per fact table, grouped
+into cells as rows arrive, so Straum never holds a table's rows. A table
+two views read is copied once, with the columns of both. It installs
+nothing in PostgreSQL and writes nothing to disk. The slot is temporary,
+so every start loads again.
 
 ## Cells
 

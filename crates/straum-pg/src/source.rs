@@ -548,11 +548,11 @@ impl Source for Postgres {
         Ok(at)
     }
 
-    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
+    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError> {
         let State::Loading(snapshot) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
-        match load_table(snapshot, table, store) {
+        match load_tables(snapshot, tables, store) {
             Ok(()) => Ok(()),
             Err(error) => Err(self.failed(error)),
         }
@@ -621,21 +621,32 @@ impl Postgres {
     }
 }
 
-/// Loads `table` in the snapshot.
-fn load_table(snapshot: &mut Snapshot, table: &Identifier, store: &mut Store) -> Result<(), Error> {
-    let checked = snapshot.tables.get(table);
-    load::table(
+/// Loads `tables`, which read one table of PostgreSQL, in the snapshot,
+/// with one copy of it.
+fn load_tables(
+    snapshot: &mut Snapshot,
+    tables: &[Identifier],
+    store: &mut Store,
+) -> Result<(), Error> {
+    let mut checked = Vec::new();
+    for table in tables {
+        checked.push(snapshot.tables.get(table));
+    }
+    load::tables(
         &mut snapshot.connection,
-        checked,
+        &checked,
         store,
         snapshot.stream.as_mut(),
     )?;
-    loaded(snapshot, table)
+    loaded(snapshot, tables)
 }
 
-/// The table is loaded; the snapshot's transaction ends with the last one.
-fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), Error> {
-    snapshot.unloaded.retain(|unloaded| unloaded != table);
+/// The tables are loaded; the snapshot's transaction ends with the last
+/// one.
+fn loaded(snapshot: &mut Snapshot, tables: &[Identifier]) -> Result<(), Error> {
+    snapshot
+        .unloaded
+        .retain(|unloaded| !tables.contains(unloaded));
     if snapshot.unloaded.is_empty() {
         snapshot.connection.execute("COMMIT")?;
     }

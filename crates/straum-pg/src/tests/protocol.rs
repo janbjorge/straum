@@ -3,8 +3,8 @@
 //! or hostile server can cause, and how the stream answers keepalives and
 //! reports what was applied.
 
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{slice, thread};
 
 use straum_app::{Lsn, Source};
 use straum_domain::{Spec, Store};
@@ -106,7 +106,7 @@ fn nothing_to_read_before_open(db: &Db, spec: &Spec) {
     assert_eq!(idle.wal().unwrap_err().to_string(), stopped);
     let mut store = Store::new(spec.clone());
     let trips = spec.fact("trips").unwrap();
-    let error = idle.load(&trips.name, &mut store);
+    let error = idle.load(slice::from_ref(&trips.name), &mut store);
     assert_eq!(error.unwrap_err().to_string(), stopped);
 }
 

@@ -195,6 +195,30 @@ fn tables_once_each_dims_first() {
     assert_eq!(tables, ["public.z", "other.z", "public.t"]);
 }
 
+/// Views of one fact table come as one group, in declaration order. A
+/// view of another table, or of a table of that name in another schema,
+/// is a group of its own.
+#[test]
+fn views_group_by_the_table_they_read() {
+    let mut log = fact();
+    log.name = id("log");
+    let mut other = fact();
+    other.name = id("other");
+    other.table = table("u");
+    let mut elsewhere = fact();
+    elsewhere.name = id("elsewhere");
+    elsewhere.table.schema = id("elsewhere");
+    let spec = Spec::new(vec![dim()], vec![fact(), other, log, elsewhere]).unwrap();
+    assert_eq!(
+        spec.facts_by_table(),
+        [
+            vec![id("t"), id("log")],
+            vec![id("other")],
+            vec![id("elsewhere")]
+        ]
+    );
+}
+
 #[test]
 fn buckets_widen_by_whole_multiples() {
     let mut view = fact();

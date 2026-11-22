@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::slice;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -877,16 +878,16 @@ pub(super) fn relation_file(db: &mut Db, table: &str) -> TableFile {
     }
 }
 
-/// Loads every dim, then every fact, of `spec` from a source just opened,
-/// as the writer does, into a new store. The load holds its tables until
-/// the last one, so DDL a test runs waits for it.
+/// Loads every dim, then every fact table's views, of `spec` from a source
+/// just opened, as the writer does, into a new store. The load holds its
+/// tables until the last one, so DDL a test runs waits for it.
 pub(super) fn load_all(source: &mut Postgres, spec: &Spec) -> Result<Store, SourceError> {
     let mut store = Store::new(spec.clone());
     for dim in spec.dims() {
-        source.load(&dim.name, &mut store)?;
+        source.load(slice::from_ref(&dim.name), &mut store)?;
     }
-    for fact in spec.facts() {
-        source.load(&fact.name, &mut store)?;
+    for views in spec.facts_by_table() {
+        source.load(&views, &mut store)?;
     }
     Ok(store)
 }

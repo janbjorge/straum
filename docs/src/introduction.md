@@ -109,11 +109,10 @@ three cells, the same work as for one from today. An account moves from
 ([Following](how-it-works.md#following)). No refresh runs for either.
 
 Weeks later a second view over the same tables is an edit to the spec
-and a restart. PostgreSQL's share stays one replication slot and one
-stream ([What Straum costs the
-server](postgresql.md#what-straum-costs-the-server)), with one more
-read of the table at each start, and the summary is never a table there
-to vacuum or back up. Stop Straum for good and
+and a restart. PostgreSQL's share stays one replication slot, one
+stream and one read of each table at a start ([What Straum costs the
+server](postgresql.md#what-straum-costs-the-server)), and the summary
+is never a table there to vacuum or back up. Stop Straum for good and
 its slot goes with it, leaving the setup's few lines to undo.
 
 Two extensions keep such a summary inside PostgreSQL instead.

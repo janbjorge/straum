@@ -25,11 +25,12 @@ table:
 
 ![The writer opens a temporary slot whose snapshot is at LSN L, loads each table in it, then streams from L through a stream thread.](../docs/src/diagrams/start.svg)
 
-- Each dim, then each view's fact table, loads with one `COPY (SELECT
+- Each dim, then each fact table, loads with one `COPY (SELECT
   <columns> FROM <table>) TO STDOUT (FORMAT binary)`
-  (`load::copy_sql`), so a table two views read is copied twice, and
-  Straum groups the fact rows and projects the dim rows itself
-  (`crates/straum-pg/src/load.rs`). No output functions run, and
+  (`load::copy_sql`). A table two views read is copied once, with every
+  column either reads (`load::tables`, since 2026-11-22; before, once
+  for each view), and Straum groups the fact rows and projects the dim
+  rows itself (`crates/straum-pg/src/load.rs`). No output functions run, and
   nothing from the spec runs there. A reader thread decodes batches of
   8192 rows, four in flight beside the one being read and the one
   being added, so a load holds about 1.2 MB per column copied besides
@@ -225,8 +226,8 @@ Nothing to persist, and the temporary slot is what makes that safe: a
 crashed, OOM-killed or deleted pod leaves no slot behind, so it can't
 fill the server's disk. The costs:
 
-- **Every start is a full load**, one binary `COPY` per view and per
-  dim under one snapshot. A warm start from a snapshot file would need
+- **Every start is a full load**, one binary `COPY` per dim and per
+  fact table under one snapshot. A warm start from a snapshot file would need
   a persistent
   slot to resume from, which brings the WAL risk back. Not built.
 - **The load pins xmin** for the whole database while it runs (§1).

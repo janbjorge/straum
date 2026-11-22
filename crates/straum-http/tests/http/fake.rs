@@ -55,8 +55,9 @@ impl Source for Fake {
     }
 
     /// Zones 1 and 2; a trip in zone 3 finds no row.
-    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
-        if table.as_str() == "zones" {
+    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError> {
+        // The spec's one dim and its one view each load alone.
+        if tables[0].as_str() == "zones" {
             store.set_types("zones", &[ColumnType::Int, ColumnType::Text])?;
             return Ok(store.add_rows(
                 "zones",

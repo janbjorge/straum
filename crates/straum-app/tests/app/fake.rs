@@ -346,9 +346,12 @@ impl Source for Fake {
         Ok(start)
     }
 
-    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
-        let rows = self.read(table)?;
-        Ok(fill(table, &rows, store)?)
+    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError> {
+        for table in tables {
+            let rows = self.read(table)?;
+            fill(table, &rows, store)?;
+        }
+        Ok(())
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {

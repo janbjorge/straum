@@ -1,15 +1,17 @@
-//! Loads: a binary `COPY` of the columns the spec reads of each table, dim
-//! or fact, so Straum groups or projects a row as it comes. One thread
-//! reads PostgreSQL's copy messages and decodes them (`value.rs`) into
-//! batches of rows; the caller's thread adds each batch to the store, then
-//! checks a physical stream reading beside it has not failed. A load must
-//! not cost Straum the table's rows in memory.
+//! Loads: one binary `COPY` of a table for every spec table that reads
+//! it, a dim or the views of a fact table, with each column any of them
+//! reads sent once, so Straum groups or projects a row as it comes. One
+//! thread reads PostgreSQL's copy messages and decodes them (`value.rs`)
+//! into batches of rows; the caller's thread hands each spec table its own
+//! columns of a batch and adds them to the store, then checks a physical
+//! stream reading beside it has not failed. A load must not cost Straum the
+//! table's rows in memory.
 
 use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
-use straum_domain::{Datum, Store};
+use straum_domain::{ColumnType, Datum, Identifier, Store};
 
 use crate::catalog::{Checked, escaped};
 use crate::error::Error;
@@ -34,18 +36,31 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
     )
 }
 
-/// Loads the whole table into the store, in the connection's snapshot.
-/// A physical stream that reads on meanwhile is checked after each batch.
-pub(crate) fn table(
+/// Loads `tables`, spec tables that read one table of PostgreSQL, whole
+/// into the store, in the connection's snapshot: one copy of the table
+/// carries the columns of them all. A physical stream that reads on
+/// meanwhile is checked after each batch.
+pub(crate) fn tables(
     connection: &mut Connection,
-    table: &Checked,
+    tables: &[&Checked],
     store: &mut Store,
     mut stream: Option<&mut Stream>,
 ) -> Result<(), Error> {
-    let name = table.name.as_str();
-    store.set_types(name, &table.types).map_err(Error::Row)?;
-    copy(connection, table, |rows| {
-        store.add_rows(name, rows).map_err(Error::Row)?;
+    let Some(copied) = copy_of(tables) else {
+        return Ok(());
+    };
+    let mut readers = Vec::new();
+    for table in tables {
+        let name = table.name.as_str();
+        store.set_types(name, &table.types).map_err(Error::Row)?;
+        readers.push(Reader::of(table, &copied));
+    }
+    // One more batch beside those in flight, of one reader's columns.
+    let mut rows = Vec::new();
+    copy(connection, &copied, |batch| {
+        for reader in &readers {
+            reader.add(batch, copied.columns.len(), &mut rows, store)?;
+        }
         match stream.as_deref_mut() {
             Some(stream) => stream.check(),
             None => Ok(()),
@@ -53,12 +68,92 @@ pub(crate) fn table(
     })
 }
 
+/// The table as one copy reads it for all of `tables`: every column any
+/// of them reads, once each, in the order first read. Its name is the
+/// first one's, which a copy doesn't read. `None` when there are none.
+fn copy_of(tables: &[&Checked]) -> Option<Checked> {
+    let first = tables.first()?;
+    let mut copied = Checked {
+        columns: Vec::new(),
+        types: Vec::new(),
+        ..Checked::clone(first)
+    };
+    for table in tables {
+        debug_assert_eq!(table.qualified(), copied.qualified());
+        for (column, column_type) in table.columns.iter().zip(&table.types) {
+            if position(&copied, column, *column_type).is_none() {
+                copied.columns.push(column.clone());
+                copied.types.push(*column_type);
+            }
+        }
+    }
+    Some(copied)
+}
+
+/// Where the rows of `copied` hold `column` read as `column_type`.
+fn position(copied: &Checked, column: &Identifier, column_type: ColumnType) -> Option<usize> {
+    for (at, (name, read_as)) in copied.columns.iter().zip(&copied.types).enumerate() {
+        if name == column && *read_as == column_type {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// A spec table of a copy, and where its columns sit in the copy's rows.
+struct Reader {
+    /// The spec's name for the table.
+    name: Identifier,
+    /// For each column the table reads, its place in a row of the copy.
+    positions: Vec<usize>,
+}
+
+impl Reader {
+    /// `table` reading from `copied`, which holds each of its columns.
+    fn of(table: &Checked, copied: &Checked) -> Reader {
+        let mut positions = Vec::new();
+        for (column, column_type) in table.columns.iter().zip(&table.types) {
+            let at = position(copied, column, *column_type);
+            positions.push(at.expect("the copy reads every column of its tables"));
+        }
+        Reader {
+            name: table.name.clone(),
+            positions,
+        }
+    }
+
+    /// Adds the table's rows of `batch`, rows of the copy `width` columns
+    /// each, to the store. `rows` is scratch space, kept between batches.
+    fn add(
+        &self,
+        batch: &[Datum],
+        width: usize,
+        rows: &mut Vec<Datum>,
+        store: &mut Store,
+    ) -> Result<(), Error> {
+        let name = self.name.as_str();
+        // A table that reads the copy's columns as they come, as one
+        // loaded alone does, takes the batch as it is.
+        if self.positions.iter().copied().eq(0..width) {
+            return store.add_rows(name, batch).map_err(Error::Row);
+        }
+        rows.clear();
+        for row in batch.chunks_exact(width) {
+            for &position in &self.positions {
+                rows.push(row[position].clone());
+            }
+        }
+        store.add_rows(name, rows).map_err(Error::Row)
+    }
+}
+
 /// Rows per batch the reader thread hands over. A batch starts a thread
 /// per wider bucket width (`Rollup::add_rows`), so a small one costs.
 pub(crate) const BATCH: usize = 8192;
 /// Batches between the threads. With the one being read and the one being
 /// added, a load holds six batches besides what it fills: about 1.2 MB per
-/// column copied, however big the table.
+/// column copied, however big the table. A table several views read holds
+/// one more, of one view's columns.
 const IN_FLIGHT: usize = 4;
 
 /// Runs a binary `COPY` of the table and calls `each` with every batch of
@@ -221,5 +316,44 @@ mod tests {
             "COPY (SELECT \"created\", \"organization_id\", \"taskgroup_id\", \"location_id\" \
              FROM \"public\".\"tasks\") TO STDOUT (FORMAT binary)"
         );
+    }
+
+    /// `name` reading `columns` of `public.rides`, each an integer.
+    fn rides(name: &str, columns: &[&str]) -> Checked {
+        Checked::public(name, "rides", columns, vec![ColumnType::Int; columns.len()])
+    }
+
+    /// One copy serves every spec table of a table: a column two of them
+    /// read is sent once, and each finds its own columns in a row.
+    #[test]
+    fn one_copy_carries_the_columns_of_every_table_that_reads_it() {
+        let trips = rides("trips", &["at", "kind", "fare"]);
+        let dropoffs = rides("dropoffs", &["at", "zone", "fare"]);
+        let copied = copy_of(&[&trips, &dropoffs]).unwrap();
+        assert_eq!(
+            copy_sql(&copied),
+            "COPY (SELECT \"at\", \"kind\", \"fare\", \"zone\" \
+             FROM \"public\".\"rides\") TO STDOUT (FORMAT binary)"
+        );
+        assert_eq!(Reader::of(&trips, &copied).positions, [0, 1, 2]);
+        assert_eq!(Reader::of(&dropoffs, &copied).positions, [0, 3, 2]);
+        assert!(copy_of(&[]).is_none());
+    }
+
+    /// A column two spec tables read as different types is sent for each,
+    /// so neither reads the other's value.
+    #[test]
+    fn a_column_read_as_two_types_is_copied_for_each() {
+        let numbers = rides("numbers", &["at", "kind"]);
+        let mut words = rides("words", &["at", "kind"]);
+        words.types[1] = ColumnType::Text;
+        let copied = copy_of(&[&numbers, &words]).unwrap();
+        assert_eq!(copied.columns.len(), 3);
+        assert_eq!(
+            copied.types,
+            [ColumnType::Int, ColumnType::Int, ColumnType::Text]
+        );
+        assert_eq!(Reader::of(&numbers, &copied).positions, [0, 1]);
+        assert_eq!(Reader::of(&words, &copied).positions, [0, 2]);
     }
 }

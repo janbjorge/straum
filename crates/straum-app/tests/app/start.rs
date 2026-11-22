@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
-use straum_app::{AnswerError, App, Held, HeldDim, HeldKey, HeldView, Lsn, Step, ViewKey};
+use straum_app::{AnswerError, App, Held, HeldDim, HeldKey, HeldView, Lsn, Step, ViewKey, Writer};
 use straum_domain::{
     AnswerRow, Ask, AskError, ColumnType, Condition, Instead, Literal, Table, Value, Width,
 };
@@ -14,7 +14,7 @@ use crate::common::{
     Harness, LIMITS, again, ask, count, count_aside, int, login, setup, spec, text, trip, watched,
     zone,
 };
-use crate::fake::id;
+use crate::fake::{Database, Fake, Identity, Published, id};
 
 #[test]
 fn starts_from_one_snapshot() {
@@ -302,4 +302,46 @@ fn a_start_reports_each_table_it_loads() {
     for (line, start) in lines[1..].iter().zip(expected) {
         assert!(line.starts_with(start) && line.ends_with(" s"), "{line}");
     }
+}
+
+/// Two views of one fact table, `public.trips`.
+const SHARED: &str = "
+CREATE VIEW trips AS
+SELECT buckets(t.at, '1 hour') AS bucket, count(*) AS trips
+FROM public.trips AS t
+GROUP BY 1;
+
+CREATE VIEW fares AS
+SELECT buckets(t.at, '1 day') AS bucket, t.kind AS kind, sum(t.fare) AS fare
+FROM public.trips AS t
+GROUP BY 1, 2;
+";
+
+/// The views of one fact table load together: the source is asked once
+/// for both, and the start says so in one line.
+#[test]
+fn views_of_one_table_load_together() {
+    let views = [
+        Published {
+            name: "trips",
+            identity: Identity::Full,
+        },
+        Published {
+            name: "fares",
+            identity: Identity::Full,
+        },
+    ];
+    let database = Database::new(&views).shared();
+    let app = App::new(straum_notation::parse(SHARED).unwrap(), LIMITS);
+    let mut writer = Writer::new(app, Fake::new(&database)).reporting(record);
+    let lsn = database.borrow().lsn();
+    assert_eq!(writer.step().unwrap(), Step::Started(lsn));
+    let lines = REPORTED.take();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let loaded = &lines[1];
+    assert!(
+        loaded.starts_with("loaded views trips, fares in ") && loaded.ends_with(" s"),
+        "{loaded}"
+    );
+    assert_eq!(database.borrow().loads, ["trips", "fares"]);
 }

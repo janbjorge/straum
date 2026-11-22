@@ -5,8 +5,8 @@
 //! of the server's WAL go behind the progress's lock, so they never wait
 //! on an ask.
 
-use std::fmt;
 use std::time::{Duration, Instant};
+use std::{fmt, slice};
 
 use straum_domain::{Identifier, RowError, Spec, Store};
 
@@ -180,10 +180,10 @@ impl<S: Source> Writer<S> {
         let mut store = Store::new(spec.clone());
         // Dims first, so a fact's rows find theirs when asked.
         for dim in spec.dims() {
-            self.load(&dim.name, "dim", &mut store)?;
+            self.load(slice::from_ref(&dim.name), "dim", &mut store)?;
         }
-        for fact in spec.facts() {
-            self.load(&fact.name, "view", &mut store)?;
+        for views in spec.facts_by_table() {
+            self.load(&views, "view", &mut store)?;
         }
         let wal = self.read_wal()?;
         let mut lag = Lag::new(opened);
@@ -201,12 +201,13 @@ impl<S: Source> Writer<S> {
         Ok(start)
     }
 
-    /// Loads one table, saying when it is done and how long it took.
-    fn load(&mut self, name: &Identifier, kind: &str, store: &mut Store) -> Result<(), Error> {
+    /// Loads one dim, or the views of one fact table together, saying
+    /// when it is done and how long it took.
+    fn load(&mut self, names: &[Identifier], kind: &str, store: &mut Store) -> Result<(), Error> {
         let clock = Instant::now();
-        self.source.load(name, store)?;
+        self.source.load(names, store)?;
         let seconds = clock.elapsed().as_secs_f64();
-        (self.report)(&format!("loaded {kind} {name} in {seconds:.1} s"));
+        (self.report)(&format!("loaded {} in {seconds:.1} s", named(kind, names)));
         Ok(())
     }
 
@@ -252,6 +253,16 @@ impl<S: Source> Writer<S> {
         }
         Ok(wal)
     }
+}
+
+/// `view trips` for one name, `views trips, dropoffs` for several.
+fn named(kind: &str, names: &[Identifier]) -> String {
+    let mut listed = Vec::new();
+    for name in names {
+        listed.push(name.as_str());
+    }
+    let plural = if names.len() == 1 { "" } else { "s" };
+    format!("{kind}{plural} {}", listed.join(", "))
 }
 
 /// Why a [`Writer::step`] failed; the writer takes no more steps.
@@ -435,7 +446,7 @@ mod tests {
             Ok(Lsn(1))
         }
 
-        fn load(&mut self, _table: &Identifier, _store: &mut Store) -> Result<(), SourceError> {
+        fn load(&mut self, _tables: &[Identifier], _store: &mut Store) -> Result<(), SourceError> {
             Ok(())
         }
 
@@ -464,7 +475,7 @@ mod tests {
             Err("connection refused".into())
         }
 
-        fn load(&mut self, _table: &Identifier, _store: &mut Store) -> Result<(), SourceError> {
+        fn load(&mut self, _tables: &[Identifier], _store: &mut Store) -> Result<(), SourceError> {
             Err("connection refused".into())
         }
 

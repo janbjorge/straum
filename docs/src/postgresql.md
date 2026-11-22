@@ -272,9 +272,11 @@ and the changes of open transactions, and stops past
 `--max-page-memory` (1 GiB by default). A shorter `checkpoint_timeout`
 lowers that memory and raises the WAL.
 
-Each load's snapshot holds back vacuum for the whole database and
-makes `ALTER TABLE` on its tables wait. Straum ends it right after the
-last table loads.
+A load reads each spec table once, only the columns the views name,
+however many views read it. A table that is both a dim and a fact table
+is read once for each. Each load's snapshot holds back vacuum for the
+whole database and makes `ALTER TABLE` on its tables wait. Straum ends
+it right after the last table loads.
 
 The slot is temporary, so PostgreSQL drops it when the connection
 closes, crashes and deleted pods included. It does not move to a

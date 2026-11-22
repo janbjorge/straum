@@ -409,12 +409,12 @@ two are in the guide's What you gain; the rest are only here:
 
 - The server's standing cost does not grow with the views: one slot
   and one stream, however many views read a table (`postgresql.md`,
-  What Straum costs the server). The load does grow: one `COPY` a view
-  and one a dim (`crates/straum-app/src/writer.rs`, read 2026-11-21),
-  so a second view over the same fact table reads that table once more
-  at each start, as the guide says. A second view over the same tables
-  is an edit to the spec and a restart, with no statement to run in
-  PostgreSQL.
+  What Straum costs the server). Nor does the load: one `COPY` a dim
+  and one a fact table, with the columns of every view that reads it
+  (`crates/straum-pg/src/load.rs`, since 2026-11-22), so a second view
+  over the same fact table adds its columns to that copy and no read of
+  the table. A second view over the same tables is an edit to the spec
+  and a restart, with no statement to run in PostgreSQL.
 - The summary is not a table in PostgreSQL, so nothing of it is
   written, vacuumed or backed up there (`how-it-works.md`: "It
   installs nothing in PostgreSQL and writes nothing to disk"). In one

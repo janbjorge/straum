@@ -94,11 +94,13 @@ waiting at most 5 s for each lock and naming the tables that hold one
 longer. A table rewritten after the snapshot fails the start here,
 since its new file reads empty in the snapshot.
 
-`Source::load` reads each dim, then each fact. It sets the column types
-from the catalog and runs one binary `COPY` of the columns the spec
-names, handing the rows over in batches of 8,192 (`Store::add_rows`);
-each width's level adds a batch on a thread of its own. The snapshot
-transaction commits with the last load. The writer reads the server's
+`Source::load` reads each dim, then each fact table once for all the
+views that read it (`Spec::facts_by_table`). It sets the column types
+from the catalog and runs one binary `COPY` of every column those views
+name, each once, handing each view its own columns of the rows in
+batches of 8,192 (`Store::add_rows`); each width's level adds a batch
+on a thread of its own. The snapshot transaction commits with the last
+load. The writer reads the server's
 write-ahead log (WAL) position once and starts the `Lag` from when the
 slot was opened.
 

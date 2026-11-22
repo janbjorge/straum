@@ -471,6 +471,28 @@ impl Spec {
         tables
     }
 
+    /// The views' names, grouped by the fact table they read, so a load
+    /// reads a table once for every view of it. Groups come in the order
+    /// of their first view, and a group's names in declaration order.
+    pub fn facts_by_table(&self) -> Vec<Vec<Identifier>> {
+        let mut tables: Vec<&Table> = Vec::new();
+        let mut groups: Vec<Vec<Identifier>> = Vec::new();
+        for fact in &self.facts {
+            let mut index = tables.len();
+            for (at, table) in tables.iter().enumerate() {
+                if **table == fact.table {
+                    index = at;
+                }
+            }
+            if index == tables.len() {
+                tables.push(&fact.table);
+                groups.push(Vec::new());
+            }
+            groups[index].push(fact.name.clone());
+        }
+        groups
+    }
+
     /// The dim of that name, if the spec has one.
     pub fn dim(&self, name: &str) -> Option<&Dim> {
         find_dim(&self.dims, name)
