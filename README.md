@@ -52,6 +52,28 @@ docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/strau
   run --rm shell
 ```
 
+At the prompt, ask for one day's trips by pickup borough:
+
+```text
+straum> SELECT borough, trips, fare
+FROM trips
+WHERE bucket >= $1 AND bucket < $2
+GROUP BY borough; 2024-01-17T00:00:00-05:00 2024-01-18T00:00:00-05:00
+```
+
+Newark Airport, `EWR`, has 10 trips. From another terminal, add one in
+PostgreSQL:
+
+```sh
+docker compose -p straum exec postgres psql -U postgres -c "
+  INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
+                            payment_type, fare_amount, tip_amount, trip_distance)
+  VALUES (2, '2024-01-17 12:00-05', 1, 132, 1, 120.00, 0, 17.50);"
+```
+
+Ask again and `EWR` has 11: Straum read the insert from the
+replication stream.
+
 ## What you write
 
 A spec is a view, in a small subset of PostgreSQL's `CREATE VIEW`.
