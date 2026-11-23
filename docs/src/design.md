@@ -82,17 +82,23 @@ so `copy_scripts.rs` sits beside `plan.rs` in `straum-pg`, outside the
 `Writer::start` fills a store that is exactly current at one point in
 the log, and hands over to the stream at that point.
 
-With `--wal logical`, `Source::open` connects, begins a read-only
-repeatable-read transaction and creates a temporary logical slot with
-`pgoutput` and `SNAPSHOT 'use'`. That ties the transaction's snapshot
-to the slot's start, the log sequence number (LSN) L: the snapshot sees
-every commit up to L, and the slot sends every commit after it. In the
-same snapshot Straum reads the catalog and [checks
+With `--wal logical`, `Source::open` connects in replication mode and
+creates a temporary logical slot with `pgoutput` and `SNAPSHOT
+'export'`. The slot's start is the log sequence number (LSN) L, and it
+names a snapshot that sees every commit up to L; the slot sends every
+commit after it. A plain connection begins a read-only repeatable-read
+transaction and takes that snapshot up (`SET TRANSACTION SNAPSHOT`).
+In that snapshot Straum reads the catalog and [checks
 it](postgresql.md#what-straum-checks-at-start) against the spec. It
 then holds the spec tables in `ACCESS SHARE` mode (`hold_tables`),
 waiting at most 5 s for each lock and naming the tables that hold one
 longer. A table rewritten after the snapshot fails the start here,
-since its new file reads empty in the snapshot.
+since its new file reads empty in the snapshot. Only then does the
+slot's connection send `START_REPLICATION` from L: PostgreSQL keeps an
+exported snapshot only until the next command on the slot's
+connection, so the plain connection must take it up first. The stream
+thread starts there and reads beside the loads, as the physical one
+does.
 
 `Source::load` reads each dim, then each fact table once for all the
 views that read it (`Spec::facts_by_table`). It sets the column types
@@ -107,11 +113,15 @@ slot was opened.
 All of this fills a new store outside any lock, so asks never wait on
 PostgreSQL; they answer 503 meanwhile. Only at the end does the writer
 take the write lock, swap the loaded store in for the empty one and set
-`Following` at L, and Straum is ready. The stream thread starts at the
-first `next_commit`: it reads the stream, answers the server's
-keepalives and confirms what the writer has applied, so the server can
-recycle WAL. Any error on the way is a `Failure`, and Straum exits. A
-writer starts once; a failed one takes no more steps.
+`Following` at L, and Straum is ready. The stream thread runs from
+`open` on: it reads the stream, queues commits for the writer, answers
+the server's keepalives and confirms what the writer has applied, so
+the server can recycle WAL. While no commit it has queued waits to be
+applied, it confirms the WAL it has read; otherwise only what the
+writer has applied, which during a load is nothing. Each load checks
+after every batch that the stream has not failed. Any error on the way
+is a `Failure`, and Straum exits. A writer starts once; a failed one
+takes no more steps.
 
 ### The physical start
 
@@ -407,7 +417,7 @@ a property test.
 | Invariant | Held by |
 | --- | --- |
 | A commit applies whole. | The decoder holds a transaction until its Commit message (`Decoder`), and the store takes it under one write lock (`State::apply`). An answer never sees half of one. |
-| No commit is missed or applied twice. | The snapshot is at the slot's consistent point L, and the stream starts at L (`Source::open`, the first `next_commit`). `the_snapshot_and_the_stream_split_exactly` races 2,000 commits against it. |
+| No commit is missed or applied twice. | The snapshot is at the slot's consistent point L, and the stream starts at L (`Source::open`). `the_snapshot_and_the_stream_split_exactly` races 2,000 commits against it. |
 | Only the writer writes. | Asks reach the store through `App::read`, the writer alone through `App::write`. |
 | A row removed was added. | `RowError::Missing` from a cell, a value count or a projection entry ends the step (`Rollup::remove`, `Projection::remove`), and Straum exits. |
 | Types come from the catalog only. | The load sets them (`Store::set_types`), a filter value must fit its column (`ColumnType::fits`), and a Relation message that changes them is `Unfit` (`Decoder`). |

@@ -147,7 +147,7 @@ fn a_failed_load_closes_the_source() {
 }
 
 /// A fact table two views read is copied once for both: PostgreSQL counts
-/// one scan of it, and each view answers as PostgreSQL does.
+/// its rows read once, and each view answers as PostgreSQL does.
 #[test]
 fn a_table_two_views_read_is_scanned_once() {
     let pg = postgres();
@@ -158,12 +158,14 @@ fn a_table_two_views_read_is_scanned_once() {
     let app = writer.app().clone();
     // PostgreSQL counts a session's scans for certain once it has ended.
     drop(writer);
-    let scans = db.sql(
-        "SELECT seq_scan FROM pg_stat_user_tables
-          WHERE schemaname = '$S' AND relname = 'tasks' AND seq_scan > 0",
+    // Rows, not scans: the setup's own session counts a scan of the table
+    // that reads none, whenever it sends its counts.
+    let read = db.sql(
+        "SELECT seq_tup_read FROM pg_stat_user_tables
+          WHERE schemaname = '$S' AND relname = 'tasks' AND seq_tup_read > 0",
     );
-    wait_for(&mut db.connection, &scans);
-    assert_eq!(db.rows(&scans), [[Some("1".to_owned())]]);
+    wait_for(&mut db.connection, &read);
+    assert_eq!(db.rows(&read), [[Some("200".to_owned())]]);
     compare(&mut db, &app, &task_oracles()).expect("tasks ready");
     compare(&mut db, &app, &picks_oracles()).expect("picks ready");
 }

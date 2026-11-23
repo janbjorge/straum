@@ -1,9 +1,9 @@
 //! The port to PostgreSQL, and the types that cross it. A source first
 //! loads every fact and dim as of one snapshot, then streams the commits
-//! made after it; the writer reads both. One port, since the first load
-//! reads the snapshot of the slot the stream comes from, on the same
-//! connection. A row comes as its table holds it: a fact's columns, or a
-//! dim's key and the columns the views read.
+//! made after it; the writer reads both. One port, since the load and
+//! the stream meet at one position, which only the source knows how to
+//! hold. A row comes as its table holds it: a fact's columns, or a dim's
+//! key and the columns the views read.
 
 use std::error;
 use std::fmt;

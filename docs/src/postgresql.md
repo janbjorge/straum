@@ -243,12 +243,12 @@ the start waited 5 s for a lock on public.events; another session holds or waits
 
 Each Straum takes one replication connection and one slot, out of
 `max_wal_senders` and `max_replication_slots`, of which managed
-services often keep some. It also opens plain connections, one for
-the WAL position and one for the watchdog, and with `--wal physical`
-two more, for the load and for table layouts; a role `CONNECTION
-LIMIT` needs room for them. Run one Straum per database: a second needs
-another slot and load, and with logical decoding the server decodes
-the WAL once for each.
+services often keep some. It also opens plain connections: one for
+the WAL position, one for the watchdog, one for the load while the
+tables load, and with `--wal physical` one more for table layouts; a
+role `CONNECTION LIMIT` needs room for them. Run one Straum per
+database: a second needs another slot and load, and with logical
+decoding the server decodes the WAL once for each.
 
 The server keeps WAL until Straum confirms it, every second. Past
 `--max-retained-wal` (4 GiB by default) Straum stops, so one that

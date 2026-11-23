@@ -46,6 +46,7 @@ pub(crate) enum Unexpected {
     WalNeverFlushed,
     LayoutShape,
     SlotWithoutConsistentPoint,
+    SlotWithoutSnapshot,
     SnapshotShape,
     NoWalPosition,
     NoWalPositionForSlot(String),
@@ -113,6 +114,7 @@ impl fmt::Display for Unexpected {
             Unexpected::SlotWithoutConsistentPoint => {
                 formatter.write_str("a slot without a consistent point")
             }
+            Unexpected::SlotWithoutSnapshot => formatter.write_str("a slot without its snapshot"),
             Unexpected::SnapshotShape => formatter.write_str("a snapshot of an unknown shape"),
             Unexpected::NoWalPosition => formatter.write_str("no WAL position"),
             Unexpected::NoWalPositionForSlot(slot) => {

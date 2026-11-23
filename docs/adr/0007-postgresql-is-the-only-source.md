@@ -1,6 +1,6 @@
 # ADR-0007: PostgreSQL is the only source
 
-Status: Accepted 2026-11-10; revised 2026-11-22
+Status: Accepted 2026-11-10; revised 2026-11-23
 
 ## Context
 
@@ -18,9 +18,15 @@ and a manifest format.
 
 `straum-pg` is Straum's own replication client on `postgres-protocol`
 (framing, SCRAM), decoding pgoutput v1 itself. The slot is temporary.
-The first load reads the slot's snapshot on the same connection, so
-load and stream meet at one point; a second plain connection reads the
-WAL position and the catalog.
+It exports its snapshot, and a plain connection takes that up and
+reads the catalog and the first load in it, so load and stream meet at
+one point. The slot's connection starts streaming only once the
+snapshot is taken up, since PostgreSQL keeps it only until that
+connection's next command; from then on the stream thread reads beside
+the load, as the physical stream's does. Another plain connection reads
+the WAL position. Until 2026-11-23 the load ran on the slot's own
+connection, in a transaction that used its snapshot, and nothing read
+the slot until the last load.
 
 A load is `COPY (SELECT <columns> FROM <table>) TO STDOUT (FORMAT
 binary)` per dim and per fact table. One copy of a fact table carries
@@ -61,6 +67,9 @@ parser for the physical stream (ADR-0008).
   Nothing from the spec runs in PostgreSQL.
 - A load holds `AccessShareLock` and pins xmin until its snapshot
   commits; held longer, it blocked a test's `ALTER TABLE`.
+- The load takes one plain connection more while it runs, which a
+  role's `CONNECTION LIMIT` must leave room for. The stream confirms
+  idle WAL during the load until it queues a commit of a spec table.
 - `FULL` adds WAL on `UPDATE` and `DELETE` only. A row's identity is
   the whole row, so a dim row held twice comes out once per delete.
 - From 19 a logical slot turns on decoding under `wal_level = replica`

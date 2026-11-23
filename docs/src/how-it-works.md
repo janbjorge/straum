@@ -136,8 +136,9 @@ these once a second.
 ## The logical stream
 
 `--wal logical` opens a temporary logical slot at a log sequence
-number (LSN), L, with a snapshot at L. Straum loads from the snapshot,
-then streams every commit after L.
+number (LSN), L, with a snapshot at L. Straum loads from the snapshot
+on a connection of its own while the slot already streams every commit
+after L; the writer applies them once the last table is loaded.
 
 ![The load and the stream split the commits at L](diagrams/start.svg)
 

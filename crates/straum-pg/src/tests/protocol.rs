@@ -457,9 +457,10 @@ fn reads_the_servers_wal() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     let start = source.open(&spec).unwrap();
-    // A new slot has confirmed everything before its consistent point.
+    // A new slot has confirmed everything before its consistent point, and
+    // the stream may have confirmed idle WAL after it since.
     let wal = source.wal().unwrap();
-    assert_eq!(wal.confirmed, start);
+    assert!(wal.confirmed >= start, "{wal:?}");
     assert!(wal.restart <= start && start <= wal.written, "{wal:?}");
 
     db.run(&Rng::new(1).trip(1));

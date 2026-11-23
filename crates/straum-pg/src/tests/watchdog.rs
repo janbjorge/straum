@@ -193,8 +193,9 @@ fn ends_a_walsender_whose_client_reads_nothing() {
     assert!(matches!(watchdog.verdict(), Some(Verdict::Retained { .. })));
 }
 
-/// A load that keeps the logical slot's connection busy, so nothing reads
-/// the slot: past the limit the watchdog ends it.
+/// A load ahead of a commit the logical stream queued, which holds the
+/// slot's report at its start: past the limit the watchdog ends it, and
+/// the load's connection with it.
 #[test]
 fn ends_a_logical_slot_a_load_holds_past_the_limit() {
     let pg = postgres();
@@ -291,15 +292,12 @@ fn load_holds(pg: &PostgresContainer, name: &str, replication: Replication, limi
     // within the limit.
     db.run("INSERT INTO $S.trips (id, at) VALUES (1, '2024-01-15')");
     db.run("CREATE TABLE $S.filler (pad text)");
-    let streaming = matches!(replication, Replication::Physical { .. });
     for _ in 0..FILLER_STEPS {
         if straum_slots(&mut db) == 0 {
             break;
         }
         db.run(FILLER_STEP);
-        if streaming {
-            await_report_after_sent(&mut db);
-        }
+        await_report_after_sent(&mut db);
     }
     if limit < MAX_RETAINED_WAL_BYTES {
         assert_slot_goes(&mut db, &format!("{name}: the slot outlived the limit"));

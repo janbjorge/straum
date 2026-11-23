@@ -219,8 +219,9 @@ and this glossary. The clashes at the end are open.
   truth" means PostgreSQL itself.
 - **Plain connection** (`Postgres::plain`): a connection beside the
   replication connection. One reads the WAL position each second, the
-  watchdog has its own, the physical stream two more ([What Straum
-  costs the server](postgresql.md#what-straum-costs-the-server)).
+  watchdog has its own, the load another, and the physical stream one
+  more for table layouts ([What Straum costs the
+  server](postgresql.md#what-straum-costs-the-server)).
 - **WAL retained** (`Wal::retained`): bytes PostgreSQL keeps for the
   slot ([straum status](cli.md#straum-status)).
 - **Watchdog** (`SlotGuard`, `watchdog.rs`): two threads that end the
@@ -293,8 +294,8 @@ and this glossary. The clashes at the end are open.
   (`Drift::OutOfLine`).
 - **WAL problem** (`wal::Problem`): WAL Straum can't read; it stops the
   stream.
-- **Replication connection**: the session that creates the slot, loads
-  and streams.
+- **Replication connection**: the session that creates the slot and
+  streams; the load reads the slot's snapshot on a plain connection.
 - **LSN** (`Lsn`): log sequence number, a WAL position; a `Wal` reading
   holds `written`, `confirmed` and `restart`.
 - **OID** (`Oid`): object identifier, PostgreSQL's id for a catalog row:

@@ -3,8 +3,8 @@
 //! reads sent once, so Straum groups or projects a row as it comes. One
 //! thread reads PostgreSQL's copy messages and decodes them (`value.rs`)
 //! into batches of rows; the caller's thread hands each spec table its own
-//! columns of a batch and adds them to the store, then checks a physical
-//! stream reading beside it has not failed. A load must not cost Straum the
+//! columns of a batch and adds them to the store, then checks the stream
+//! reading beside it has not failed. A load must not cost Straum the
 //! table's rows in memory.
 
 use std::sync::mpsc;
@@ -38,13 +38,13 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
 
 /// Loads `tables`, spec tables that read one table of PostgreSQL, whole
 /// into the store, in the connection's snapshot: one copy of the table
-/// carries the columns of them all. A physical stream that reads on
-/// meanwhile is checked after each batch.
+/// carries the columns of them all. The stream, which reads on meanwhile,
+/// is checked after each batch.
 pub(crate) fn tables(
     connection: &mut Connection,
     tables: &[&Checked],
     store: &mut Store,
-    mut stream: Option<&mut Stream>,
+    stream: &mut Stream,
 ) -> Result<(), Error> {
     let Some(copied) = copy_of(tables) else {
         return Ok(());
@@ -61,10 +61,7 @@ pub(crate) fn tables(
         for reader in &readers {
             reader.add(batch, copied.columns.len(), &mut rows, store)?;
         }
-        match stream.as_deref_mut() {
-            Some(stream) => stream.check(),
-            None => Ok(()),
-        }
+        stream.check()
     })
 }
 

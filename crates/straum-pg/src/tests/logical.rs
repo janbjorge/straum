@@ -742,7 +742,6 @@ fn the_stream_outlasts_a_busy_writer() {
     let mut db = Db::new(&pg, "busy", TABLES);
     let mut writer = db.writer(SPEC);
     writer.step().unwrap();
-    // The stream starts with the first commit asked for.
     let mut rng = Rng::new(5);
     db.run(&rng.trip(0));
     applied(&mut writer);
@@ -761,6 +760,42 @@ fn the_stream_outlasts_a_busy_writer() {
         applied(&mut writer);
     }
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+}
+
+/// A row once a walsender of Straum's slot streams: it shows `startup`
+/// until `START_REPLICATION`.
+const STREAMING: &str = "SELECT 1 FROM pg_replication_slots s
+    JOIN pg_stat_replication r ON r.pid = s.active_pid
+    WHERE s.slot_name LIKE 'straum%' AND r.state IN ('catchup', 'streaming')";
+
+/// The stream reads from the start on, before any table loads, so the
+/// slot is read while they load.
+#[test]
+fn streams_before_the_tables_load() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "beside", TABLES);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    wait_for(&mut db.connection, STREAMING);
+    load_all(&mut source, &spec).unwrap();
+}
+
+/// A start the setup check refuses leaves no stream and no slot.
+#[test]
+fn a_refused_start_streams_nothing() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "refusedstart", TABLES);
+    db.run("ALTER PUBLICATION $S DROP TABLE $S.logins");
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    let error = source.open(&spec).unwrap_err().to_string();
+    assert!(error.contains("logins"), "{error}");
+    wait_for(
+        &mut db.connection,
+        "SELECT 1 WHERE NOT EXISTS (SELECT FROM pg_stat_replication)
+           AND NOT EXISTS (SELECT FROM pg_replication_slots)",
+    );
 }
 
 /// A logical slot is made once every writing transaction open when it

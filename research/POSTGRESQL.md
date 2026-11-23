@@ -14,7 +14,7 @@ again at that commit and against Straum at `76862d3`.
 
 Everything the logical stream needs ships in stock PostgreSQL 17 and
 newer and works on Azure: pgoutput, temporary logical slots, a slot's
-snapshot used in its own transaction, SQL on a replication connection.
+snapshot exported to a plain connection, SQL on a replication connection.
 `--wal physical` needs none of those. It reads the WAL `replica` writes
 (ADR-0008).
 
@@ -39,22 +39,31 @@ table:
   table instead of one per table.
 - SQL and replication commands share one connection in logical
   walsender mode (`doc/src/sgml/protocol.sgml:2186-2190`, R), simple
-  query protocol only (`:2194-2195`, R). Loads come back as binary
-  `COPY`; pgoutput v1 sends the stream's values as text, which Straum
-  reads under the `DateStyle = ISO` and `TimeZone = UTC` it sets at
-  startup (`crates/straum-pg/src/value.rs`).
+  query protocol only (`:2194-2195`, R). Straum makes the slot there,
+  and runs the setup check there when the slot is refused. Loads come
+  back as binary `COPY` on a plain connection; pgoutput v1 sends the
+  stream's values as text, which Straum reads under the `DateStyle =
+  ISO` and `TimeZone = UTC` it sets at startup
+  (`crates/straum-pg/src/value.rs`).
 - The slot is made first, and the catalog checks run in its snapshot,
   so they see the tables as the load does. When PostgreSQL refuses the
   slot, as below PostgreSQL 19 at `wal_level = replica`, where its
   error names no fix, Straum runs the checks then and reports what they
   find (`crates/straum-pg/src/source.rs`,
   `crates/straum-pg/src/catalog/mod.rs`).
-- `SNAPSHOT 'use'` must run first in a REPEATABLE READ, read-only
-  transaction (`replication/walsender.c:1332-1373`, R). Creating the
-  slot waits for the transactions open at that moment
+- The slot is made with `SNAPSHOT 'export'`, and its reply names the
+  snapshot after the consistent point. A plain connection begins a
+  REPEATABLE READ, read-only transaction and takes it up with `SET
+  TRANSACTION SNAPSHOT` before the slot's connection sends
+  `START_REPLICATION`. On PostgreSQL 17, 18 and 19 on 2026-11-23,
+  through Straum's own client, the imported snapshot kept its rows after
+  `START_REPLICATION`, the stream carried a commit made in between
+  exactly once, and an import after `START_REPLICATION` failed with
+  `snapshot "<name>" does not exist` (42704). Creating the slot waits
+  for the transactions open at that moment
   (`replication/logical/snapbuild.c:1301-1306`, `:1479-1500`, R). The
   load sees the state at L, and the stream starts with the first commit
-  after L.
+  after L; the stream thread reads it while the tables load.
 - `TEMPORARY`: "Temporary slots are not saved to disk and are
   automatically dropped on error or when the session has finished"
   (`protocol.sgml:2371-2374`, R).

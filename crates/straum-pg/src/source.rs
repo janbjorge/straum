@@ -1,10 +1,12 @@
 //! [`Postgres`], the [`Source`] over PostgreSQL, where straum-pg meets
 //! `straum-app`. Logical: a temporary replication slot (PostgreSQL's
-//! bookmark in its WAL), loads in its snapshot on the same connection, then
-//! the stream from its consistent point. Physical: a temporary physical
-//! slot streams from the last redo point while the loads run in a snapshot
-//! taken once every later commit is whole in what it read. A plain
-//! connection on the side reads the server's WAL position.
+//! bookmark in its WAL) exports its snapshot, a plain connection takes it
+//! up for the loads, then the slot's connection streams from its
+//! consistent point while they run. Physical: a temporary physical slot
+//! streams from the last redo point while the loads run in a snapshot
+//! taken once every later commit is whole in what it read. Either way the
+//! stream's thread reads beside the loads, and each load checks it has not
+//! failed. A plain connection on the side reads the server's WAL position.
 
 use std::mem;
 use std::process;
@@ -131,9 +133,9 @@ enum State {
     Streaming(Stream),
 }
 
-/// A connection in a read-only, repeatable-read transaction that sees the
-/// database as of where the stream starts: the logical slot's own
-/// connection, or a plain one beside a physical stream already reading.
+/// A plain connection in a read-only, repeatable-read transaction that
+/// sees the database as of where the stream starts, beside the stream
+/// already reading.
 struct Snapshot {
     connection: Connection,
     slot: String,
@@ -144,8 +146,8 @@ struct Snapshot {
     /// Tables not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
     unloaded: Vec<Identifier>,
-    /// The physical stream, which reads on while the tables load.
-    stream: Option<Stream>,
+    /// The stream, which reads on while the tables load.
+    stream: Stream,
 }
 
 impl Postgres {
@@ -171,44 +173,53 @@ impl Postgres {
     }
 }
 
-/// A new temporary slot, and a transaction on its connection that sees
-/// the database as of the slot's consistent point.
+/// A new temporary logical slot streaming from its consistent point, and a
+/// transaction on a plain connection in the snapshot the slot exported.
 fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<Snapshot, Error> {
     let dsn = &settings.dsn;
     let wait = settings.consistent_wait;
-    let mut connection = Connection::connect(dsn, ConnectionKind::Replication)?;
-    connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+    let mut replication = Connection::connect(dsn, ConnectionKind::Replication)?;
     let slot = slot_name();
     // PostgreSQL makes the slot once every transaction that writes and
     // was open when it began has ended: at most `wait`, then the start
     // names them, as a physical start does.
-    connection.set_read_timeout(wait)?;
-    let created = connection.rows(&format!(
-        "CREATE_REPLICATION_SLOT {slot} TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')"
+    replication.set_read_timeout(wait)?;
+    let created = replication.rows(&format!(
+        "CREATE_REPLICATION_SLOT {slot} TEMPORARY LOGICAL pgoutput (SNAPSHOT 'export')"
     ));
     if let Err(Error::Io(error)) = &created
         && timed_out(error)
     {
         return Err(waited_for(wait.as_secs(), slot_wait(dsn)?));
     }
-    connection.clear_read_timeout()?;
+    replication.clear_read_timeout()?;
     let created = match created {
         Ok(created) => created,
         // Without the wal_level logical decoding needs, PostgreSQL's error
         // names no fix; the setup check says what to change.
         Err(error) => {
-            connection.execute("ROLLBACK")?;
-            read_in_time(&mut connection, spec, settings, AfterRead::Nothing)?;
+            read_in_time(&mut replication, spec, settings, AfterRead::Nothing)?;
             return Err(error);
         }
     };
-    // The loads run on this connection, so nothing reads the slot until
-    // they end; the watchdog bounds the WAL it holds meanwhile.
-    guard.watch(dsn, &slot, LOGICAL_FROM, vec![connection.closer()?])?;
     let at = (first_row_value(&created, 1).and_then(parse_lsn))
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
+    let exported =
+        first_row_value(&created, 2).ok_or(Error::Protocol(Unexpected::SlotWithoutSnapshot))?;
+    let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    let closers = vec![replication.closer()?, connection.closer()?];
+    guard.watch(dsn, &slot, LOGICAL_FROM, closers)?;
+    begin_in_snapshot(&mut connection, exported)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::HoldTables)?;
     let versions = catalog::column_versions(&mut connection, &checked(&tables))?;
+    // After the import: the slot's connection keeps its snapshot only
+    // until its next command.
+    let names = escape_literal(&escape_identifier(&settings.publication));
+    replication.copy_both(&format!(
+        "START_REPLICATION SLOT {slot} LOGICAL {at} (proto_version '1', publication_names {names})"
+    ))?;
+    let reader = Decoder::new(checked(&tables), settings.max_transaction_rows);
+    let stream = Stream::start(replication, Reader::Logical(reader), at)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
@@ -217,8 +228,18 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
         tables,
         versions,
         unloaded,
-        stream: None,
+        stream,
     })
+}
+
+/// Begins the load's transaction on `connection` in the snapshot a slot
+/// exported as `exported`.
+fn begin_in_snapshot(connection: &mut Connection, exported: &str) -> Result<(), Error> {
+    connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+    connection.execute(&format!(
+        "SET TRANSACTION SNAPSHOT {}",
+        escape_literal(exported)
+    ))
 }
 
 /// A physical stream reading from the last redo point, and a transaction
@@ -251,7 +272,7 @@ fn physical_snapshot(
         tables,
         versions: Vec::new(),
         unloaded,
-        stream: Some(stream),
+        stream,
     })
 }
 
@@ -611,7 +632,7 @@ impl Postgres {
     /// The next commit, streaming once the last table is loaded.
     fn next(&mut self, wait: Duration) -> Result<Option<Commit>, Error> {
         self.state = match mem::replace(&mut self.state, State::Closed) {
-            State::Loading(snapshot) => State::Streaming(stream(*snapshot, &self.settings)?),
+            State::Loading(snapshot) => State::Streaming(stream(*snapshot)?),
             other => other,
         };
         let State::Streaming(stream) = &mut self.state else {
@@ -636,7 +657,7 @@ fn load_tables(
         &mut snapshot.connection,
         &checked,
         store,
-        snapshot.stream.as_mut(),
+        &mut snapshot.stream,
     )?;
     loaded(snapshot, tables)
 }
@@ -712,23 +733,13 @@ fn whole_number(value: Option<&str>) -> Option<u64> {
     value?.parse().ok()
 }
 
-/// Streams from the snapshot's consistent point. Tables not loaded yet
+/// The stream, its snapshot's transaction ended. Tables not loaded yet
 /// can't load any more.
-fn stream(mut snapshot: Snapshot, settings: &Settings) -> Result<Stream, Error> {
+fn stream(mut snapshot: Snapshot) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
         snapshot.connection.execute("COMMIT")?;
     }
-    if let Some(stream) = snapshot.stream {
-        return Ok(stream);
-    }
-    let names = escape_literal(&escape_identifier(&settings.publication));
-    snapshot.connection.copy_both(&format!(
-        "START_REPLICATION SLOT {} LOGICAL {} (proto_version '1', publication_names {names})",
-        snapshot.slot, snapshot.at
-    ))?;
-    let limit = settings.max_transaction_rows;
-    let reader = Reader::Logical(Decoder::new(checked(&snapshot.tables), limit));
-    Stream::start(snapshot.connection, reader, snapshot.at)
+    Ok(snapshot.stream)
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.
