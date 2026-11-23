@@ -717,7 +717,10 @@ mod tests {
         let one = Size::of(&commit_of(1));
         let (mut stream, mut thread) = ends(LOAD_MEMORY);
         let backlog = QUEUE * 2;
-        for _ in 0..backlog {
+        // Room is checked first: a stream that bounds the queue while the
+        // tables load would block in `deliver`, with nobody to drain it.
+        for queued in 0..backlog {
+            assert_eq!(thread.room(one).unwrap(), Room::Fits, "{queued} queued");
             assert!(thread.deliver(Ok(commit_of(1))).unwrap());
         }
         assert_eq!(thread.room(one).unwrap(), Room::Fits);
@@ -731,8 +734,10 @@ mod tests {
         assert_eq!(taken, backlog);
 
         let (mut stream, mut thread) = ends(LOAD_MEMORY);
-        for _ in 0..3 {
+        for queued in 0..3 {
             let half = commit_of(QUEUED_CHANGES / 2);
+            let size = Size::of(&half);
+            assert_eq!(thread.room(size).unwrap(), Room::Fits, "{queued} queued");
             assert!(thread.deliver(Ok(half)).unwrap());
         }
         stream.next(Duration::ZERO).unwrap().unwrap();
