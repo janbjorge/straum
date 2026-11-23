@@ -365,7 +365,8 @@ impl Walker {
             partitions,
             json_path,
             sample,
-            index_hints,
+            index_directives,
+            inheritance,
         } = factor
         else {
             self.refuse(line(factor), "table", factor);
@@ -379,7 +380,8 @@ impl Walker {
         self.reject_if_present(at, !partitions.is_empty(), "PARTITION");
         self.reject_if_present(at, json_path.is_some(), "a JSON path");
         self.reject_if_present(at, sample.is_some(), "TABLESAMPLE");
-        self.reject_if_present(at, !index_hints.is_empty(), "an index hint");
+        self.reject_if_present(at, !index_directives.is_empty(), "an index directive");
+        self.reject_if_present(at, inheritance.is_some(), "ONLY or *");
         Ok(NamedTable {
             name,
             alias: alias.as_ref(),
@@ -530,10 +532,11 @@ impl Walker {
                         });
                     }
                 }
-                sql::Expr::InList {
+                sql::Expr::In {
                     expr: inner,
-                    list,
+                    target: sql::InTarget::List(list),
                     negated: false,
+                    global: false,
                 } => {
                     if list.len() < 2 {
                         self.refuse(line(part), "IN with one value, write =,", part);

@@ -354,6 +354,18 @@ fn from_forms_outside_the_subset_are_rejected() {
             4,
             "TABLESAMPLE is not",
         ),
+        (
+            "FROM public.t AS f",
+            "FROM ONLY public.t AS f",
+            4,
+            "ONLY or * is not",
+        ),
+        (
+            "FROM public.t AS f",
+            "FROM public.t * AS f",
+            4,
+            "ONLY or * is not",
+        ),
     ]);
 }
 
