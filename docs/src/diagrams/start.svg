@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="312" viewBox="0 0 720 312" role="img" aria-labelledby="t d">
   <title id="t">The load and the stream meet at one point, L</title>
-  <desc id="d">A timeline of commits in PostgreSQL's WAL. Straum opens a temporary slot at L. Every commit up to L is in the snapshot, which Straum loads with one COPY per view and per dim while asks get 503. Every commit after L comes through the slot and is applied whole and in order, and asks are answered. No commit is missed and none is applied twice.</desc>
+  <desc id="d">A timeline of commits in PostgreSQL's WAL. Straum opens a temporary slot at L. Every commit up to L is in the snapshot, which Straum loads with one COPY per table while asks get 503. Every commit after L comes through the slot and is applied whole and in order, and asks are answered. No commit is missed and none is applied twice.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -119,7 +119,7 @@
   <text x="344" y="186" class="s ink2 halo" text-anchor="middle">the slot opens here</text>
   <rect class="box" x="24" y="206" width="310" height="82" rx="8"/>
   <text x="38" y="231" class="h">Load</text>
-  <text x="38" y="252" class="s ink2">one COPY per view and dim, from the</text>
+  <text x="38" y="252" class="s ink2">one COPY per table, from the</text>
   <text x="38" y="271" class="s ink2">snapshot; asks answer 503</text>
   <rect class="accbox" x="354" y="206" width="342" height="82" rx="8"/>
   <text x="368" y="231" class="h acc">Follow</text>
