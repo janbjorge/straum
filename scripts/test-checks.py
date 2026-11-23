@@ -12,10 +12,11 @@ need no cargo and no network. The domain syntax check reads a folder of
 Rust files; these tests write one. The chart check reads its oldest
 Kubernetes from Chart.yaml; these tests hand it the line.
 changed-crates.py maps paths to crates; these tests hand it paths. The
-justfile's guard against a crate recipe with no crate runs under
+test filter check reads a justfile and a crate; these tests write both.
+The justfile's guard against a crate recipe with no crate runs under
 `just -n`, which prints what would run and runs nothing. Many cases
-here are ways past a
-check that a red team found; each stays so the way stays shut.
+here are ways past a check that a red team found; each stays so the
+way stays shut.
 """
 
 import collections.abc
@@ -47,6 +48,7 @@ layers = load("check-layers")
 syntax = load("check-domain-syntax")
 chart = load("check-chart")
 changed = load("changed-crates")
+filters = load("check-test-filters")
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 
 
@@ -716,6 +718,68 @@ class ChangedCrates(unittest.TestCase):
         paths = ["crates", "crates/README.md", "docs/crates/x/y.md", "justfile", ""]
         self.assertEqual(changed.crate_names(paths), [])
 
+
+
+def filter_errors(call: str) -> list[str]:
+    """The test filter check's errors over a justfile holding `call`, and
+    a straum-pg with one test in `tests::decoding`."""
+    files = {
+        "lib.rs": "#[cfg(test)]\nmod tests;\n",
+        "tests/mod.rs": "mod decoding;\n",
+        "tests/decoding.rs": (
+            '#[test]\n#[ignore = "slow"]\nfn follows_at_random() {}\n'
+            "fn helper_at_random() {}\n"
+            "// #[test] fn commented_at_random() {}\n"
+        ),
+    }
+    with tempfile.TemporaryDirectory() as folder:
+        root = pathlib.Path(folder)
+        for relative, text in files.items():
+            path = root / "crates" / "straum-pg" / "src" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return filters.check(f"recipe: {call}\n", root)
+
+
+class TestFilterCheck(unittest.TestCase):
+    def assert_refused(self, call: str, words: str):
+        errors = filter_errors(call)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(words, errors[0])
+
+    def test_a_module_path_to_a_test_passes(self):
+        call = '(test "straum-pg" "--" "tests::decoding::follows_at_random")'
+        self.assertEqual(filter_errors(call), [])
+
+    def test_part_of_a_test_name_passes_as_cargo_matches(self):
+        call = '(test "straum-pg" "--lib" "at_random" "--" "--ignored")'
+        self.assertEqual(filter_errors(call), [])
+
+    def test_a_path_missing_its_module_fails(self):
+        self.assert_refused(
+            '(test "straum-pg" "--" "tests::follows_at_random")',
+            "'tests::follows_at_random' selects no test",
+        )
+
+    def test_a_function_that_is_no_test_fails(self):
+        call = '(test "straum-pg" "--" "helper_at_random")'
+        self.assert_refused(call, "helper_at_random")
+
+    def test_a_test_in_a_comment_fails(self):
+        call = '(test "straum-pg" "--" "commented_at_random")'
+        self.assert_refused(call, "commented_at_random")
+
+    def test_a_crate_with_no_folder_fails(self):
+        call = '(test "straum-nothing" "--" "follows")'
+        self.assert_refused(call, "no crate folder")
+
+    def test_flags_and_their_values_are_no_filters(self):
+        call = '(test "straum-pg" "--release" "--test" "cost" "--" "--ignored")'
+        self.assertEqual(filter_errors(call), [])
+
+    def test_the_justfile_passes(self):
+        justfile = (SCRIPTS.parent / "justfile").read_text()
+        self.assertEqual(filters.check(justfile, SCRIPTS.parent), [])
 
 
 def dry_run(recipe: str, crates: str) -> subprocess.CompletedProcess[str]:

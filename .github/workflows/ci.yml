@@ -131,10 +131,11 @@ jobs:
       - if: ${{ matrix.coverage }}
         run: just cov all
 
-  # The physical stream against PostgreSQL on every supported major: random
-  # workloads, compared byte for byte with a logical slot and, under
-  # wal_level=replica, with SQL. Each run tries new seeds; a re-run the
-  # same ones, and a failure names its seed.
+  # Both streams against PostgreSQL on every supported major: random
+  # workloads, the physical stream compared byte for byte with a logical
+  # slot and, under wal_level=replica, with SQL; the logical stream from a
+  # random start, with SQL. Each run tries new seeds; a re-run the same
+  # ones, and a failure names its seed.
   correctness:
     runs-on: ubuntu-latest
     strategy:

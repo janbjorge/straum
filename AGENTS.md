@@ -27,9 +27,11 @@ Coverage: touched crates plus crates whose tests exercise them
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
 PostgreSQL tests need Docker with Compose. `postgres` picks the major
-(18 by default). The random workloads of the physical stream
-(`just correctness`) run `seeds` seeds (6) from `seed_from` (0); CI's
-`correctness` job runs 50 new ones per major each run. The heap unit
+(18 by default). The random workloads of `just correctness`, the
+physical stream against a logical slot and from a random start, and
+the logical stream from a random start, run `seeds` seeds (6) from
+`seed_from` (0); CI's `correctness` job runs 50 new ones per major each
+run. The heap unit
 tests replay records captured per major in
 `crates/straum-pg/src/wal/heap/fixtures/`; after a WAL layout change,
 capture them again for each major with `just postgres=<major>
@@ -63,7 +65,9 @@ the same commit, with the same default as the code, and CI calls the
 recipe, never the command under it. Keep it tidy: one recipe per tool,
 in a `[group]`, with a one-line comment; recipes are thin wrappers,
 logic stays in the script or test. A recipe that runs a cargo test
-calls `test` with its arguments rather than repeating cargo. A recipe
+calls `test` with its arguments rather than repeating cargo; each
+filter names a test as `cargo test -- --list` does, and
+`scripts/check-test-filters.py` fails on one that selects none. A recipe
 that passes free arguments on takes `[positional-arguments]` and passes
 `"$@"`, so an argument with a space stays one; `test` is the
 exception, since its first argument is the crates and its others are

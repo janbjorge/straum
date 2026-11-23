@@ -18,7 +18,7 @@ set lazy
 
 # PostgreSQL major of the tests, benchmarks and try
 postgres := env("STRAUM_TEST_POSTGRES", "18")
-# Random workloads of the physical stream: how many, from which seed
+# Random workloads of correctness: how many, from which seed
 seeds := env("STRAUM_TEST_SEEDS", "6")
 seed_from := env("STRAUM_TEST_SEED_FROM", "0")
 # Reads of each kind in wal-bench; the fastest counts
@@ -67,11 +67,12 @@ test crates=changed *args: (_named crates)
 cov crates=changed: (_named crates)
     cargo llvm-cov {{ if crates == all { '--workspace' } else { prepend('-p ', crates) } }} --all-targets --fail-under-lines {{ coverage }}
 
-# Layers, no Straum SQL in straum-domain, and the tests of the check and bench scripts
+# Layers, no Straum SQL in straum-domain, test filters that select a test, and the tests of the check and bench scripts
 [group('check')]
 scripts:
     scripts/check-layers.py
     scripts/check-domain-syntax.py
+    scripts/check-test-filters.py
     scripts/test-checks.py
     bench/test-stack.py
 
@@ -80,9 +81,9 @@ scripts:
 audit:
     cargo audit
 
-# Physical stream against random workloads, as CI's correctness job
+# Both streams against random workloads, as CI's correctness job
 [group('check')]
-correctness: (test "straum-pg" "--" "tests::commits_what_logical_decoding_commits_at_random" "tests::follows_random_workloads_from_a_random_start")
+correctness: (test "straum-pg" "--" "tests::decoding::commits_what_logical_decoding_commits_at_random" "tests::decoding::follows_random_workloads_from_a_random_start" "tests::decoding::follows_random_workloads_from_a_random_logical_start")
 
 # Capture the heap fixtures of the postgres major again, after a WAL layout change
 [group('check')]
