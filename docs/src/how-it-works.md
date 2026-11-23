@@ -113,7 +113,10 @@ lock.*
 
 A long ask delays the writer, which shows as lag. The stream reads up to
 64 commits or 200,000 changes ahead of the writer and confirms what has
-been applied, so PostgreSQL can recycle write-ahead log (WAL).
+been applied, so PostgreSQL can recycle write-ahead log (WAL). While the
+tables load it reads on and holds every commit until the writer takes
+them, up to `--max-load-memory` (1 GiB by default) of them. Nothing is
+applied until the load ends, so the server still keeps the load's WAL.
 
 Straum stops with exit 1 when a change does not fit what it holds, and
 the next start loads from a new slot: an update or delete whose old row is
@@ -125,8 +128,9 @@ in memory; the new slot's snapshot brings its rows in through the bulk
 `COPY` instead. The [benchmark](performance.md#transactions) sets
 the default.
 
-Straum also stops on a lost connection, WAL past `--max-retained-wal`
-or, when set, resident memory past `--max-memory`
+Straum also stops on a lost connection, WAL past `--max-retained-wal`,
+commits held past `--max-load-memory` while the tables load or, when
+set, resident memory past `--max-memory`
 ([States](deploy.md#states)), on a spec table that is renamed away
 or replaced by another table under its name, and, on logical decoding,
 on a publication altered to leave a spec table out, filter its rows or

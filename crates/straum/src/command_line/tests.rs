@@ -64,6 +64,7 @@ fn reads_run_and_plan() {
             limits: LIMITS,
             max_transaction_rows: MAX_TRANSACTION_ROWS,
             max_answer_rows: MAX_ANSWER_ROWS,
+            max_load_memory: MAX_LOAD_MEMORY,
             max_memory: None,
         }))
     );
@@ -71,7 +72,8 @@ fn reads_run_and_plan() {
         command_of(&args(
             "run --dsn-file d --listen 127.0.0.1:9 s --publication p \
              --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
-             --max-page-memory 256Mi --max-memory 2Gi --max-answer-rows 50"
+             --max-page-memory 256Mi --max-memory 2Gi --max-answer-rows 50 \
+             --max-load-memory 512Mi"
         )),
         Ok(Command::Run(Run {
             spec: "s".into(),
@@ -88,6 +90,7 @@ fn reads_run_and_plan() {
             },
             max_transaction_rows: 2500,
             max_answer_rows: 50,
+            max_load_memory: 512 << 20,
             max_memory: Some(2 << 30),
         }))
     );
@@ -111,6 +114,35 @@ fn max_memory_is_off_unless_set() {
     assert_eq!(
         usage("plan s --wal logical --max-memory 1Gi"),
         "straum plan takes no \"--max-memory\""
+    );
+}
+
+/// `--max-load-memory` is 1 GiB unless set, with either WAL, takes bytes
+/// with or without a suffix, and refuses what is not bytes above 0.
+#[test]
+fn max_load_memory_defaults_to_a_gibibyte() {
+    assert_eq!(MAX_LOAD_MEMORY, 1 << 30);
+    let cases = [
+        ("run s --wal logical", MAX_LOAD_MEMORY),
+        ("run s --wal physical", MAX_LOAD_MEMORY),
+        ("run s --wal logical --max-load-memory 4294967296", 4 << 30),
+        ("run s --wal physical --max-load-memory=512Mi", 512 << 20),
+    ];
+    for (line, expected) in cases {
+        let Ok(Command::Run(run)) = command_of(&args(line)) else {
+            panic!("{line}");
+        };
+        assert_eq!(run.max_load_memory, expected, "{line}");
+    }
+    for value in ["0", "-1", "1Pi", "1G", "lots"] {
+        assert_eq!(
+            usage(&format!("run s --wal logical --max-load-memory={value}")),
+            format!("--max-load-memory takes bytes above 0, as 1073741824 or 1Gi, not {value:?}")
+        );
+    }
+    assert_eq!(
+        usage("plan s --wal logical --max-load-memory 1Gi"),
+        "straum plan takes no \"--max-load-memory\""
     );
 }
 
@@ -495,6 +527,7 @@ fn help_names_each_default() {
         format!("({MAX_TRANSACTION_ROWS})"),
         format!("({MAX_ANSWER_ROWS})"),
         format!("({})", gibibytes(MAX_PAGE_MEMORY as u64)),
+        format!("({})", gibibytes(MAX_LOAD_MEMORY as u64)),
         "(off;".to_owned(),
     ] {
         assert!(run.contains(&default), "run {default}");
@@ -778,7 +811,7 @@ fn reads_sizes() {
 
 /// Pieces a command line is built from: every command and flag, the
 /// shapes values take, and the characters a parser trips on.
-const PIECES: [&str; 35] = [
+const PIECES: [&str; 36] = [
     "run",
     "plan",
     "--copy",
@@ -796,6 +829,7 @@ const PIECES: [&str; 35] = [
     "--max-lag",
     "--max-retained-wal",
     "--max-page-memory",
+    "--max-load-memory",
     "--max-memory",
     "--max-answer-rows",
     "-h",

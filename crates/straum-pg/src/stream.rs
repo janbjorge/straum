@@ -4,15 +4,19 @@
 //! `Stream::next` takes them off the queue for `source.rs`. Meanwhile the
 //! thread answers keepalives and reports the applied LSN (a WAL position)
 //! in standby status updates, so PostgreSQL never times Straum out.
+//! While the tables load the thread reads on and queues every commit, up
+//! to `--max-load-memory` bytes of them; once the writer takes the first,
+//! the queue holds a few commits ahead of it and the thread waits for room.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use postgres_protocol::message::backend::Message as Backend;
-use straum_app::{Commit, Lsn};
+use straum_app::{Change, Commit, Lsn};
+use straum_domain::Datum;
 
 use crate::decode::Decoder;
 use crate::error::Error;
@@ -31,7 +35,8 @@ pub(crate) const POLL: Duration = Duration::from_secs(1);
 /// a full queue, which stops the thread reading, can't outlast a
 /// `wal_sender_timeout` of a few seconds.
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
-/// Commits read ahead of the writer.
+/// Commits read ahead of the writer once it takes them. While the tables
+/// load the bound is `--max-load-memory` instead.
 const QUEUE: usize = 64;
 /// Changes read ahead of the writer, beside [`QUEUE`]: 64 commits at the
 /// row limit would hold gigabytes. A commit bigger than this still goes
@@ -82,8 +87,15 @@ struct Shared {
     /// Set by the thread before it queues its error, which a full queue
     /// holds back.
     failed: AtomicBool,
+    /// Set until the writer asks for its first commit: the tables are
+    /// still loading, and the queue is bounded in bytes, not commits.
+    loading: AtomicBool,
+    /// Items in the queue, the thread's error among them.
+    queued_commits: AtomicUsize,
     /// Changes in the queue's commits.
     queued_changes: AtomicUsize,
+    /// The queue's commits' footprints, summed.
+    queued_bytes: AtomicUsize,
     /// A physical stream's state before its load: how far it is from
     /// where every later commit is whole, the load's snapshot with the WAL
     /// position it was taken at, for the thread to take, and what the
@@ -94,13 +106,17 @@ struct Shared {
 }
 
 impl Shared {
-    /// Nothing queued, nothing failed, everything before `start` applied.
+    /// Nothing queued, nothing failed, everything before `start` applied,
+    /// the tables loading.
     fn new(start: Lsn) -> Shared {
         Shared {
             applied: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            loading: AtomicBool::new(true),
+            queued_commits: AtomicUsize::new(0),
             queued_changes: AtomicUsize::new(0),
+            queued_bytes: AtomicUsize::new(0),
             consistency: Mutex::new(Consistency::Unknown),
             snapshot: Mutex::new(None),
             sight: Mutex::new(None),
@@ -110,15 +126,17 @@ impl Shared {
 
 impl Stream {
     /// Takes over a connection on which `START_REPLICATION` has begun,
-    /// streaming from `start`.
+    /// streaming from `start`. Past `max_load_memory` bytes of commits
+    /// queued while the tables load, the stream fails.
     pub(crate) fn start(
         connection: Connection,
         reader: Reader,
         start: Lsn,
+        max_load_memory: usize,
     ) -> Result<Stream, Error> {
         connection.set_read_timeout(POLL)?;
         let closer = connection.closer()?;
-        let (commits, receiver) = mpsc::sync_channel(QUEUE);
+        let (commits, receiver) = mpsc::channel();
         let shared = Arc::new(Shared::new(start));
         let thread = StreamThread {
             connection,
@@ -129,6 +147,7 @@ impl Stream {
             idle: start,
             reported: start,
             last_report: Instant::now(),
+            max_load_memory,
         };
         let thread = thread::Builder::new()
             .name("straum-stream".into())
@@ -166,15 +185,21 @@ impl Stream {
         }
     }
 
-    /// Takes `commit`'s changes off the count of those queued.
+    /// Takes `commit` off the counts of what is queued.
     fn count_out(&self, commit: &Commit) {
-        self.shared
+        let size = Size::of(commit);
+        let shared = &self.shared;
+        shared.queued_commits.fetch_sub(1, Ordering::AcqRel);
+        shared
             .queued_changes
-            .fetch_sub(commit.changes.len(), Ordering::AcqRel);
+            .fetch_sub(size.changes, Ordering::AcqRel);
+        shared.queued_bytes.fetch_sub(size.bytes, Ordering::AcqRel);
     }
 
-    /// The next commit, waiting at most `wait` for one.
+    /// The next commit, waiting at most `wait` for one. The first call
+    /// ends the load, and the queue's bounds hold from then on.
     pub(crate) fn next(&mut self, wait: Duration) -> Result<Option<Commit>, Error> {
+        self.shared.loading.store(false, Ordering::Release);
         self.shared.applied.store(self.applied.0, Ordering::Release);
         match self.commits.recv_timeout(wait) {
             Ok(Ok(commit)) => {
@@ -256,8 +281,10 @@ impl Drop for Stream {
 struct StreamThread {
     connection: Connection,
     reader: Reader,
-    commits: SyncSender<Result<Commit, Error>>,
+    commits: Sender<Result<Commit, Error>>,
     shared: Arc<Shared>,
+    /// The bytes of commits the queue may hold while the tables load.
+    max_load_memory: usize,
     /// The LSN of the last commit queued.
     sent: Lsn,
     /// The server's position at the last keepalive between transactions.
@@ -373,30 +400,12 @@ impl StreamThread {
     /// Queues the item, answering the server while the queue is full, in
     /// commits or in changes. `false` once the writer is gone or the
     /// stream is stopping.
-    fn deliver(&mut self, mut item: Result<Commit, Error>) -> Result<bool, Error> {
-        let changes = match &item {
-            Ok(commit) => commit.changes.len(),
-            Err(_) => 0,
+    fn deliver(&mut self, item: Result<Commit, Error>) -> Result<bool, Error> {
+        let size = match &item {
+            Ok(commit) => Size::of(commit),
+            Err(_) => Size::NOTHING,
         };
-        loop {
-            let queued = self.shared.queued_changes.load(Ordering::Acquire);
-            if has_room(queued, changes) {
-                // Counted before it is sent: the writer may take it and
-                // count it out at once.
-                self.shared
-                    .queued_changes
-                    .fetch_add(changes, Ordering::AcqRel);
-                match self.commits.try_send(item) {
-                    Ok(()) => return Ok(true),
-                    Err(TrySendError::Disconnected(_)) => return Ok(false),
-                    Err(TrySendError::Full(back)) => {
-                        self.shared
-                            .queued_changes
-                            .fetch_sub(changes, Ordering::AcqRel);
-                        item = back;
-                    }
-                }
-            }
+        while self.room(size)? == Room::Full {
             if self.shared.stop.load(Ordering::Acquire) {
                 return Ok(false);
             }
@@ -405,6 +414,37 @@ impl StreamThread {
             }
             thread::sleep(WAIT);
         }
+        // Counted before it is sent: the writer may take it and count it
+        // out at once.
+        let shared = &self.shared;
+        shared.queued_commits.fetch_add(1, Ordering::AcqRel);
+        shared
+            .queued_changes
+            .fetch_add(size.changes, Ordering::AcqRel);
+        shared.queued_bytes.fetch_add(size.bytes, Ordering::AcqRel);
+        Ok(self.commits.send(item).is_ok())
+    }
+
+    /// Whether an item of `size` may be queued now. While the tables load
+    /// it may, unless it takes the queue past `--max-load-memory`; after,
+    /// only within the queue's bounds in commits and changes.
+    fn room(&self, size: Size) -> Result<Room, Error> {
+        let shared = &self.shared;
+        if shared.loading.load(Ordering::Acquire) {
+            let queued = shared.queued_bytes.load(Ordering::Acquire);
+            let held = queued.saturating_add(size.bytes);
+            if held > self.max_load_memory {
+                let limit = self.max_load_memory;
+                return Err(Error::LoadMemory { held, limit });
+            }
+            return Ok(Room::Fits);
+        }
+        let commits = shared.queued_commits.load(Ordering::Acquire);
+        let changes = shared.queued_changes.load(Ordering::Acquire);
+        if commits < QUEUE && has_room(changes, size.changes) {
+            return Ok(Room::Fits);
+        }
+        Ok(Room::Full)
     }
 
     /// Tells the server what is applied, so it may recycle the WAL before
@@ -429,6 +469,63 @@ impl StreamThread {
         self.last_report = Instant::now();
         Ok(())
     }
+}
+
+/// Whether an item fits in the queue now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Room {
+    Fits,
+    Full,
+}
+
+/// What one item adds to the queue's counts.
+#[derive(Debug, Clone, Copy)]
+struct Size {
+    changes: usize,
+    bytes: usize,
+}
+
+impl Size {
+    /// An error: nothing counted but its place in the queue.
+    const NOTHING: Size = Size {
+        changes: 0,
+        bytes: 0,
+    };
+
+    fn of(commit: &Commit) -> Size {
+        Size {
+            changes: commit.changes.len(),
+            bytes: footprint(commit),
+        }
+    }
+}
+
+/// The bytes `commit` holds, near enough to bound memory by: its changes
+/// and their rows' values, text by its length.
+// Leaves out the tables' names, shared with the spec, and `Vec` slack.
+fn footprint(commit: &Commit) -> usize {
+    let mut bytes = size_of::<Commit>();
+    for change in &commit.changes {
+        bytes += size_of::<Change>();
+        bytes += match change {
+            Change::Insert { row, .. } => row_footprint(row),
+            Change::Update { old, new, .. } => row_footprint(old) + row_footprint(new),
+            Change::Delete { old, .. } => row_footprint(old),
+            Change::Truncate { .. } | Change::Unfit { .. } => 0,
+        };
+    }
+    bytes
+}
+
+/// The bytes of one row's values, text by its length.
+fn row_footprint(row: &[Datum]) -> usize {
+    let mut bytes = size_of_val(row);
+    for datum in row {
+        if let Datum::Text(text) = datum {
+            bytes += text.len();
+        }
+    }
+    bytes
 }
 
 /// Whether a commit of `changes` fits beside the `queued` changes: always
@@ -462,10 +559,12 @@ const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::support::{now, scripted, signed_in};
+    use crate::tests::support::{LOAD_MEMORY, now, scripted, signed_in};
     use crate::wire::ConnectionKind;
-    use straum_app::Change;
     use straum_domain::Identifier;
+
+    /// Long enough that only a thread that stopped reading passes it.
+    const STALL: Duration = Duration::from_secs(10);
 
     /// A commit of `count` inserts into one table.
     fn commit_of(count: usize) -> Commit {
@@ -483,19 +582,31 @@ mod tests {
         }
     }
 
+    /// A commit of one insert of a row holding `text` and a number.
+    fn commit_with_text(text: &str) -> Commit {
+        let table = Identifier::new("trips").unwrap();
+        let row = vec![Datum::Text(text.into()), Datum::Int(1)];
+        Commit {
+            lsn: Lsn(0x20),
+            committed: SystemTime::now(),
+            changes: vec![Change::Insert { table, row }],
+        }
+    }
+
     /// The writer's end and the thread's end of a stream from a fake
-    /// server, the thread's end not yet running.
-    fn ends() -> (Stream, StreamThread) {
+    /// server, the thread's end not yet running, the tables loading.
+    fn ends(max_load_memory: usize) -> (Stream, StreamThread) {
         let server = scripted(vec![now(signed_in())]);
         let connection = Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap();
         let closer = connection.closer().unwrap();
-        let (commits, receiver) = mpsc::sync_channel(QUEUE);
+        let (commits, receiver) = mpsc::channel();
         let shared = Arc::new(Shared::new(Lsn(0)));
         let thread = StreamThread {
             connection,
             reader: Reader::Logical(Decoder::new(Vec::new(), 1)),
             commits,
             shared: Arc::clone(&shared),
+            max_load_memory,
             sent: Lsn(0),
             idle: Lsn(0),
             reported: Lsn(0),
@@ -518,7 +629,9 @@ mod tests {
     #[test]
     fn a_check_gives_the_error_after_the_commits_queued() {
         for count in [QUEUED_CHANGES + 1, 1] {
-            let (mut stream, mut thread) = ends();
+            let (mut stream, mut thread) = ends(LOAD_MEMORY);
+            // Loaded, so the queue's bounds hold the error back.
+            stream.shared.loading.store(false, Ordering::Release);
             let handle = thread::spawn(move || {
                 assert!(thread.deliver(Ok(commit_of(count))).unwrap());
                 thread.fail(Error::Protocol(Unexpected::StreamEnded));
@@ -546,5 +659,119 @@ mod tests {
         assert!(!has_room(QUEUED_CHANGES - 10, 11));
         assert!(!has_room(1, QUEUED_CHANGES));
         assert!(!has_room(usize::MAX, 1));
+    }
+
+    /// While the tables load the thread queues every commit it reads,
+    /// with nobody taking them, past the bound that holds after.
+    #[test]
+    fn while_loading_the_queue_holds_more_than_its_bound() {
+        let (stream, mut thread) = ends(LOAD_MEMORY);
+        let shared = Arc::clone(&stream.shared);
+        let (done, delivered) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            for _ in 0..QUEUE * 4 {
+                let Ok(true) = thread.deliver(Ok(commit_of(1))) else {
+                    return;
+                };
+            }
+            done.send(()).unwrap();
+        });
+        let finished = delivered.recv_timeout(STALL);
+        // Lets a thread waiting for room go.
+        shared.stop.store(true, Ordering::Release);
+        handle.join().unwrap();
+        let queued = shared.queued_commits.load(Ordering::Acquire);
+        assert!(finished.is_ok(), "the thread stopped at {queued} commits");
+        assert_eq!(queued, QUEUE * 4);
+    }
+
+    /// Past `--max-load-memory` the stream fails, and the writer hears it
+    /// after the commits queued, with what was held and the limit. Up to
+    /// the limit it does not.
+    #[test]
+    fn past_the_load_memory_the_stream_fails() {
+        let bytes = footprint(&commit_of(1));
+        let (mut stream, mut thread) = ends(bytes * 3);
+        for _ in 0..3 {
+            assert!(thread.deliver(Ok(commit_of(1))).unwrap());
+        }
+        let error = thread.deliver(Ok(commit_of(1))).unwrap_err();
+        thread.fail(error);
+        let error = stream.check().unwrap_err().to_string();
+        let held = bytes * 4;
+        let limit = bytes * 3;
+        assert_eq!(
+            error,
+            format!(
+                "the stream holds {held} bytes of commits while the tables load, past the \
+                 --max-load-memory limit of {limit}"
+            )
+        );
+    }
+
+    /// Once the writer takes its first commit the queue's bounds hold
+    /// again: the thread may queue more of a backlog from the load only
+    /// once the writer has taken it below them, in commits and in changes.
+    #[test]
+    fn after_the_load_the_queue_is_bounded_again() {
+        let one = Size::of(&commit_of(1));
+        let (mut stream, mut thread) = ends(LOAD_MEMORY);
+        let backlog = QUEUE * 2;
+        for _ in 0..backlog {
+            assert!(thread.deliver(Ok(commit_of(1))).unwrap());
+        }
+        assert_eq!(thread.room(one).unwrap(), Room::Fits);
+        let mut taken = 0;
+        while stream.next(Duration::ZERO).unwrap().is_some() {
+            taken += 1;
+            let left = backlog - taken;
+            let room = if left < QUEUE { Room::Fits } else { Room::Full };
+            assert_eq!(thread.room(one).unwrap(), room, "{left} queued");
+        }
+        assert_eq!(taken, backlog);
+
+        let (mut stream, mut thread) = ends(LOAD_MEMORY);
+        for _ in 0..3 {
+            let half = commit_of(QUEUED_CHANGES / 2);
+            assert!(thread.deliver(Ok(half)).unwrap());
+        }
+        stream.next(Duration::ZERO).unwrap().unwrap();
+        assert_eq!(thread.room(one).unwrap(), Room::Full);
+        stream.next(Duration::ZERO).unwrap().unwrap();
+        assert_eq!(thread.room(one).unwrap(), Room::Fits);
+    }
+
+    /// The count of bytes queued goes back to zero once the writer has
+    /// taken everything queued, through `next` and through `check`.
+    #[test]
+    fn the_bytes_queued_return_to_zero() {
+        let (mut stream, mut thread) = ends(LOAD_MEMORY);
+        let commits = [commit_of(1), commit_of(5), commit_with_text("trip")];
+        let mut total = 0;
+        for commit in commits {
+            total += footprint(&commit);
+            assert!(thread.deliver(Ok(commit)).unwrap());
+        }
+        let shared = Arc::clone(&stream.shared);
+        assert_eq!(shared.queued_bytes.load(Ordering::Acquire), total);
+        stream.next(Duration::ZERO).unwrap().unwrap();
+        assert!(shared.queued_bytes.load(Ordering::Acquire) < total);
+        thread.fail(Error::Protocol(Unexpected::StreamEnded));
+        stream.check().unwrap_err();
+        assert_eq!(shared.queued_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(shared.queued_changes.load(Ordering::Acquire), 0);
+    }
+
+    /// A commit's footprint counts its text by length, and nothing else
+    /// of a row varies.
+    #[test]
+    fn a_commit_counts_its_text() {
+        let empty = footprint(&commit_with_text(""));
+        assert_eq!(
+            footprint(&commit_with_text(&"x".repeat(1000))),
+            empty + 1000
+        );
+        assert_eq!(footprint(&commit_with_text("")), empty);
+        assert!(empty > footprint(&commit_of(1)));
     }
 }

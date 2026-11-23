@@ -262,7 +262,8 @@ fn a_table_locked_away_fails_the_start_in_time() {
     connection.set_read_timeout(hang).unwrap();
     let begin = "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ";
     connection.execute(begin).unwrap();
-    let settings = Settings::new(db.dsn.clone(), &db.name, ROW_LIMIT, Replication::Logical);
+    let logical = Replication::Logical;
+    let settings = Settings::new(db.dsn.clone(), &db.name, ROW_LIMIT, logical, LOAD_MEMORY);
     let clock = Instant::now();
     let read = read_in_time(&mut connection, &spec, &settings, AfterRead::HoldTables);
     assert!(clock.elapsed() < hang, "the start waited out the lock");

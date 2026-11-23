@@ -55,6 +55,12 @@ pub(crate) enum Error {
         held: usize,
         limit: usize,
     },
+    /// The stream queued more bytes of commits than `--max-load-memory`
+    /// allows while the tables loaded. Starting again lets go of them.
+    LoadMemory {
+        held: usize,
+        limit: usize,
+    },
     /// The watchdog ended the stream: the slot held more WAL than
     /// `--max-retained-wal` allows, or the watchdog couldn't read it.
     Watchdog(Verdict),
@@ -116,6 +122,11 @@ impl fmt::Display for Error {
                 "the physical stream holds {held} bytes of rows, past the --max-page-memory \
                  limit of {limit}"
             ),
+            Error::LoadMemory { held, limit } => write!(
+                formatter,
+                "the stream holds {held} bytes of commits while the tables load, past the \
+                 --max-load-memory limit of {limit}"
+            ),
             Error::Watchdog(Verdict::Retained { retained, limit }) => write!(
                 formatter,
                 "PostgreSQL held {} of WAL for Straum's slot, past the --max-retained-wal \
@@ -141,6 +152,20 @@ mod tests {
     use super::*;
     use crate::problem::{ServerProblem, WaitProblem};
     use straum_domain::ColumnType;
+
+    /// The load's memory limit names the flag, what was held and the limit.
+    #[test]
+    fn display_load_memory() {
+        let error = Error::LoadMemory {
+            held: 2048,
+            limit: 1024,
+        };
+        assert_eq!(
+            error.to_string(),
+            "the stream holds 2048 bytes of commits while the tables load, past the \
+             --max-load-memory limit of 1024"
+        );
+    }
 
     #[test]
     fn display() {

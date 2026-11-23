@@ -282,7 +282,8 @@ fn keeps_the_stream_when_the_watchdog_connects_again() {
 /// the slot ends only past the limit.
 fn load_holds(pg: &PostgresContainer, name: &str, replication: Replication, limit: u64) {
     let mut db = Db::new(pg, name, TABLES);
-    let mut source = Postgres::new(reader(&mut db, pg), name, ROW_LIMIT, limit, replication);
+    let dsn = reader(&mut db, pg);
+    let mut source = Postgres::new(dsn, name, ROW_LIMIT, limit, replication, LOAD_MEMORY);
     let spec = db.spec(SPEC);
     source.open(&spec).unwrap();
     assert_eq!(straum_slots(&mut db), 1, "{name}: no slot");
@@ -350,6 +351,7 @@ fn writer_stuck(pg: &PostgresContainer, name: &str, replication: Replication) {
         ROW_LIMIT,
         SMALL_LIMIT_BYTES,
         replication,
+        LOAD_MEMORY,
     );
     let spec = db.spec(SPEC);
     source.open(&spec).unwrap();

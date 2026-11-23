@@ -102,10 +102,12 @@ had reached, so it can overstate the true delay by up to one second but
 never understate it.
 
 A lost connection, a missing setup, a change Straum can't apply, a
-table altered under it, or too much WAL retained for its slot ends the
-process with exit 1, and the last lines of its log say why. The connections close with it, and PostgreSQL drops the temporary
-slot. Straum keeps no state across a failure and never retries inside
-the process; whatever runs it starts it again, with a wait of its own.
+table altered under it, too much WAL retained for its slot, or more
+commits held while the tables load than `--max-load-memory` allows ends
+the process with exit 1, and the last lines of its log say why. The
+connections close with it, and PostgreSQL drops the temporary slot.
+Straum keeps no state across a failure and never retries inside the
+process; whatever runs it starts it again, with a wait of its own.
 
 ```text
 straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-retained-wal limit of 4096.0 MiB; the watchdog ended the slot's session

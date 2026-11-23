@@ -101,6 +101,9 @@ pub(crate) struct Settings {
     /// write lock for all of it.
     pub(crate) max_transaction_rows: usize,
     pub(crate) replication: Replication,
+    /// The bytes of commits the stream may hold while the tables load;
+    /// past it Straum stops.
+    pub(crate) max_load_memory: usize,
     /// How long a start waits for its slot, and a physical start for a
     /// consistent point.
     pub(crate) consistent_wait: Duration,
@@ -113,12 +116,14 @@ impl Settings {
         publication: &str,
         max_transaction_rows: usize,
         replication: Replication,
+        max_load_memory: usize,
     ) -> Settings {
         Settings {
             dsn,
             publication: publication.to_owned(),
             max_transaction_rows,
             replication,
+            max_load_memory,
             consistent_wait: CONSISTENT_WAIT,
         }
     }
@@ -158,9 +163,17 @@ impl Postgres {
         max_transaction_rows: usize,
         max_retained_wal: u64,
         replication: Replication,
+        max_load_memory: usize,
     ) -> Postgres {
+        let settings = Settings::new(
+            dsn,
+            publication,
+            max_transaction_rows,
+            replication,
+            max_load_memory,
+        );
         Postgres {
-            settings: Settings::new(dsn, publication, max_transaction_rows, replication),
+            settings,
             guard: SlotGuard::new(Watching {
                 max_retained_wal,
                 unwatched: UNWATCHED,
@@ -219,7 +232,8 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
         "START_REPLICATION SLOT {slot} LOGICAL {at} (proto_version '1', publication_names {names})"
     ))?;
     let reader = Decoder::new(checked(&tables), settings.max_transaction_rows);
-    let stream = Stream::start(replication, Reader::Logical(reader), at)?;
+    let reader = Reader::Logical(reader);
+    let stream = Stream::start(replication, reader, at, settings.max_load_memory)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
@@ -255,7 +269,7 @@ fn physical_snapshot(
     let wait = settings.consistent_wait;
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::Nothing)?;
-    let started = start_physical_stream(dsn, &mut connection, checked(&tables), pages, guard)?;
+    let started = start_physical_stream(settings, &mut connection, checked(&tables), pages, guard)?;
     let PhysicalStream { mut stream, slot } = started;
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
@@ -294,7 +308,7 @@ struct PhysicalStream {
 /// whose layouts it reads on `connection`, and has the watchdog close it
 /// and `connection` once the slot holds too much WAL.
 fn start_physical_stream(
-    dsn: &Dsn,
+    settings: &Settings,
     connection: &mut Connection,
     checked: Vec<Checked>,
     pages: PageLimits,
@@ -302,6 +316,7 @@ fn start_physical_stream(
 ) -> Result<PhysicalStream, Error> {
     // After the slot: a rewrite between the two would be in neither the
     // layouts nor the WAL read.
+    let dsn = &settings.dsn;
     let (stream, start) = Physical::start(dsn)?;
     // The stream thread reads layouts on this one after DDL: a server
     // that falls silent there must not hold it, nor a stop that joins it.
@@ -328,7 +343,8 @@ fn start_physical_stream(
         pages.max_page_memory,
     );
     let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
-    let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
+    let reader = Reader::Physical(Box::new(replay));
+    let mut stream = Stream::start(replication, reader, start, settings.max_load_memory)?;
     stream.close_too(layouts_closer);
     Ok(PhysicalStream { stream, slot })
 }

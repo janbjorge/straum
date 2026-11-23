@@ -71,6 +71,8 @@ spec:
             - {{ .Values.maxTransactionRows | int64 | quote }}
             - --max-answer-rows
             - {{ .Values.maxAnswerRows | int64 | quote }}
+            - --max-load-memory
+            - {{ .Values.maxLoadMemory | quote }}
             - --wal
             - {{ required "wal: name the WAL straum reads, logical or physical" .Values.wal | quote }}
             {{- if eq .Values.wal "physical" }}

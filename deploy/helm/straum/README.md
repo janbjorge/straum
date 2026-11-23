@@ -36,10 +36,15 @@ With `wal: physical`, set `maxPageMemory` well under
 cells, and at the defaults, both `1Gi`, the pod is killed for its
 memory before straum's own limit can stop it with exit 1.
 
+`maxLoadMemory`, `1Gi` by default, bounds the commits straum holds
+while its tables load, read ahead of the writer. They too come on top
+of the cells, so keep it under `resources.limits.memory`.
+
 `maxMemory`, unset by default, bounds straum's resident memory: past
 it straum exits 1 with a line naming the limit, rather than the kernel
 killing the pod without one. Set it a little under
-`resources.limits.memory`, and above `maxPageMemory` plus the cells.
+`resources.limits.memory`, and above `maxLoadMemory` plus the cells,
+and `maxPageMemory` too with `wal: physical`.
 
 ## Checks
 

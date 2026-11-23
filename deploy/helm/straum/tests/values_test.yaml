@@ -80,6 +80,20 @@ tests:
       - failedTemplate:
           errorPattern: "maxPageMemory"
 
+  - it: refuses a load memory limit Straum can't read
+    set:
+      maxLoadMemory: 1GB
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxLoadMemory"
+
+  - it: refuses a load memory limit of nothing
+    set:
+      maxLoadMemory: "0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxLoadMemory"
+
   - it: takes a memory limit in bytes or with a suffix
     template: deployment.yaml
     set:

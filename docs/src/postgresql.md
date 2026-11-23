@@ -261,6 +261,12 @@ there. A physical slot keeps WAL from the last checkpoint's redo point,
 which the server keeps until its next checkpoint anyway; the watchdog
 counts from where the slot was made.
 
+While the tables load, the stream reads on and Straum holds the commits
+it reads in memory, up to `--max-load-memory` (1 GiB by default), past
+which it stops. None is applied until the load ends, so the server
+keeps the WAL of the whole load, and a load longer than
+`--max-retained-wal` allows stops Straum too.
+
 With logical decoding, `REPLICA IDENTITY FULL` makes each update and
 delete of a spec table log its whole old row, so they write more WAL;
 inserts don't.

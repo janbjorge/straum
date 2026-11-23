@@ -118,7 +118,11 @@ take the write lock, swap the loaded store in for the empty one and set
 the server's keepalives and confirms what the writer has applied, so
 the server can recycle WAL. While no commit it has queued waits to be
 applied, it confirms the WAL it has read; otherwise only what the
-writer has applied, which during a load is nothing. Each load checks
+writer has applied, which during a load is nothing. While the tables
+load its queue has no bound in commits, only `--max-load-memory` in
+bytes; the writer's first `Stream::next` ends that, and from then 64
+commits or 200,000 changes bound it, so the thread reads nothing more
+until the writer has taken a backlog below them. Each load checks
 after every batch that the stream has not failed. Any error on the way
 is a `Failure`, and Straum exits. A writer starts once; a failed one
 takes no more steps.
@@ -248,7 +252,8 @@ LSN and time, and the lock is let go.
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The decoder ends the
 stream on a transaction past `--max-transaction-rows`, and the physical
-stream also ends past `--max-page-memory`.
+stream also ends past `--max-page-memory`. Either ends past
+`--max-load-memory` while the tables load.
 
 A writer can get stuck, under its lock or on a socket, and a stuck
 writer must not keep a slot that holds WAL back. So from when the slot

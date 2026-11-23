@@ -1,6 +1,6 @@
 # ADR-0009: A change that can't apply stops Straum
 
-Status: Accepted 2026-11-10; revised 2026-11-20
+Status: Accepted 2026-11-10; revised 2026-11-23
 
 ## Context
 
@@ -30,7 +30,14 @@ table; counting a change per view stopped a spec with two views over
 one table at half the rows the flag names. Past
 `--max-retained-wal` (4Gi) Straum stops too, since Azure fixes
 `max_slot_wal_keep_size` at `-1`, and past `--max-memory`, off unless
-set (ADR-0010). A value Straum can't read (`NaN`,
+set (ADR-0010). Past `--max-load-memory` (1Gi) Straum stops as well:
+while the tables load, the stream thread reads on and holds every
+commit it reads, where it used to stop reading once 64 commits or
+200,000 changes waited, and the flag bounds those commits in bytes, as
+ADR-0010 bounds memory in bytes rather than a count. The thread still
+reports nothing applied until the load ends, so the server keeps the
+load's WAL, and the WAL cap still ends a load too long for it. A value
+Straum can't read (`NaN`,
 an overflowing numeric, non-UTF-8 text) fails the load naming table
 and column.
 
@@ -54,7 +61,7 @@ time, so a reader stuck in DNS, a connect or a silent server can't
 stretch it. Every connection also gives a server 10 seconds of silence
 while it starts before giving up. Checking from the stream thread was
 rejected: it stops reading the socket while its queue is full, which
-every long load causes, so it never learns the server's position then.
+a stuck writer causes, so it never learns the server's position then.
 
 About once a second the writer reads `pg_current_wal_insert_lsn()` and
 its slot's `confirmed_flush_lsn` and `restart_lsn`. The insert position,
@@ -84,7 +91,8 @@ during a load counts from its start. `/readyz` is off past `--max-lag`
   failure and the next start, as the port closes; the failed run's last
   log lines say why it stopped.
 - A load slower than the WAL cap allows fails each start, which the
-  supervisor's restarts show. So does a spec whose cells pass
+  supervisor's restarts show. So does a load whose stream holds more
+  commits than `--max-load-memory`, and a spec whose cells pass
   `--max-memory`.
 - Lag is up to a second longer than the truth, never shorter. The
   readings need no grant beyond the tables'.

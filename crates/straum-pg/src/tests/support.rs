@@ -45,6 +45,9 @@ pub(super) const LIMITS: Limits = Limits {
 /// Rows a transaction may change before Straum stops; no test but
 /// the one for it comes near.
 pub(super) const ROW_LIMIT: usize = 10_000;
+/// The commits a stream may hold while the tables load in these tests:
+/// the default, far above what any test queues.
+pub(crate) const LOAD_MEMORY: usize = 1 << 30;
 /// The rows a physical stream may hold in these tests.
 pub(super) const PAGE_MEMORY: usize = 256 << 20;
 /// The physical stream, with the tests' page memory.
@@ -358,6 +361,7 @@ pub(super) fn source_over(dsn: Dsn, publication: &str, replication: Replication)
         ROW_LIMIT,
         MAX_RETAINED_WAL_BYTES,
         replication,
+        LOAD_MEMORY,
     )
 }
 

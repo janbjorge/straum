@@ -340,6 +340,7 @@ fn scripted_stream(parts: Vec<Part>) -> FakeStream {
         connection,
         Reader::Logical(Decoder::new(Vec::new(), ROW_LIMIT)),
         Lsn(0x10),
+        LOAD_MEMORY,
     )
     .unwrap();
     FakeStream {

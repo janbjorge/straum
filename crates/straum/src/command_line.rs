@@ -46,6 +46,7 @@ const MAX_RETAINED_WAL_FLAG: &str = "--max-retained-wal";
 const MAX_TRANSACTION_ROWS_FLAG: &str = "--max-transaction-rows";
 const MAX_ANSWER_ROWS_FLAG: &str = "--max-answer-rows";
 const MAX_PAGE_MEMORY_FLAG: &str = "--max-page-memory";
+const MAX_LOAD_MEMORY_FLAG: &str = "--max-load-memory";
 const MAX_MEMORY_FLAG: &str = "--max-memory";
 const URL_FLAG: &str = "--url";
 const TIMEOUT_FLAG: &str = "--timeout";
@@ -71,6 +72,12 @@ const ROW_COUNT_TAKES: &str = "a count of rows above 0";
 /// Bytes of rows a physical stream holds before Straum stops: a guard,
 /// far above what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
+/// Bytes of commits the stream holds while the tables load before
+/// Straum stops: a guard on a long load of busy tables.
+const MAX_LOAD_MEMORY: usize = 1 << 30;
+/// What `--max-page-memory` and `--max-load-memory` take, as their
+/// errors say.
+const MEMORY_LIMIT_TAKES: &str = "bytes above 0, as 1073741824 or 1Gi";
 /// The longest `--timeout`: a day. A timeout is added to the clock, and
 /// one near `u64::MAX` seconds would overflow it.
 const MAX_TIMEOUT: Duration = Duration::from_hours(24);
@@ -148,6 +155,7 @@ impl Name {
                 MAX_TRANSACTION_ROWS_FLAG,
                 MAX_ANSWER_ROWS_FLAG,
                 MAX_PAGE_MEMORY_FLAG,
+                MAX_LOAD_MEMORY_FLAG,
                 MAX_MEMORY_FLAG,
             ],
             Name::Plan => &[
@@ -214,6 +222,8 @@ pub(crate) struct Run {
     pub(crate) max_transaction_rows: usize,
     /// The rows an ask may get before it is refused.
     pub(crate) max_answer_rows: usize,
+    /// Bytes of commits the stream may hold while the tables load.
+    pub(crate) max_load_memory: usize,
     /// Bytes of resident memory before Straum stops; `None`, the default,
     /// sets no limit and never reads it.
     pub(crate) max_memory: Option<u64>,
@@ -588,6 +598,12 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
         count,
         ROW_COUNT_TAKES,
     )?;
+    let max_load_memory = flags.parsed(
+        MAX_LOAD_MEMORY_FLAG,
+        MAX_LOAD_MEMORY,
+        memory,
+        MEMORY_LIMIT_TAKES,
+    )?;
     Ok(Command::Run(Run {
         spec,
         listen: flags.text_or(LISTEN_FLAG, LISTEN),
@@ -603,6 +619,7 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
         },
         max_transaction_rows,
         max_answer_rows,
+        max_load_memory,
         max_memory: flags.parsed_if_given(MAX_MEMORY_FLAG, bytes, BYTE_LIMIT_TAKES)?,
     }))
 }
@@ -804,7 +821,7 @@ impl Flags {
                     MAX_PAGE_MEMORY_FLAG,
                     MAX_PAGE_MEMORY,
                     memory,
-                    "bytes above 0, as 1073741824 or 1Gi",
+                    MEMORY_LIMIT_TAKES,
                 )?;
                 Ok(Replication::Physical { max_page_memory })
             }
