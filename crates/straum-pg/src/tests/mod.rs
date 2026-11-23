@@ -4,6 +4,7 @@
 //! `support`, `streams` and `references` hold what the subject files
 //! share.
 
+mod between_loads;
 pub(crate) mod compose;
 mod decoding;
 mod followed;

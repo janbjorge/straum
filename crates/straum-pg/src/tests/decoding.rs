@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{Commit, Lsn, Source, Step};
+use straum_app::{Commit, Lsn, Source, Step, Writer};
 
 use super::references::*;
 use super::streams::*;
@@ -200,44 +200,73 @@ fn follows_random_workloads_from_a_random_start() {
         "max_prepared_transactions=8",
     ]));
     for seed in seeds() {
-        let mut rng = Rng::new(2_000 + seed);
-        let mut db = random_db(&pg, &format!("replica{seed}"), &mut rng);
-        let start_at = rng.below(STEPS);
-        let (starting, start) = std::sync::mpsc::channel();
-        let started = Arc::new(AtomicBool::new(false));
-        let streaming = Arc::clone(&started);
-        let mut worker = db.another_connection();
-        let mut worker_rng = Rng::new(3_000 + seed);
-        let workload = thread::spawn(move || {
-            let mut workload = Workload::new(&worker);
-            for _ in 0..start_at {
-                workload.step(&mut worker_rng, &mut worker);
-            }
-            starting.send(()).unwrap();
-            // On through Straum's start, then as many steps again while
-            // it streams.
-            while !streaming.load(Ordering::Acquire) {
-                workload.step(&mut worker_rng, &mut worker);
-            }
-            for _ in 0..STEPS / 2 {
-                workload.step(&mut worker_rng, &mut worker);
-            }
-            workload.finish(&mut worker);
-            workload.done
-        });
-        start.recv().unwrap();
-        let mut writer = db.physical_writer(SPEC);
-        let step = writer.step();
-        assert!(
-            matches!(step, Ok(Step::Started(_))),
-            "seed {seed}: {step:?}"
-        );
-        started.store(true, Ordering::Release);
-        let done = workload.join().unwrap();
-        assert!(done.all_ran(), "seed {seed}: {done:?}");
-        let mut next = FIRST_ID_AFTER_THE_WORKLOAD;
-        catch_up(&mut db, &mut writer, &mut rng, &mut next);
+        follow_from_a_random_start(&pg, &format!("replica{seed}"), seed, Db::physical_writer);
     }
+}
+
+/// The same workloads on the logical stream: Straum makes its slot at a
+/// random step, with transactions open, prepared or committing all
+/// around, and each commit its load did not see then comes once, so its
+/// views equal SQL's.
+#[test]
+fn follows_random_workloads_from_a_random_logical_start() {
+    let pg = plain(image(&tag()).with_cmd(&[
+        "-c",
+        "wal_level=logical",
+        "-c",
+        "max_prepared_transactions=8",
+    ]));
+    for seed in seeds() {
+        follow_from_a_random_start(&pg, &format!("logical{seed}"), seed, Db::writer);
+    }
+}
+
+/// Runs the workload of `seed` over schema `name` on another thread,
+/// starts the writer `writer_for` makes at a random step of it, goes on
+/// while it streams, and checks its views equal SQL's at the end.
+fn follow_from_a_random_start(
+    pg: &PostgresContainer,
+    name: &str,
+    seed: u64,
+    writer_for: fn(&Db, &str) -> Writer<Postgres>,
+) {
+    let mut rng = Rng::new(2_000 + seed);
+    let mut db = random_db(pg, name, &mut rng);
+    let start_at = rng.below(STEPS);
+    let (starting, start) = std::sync::mpsc::channel();
+    let started = Arc::new(AtomicBool::new(false));
+    let streaming = Arc::clone(&started);
+    let mut worker = db.another_connection();
+    let mut worker_rng = Rng::new(3_000 + seed);
+    let workload = thread::spawn(move || {
+        let mut workload = Workload::new(&worker);
+        for _ in 0..start_at {
+            workload.step(&mut worker_rng, &mut worker);
+        }
+        starting.send(()).unwrap();
+        // On through Straum's start, then as many steps again while it
+        // streams.
+        while !streaming.load(Ordering::Acquire) {
+            workload.step(&mut worker_rng, &mut worker);
+        }
+        for _ in 0..STEPS / 2 {
+            workload.step(&mut worker_rng, &mut worker);
+        }
+        workload.finish(&mut worker);
+        workload.done
+    });
+    start.recv().unwrap();
+    let mut writer = writer_for(&db, SPEC);
+    let step = writer.step();
+    assert!(
+        matches!(step, Ok(Step::Started(_))),
+        "seed {seed}: {step:?}"
+    );
+    started.store(true, Ordering::Release);
+    let done = workload.join().unwrap();
+    assert!(done.all_ran(), "seed {seed}: {done:?}");
+    let mut next = FIRST_ID_AFTER_THE_WORKLOAD;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
 /// Trip ids from here on are past every id a workload gives.
