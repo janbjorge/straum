@@ -25,6 +25,8 @@ seed_from := env("STRAUM_TEST_SEED_FROM", "0")
 runs := env("STRAUM_BENCH_RUNS", "3")
 # The WAL Straum reads in taxi: logical or physical
 wal := env("STRAUM_TAXI_WAL", "logical")
+# Tag of the published image demo runs
+tag := env("STRAUM_DEMO_TAG", "latest")
 # Line coverage cov fails under
 coverage := env("STRAUM_COVERAGE", "98")
 
@@ -127,7 +129,7 @@ cost-bench: (test "straum-domain" "--release" "--test" "cost" "--" "--ignored" "
 # January on the published image: one ask, a delete, a borough move
 [group('taxi')]
 demo:
-    bench/demo.py
+    bench/demo.py --tag {{ tag }}
 
 # The trigger outbox of ADR-0018 on the taxi trips: its checks, then its cost
 [group('taxi')]

@@ -42,8 +42,9 @@ type Counts = dict[str | None, int]
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "demo.sql"
 DATA = ROOT / "bench" / "data"
-# The newest release: each release bumps it and runs the demo once (ADR-0012).
-IMAGE = "ghcr.io/janbjorge/straum:0.10.1"
+IMAGE = "ghcr.io/janbjorge/straum"
+# The newest release; --tag names another (ADR-0012).
+TAG = "latest"
 STRAUM = "straum"
 STRAUM_PORT = 8080
 SPEC_IN_IMAGE = "/spec/trips.sql"
@@ -90,11 +91,14 @@ def main() -> int:
         description=__doc__.splitlines()[0],
         epilog="Needs Docker and uv. Downloads go to bench/data.",
     )
-    parser.parse_args()
+    parser.add_argument(
+        "--tag", default=TAG, help=f"tag of {IMAGE} to run (default: {TAG})"
+    )
+    image = f"{IMAGE}:{parser.parse_args().tag}"
     password = secrets.token_hex(16)
-    services = {POSTGRES: postgres(password), STRAUM: straum(password)}
+    services = {POSTGRES: postgres(password), STRAUM: straum(password, image)}
     with Stack("straum-demo", services) as stack:
-        log(f"pulling {IMAGE}")
+        log(f"pulling {image}")
         stack.pull(STRAUM)
         log(f"starting PostgreSQL in stack {stack.name}")
         stack.up(POSTGRES)
@@ -142,9 +146,9 @@ def postgres(password: str) -> dict:
     return postgres_service(POSTGRES_IMAGE, password, {"wal_level": "logical"})
 
 
-def straum(password: str) -> dict:
+def straum(password: str, image: str) -> dict:
     return {
-        "image": IMAGE,
+        "image": image,
         # Every address in the container: unless told, Straum serves its
         # own loopback, which the published port never reaches.
         "command": ["run", SPEC_IN_IMAGE, "--wal", "logical", "--listen", f"0.0.0.0:{STRAUM_PORT}"],

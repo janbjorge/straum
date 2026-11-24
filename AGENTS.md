@@ -58,7 +58,7 @@ pinned actions and the Cargo dependencies.
 `just heap-fixtures`, `just image`, `just taxi
 [asks|transactions|materialized|load|retention|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`, `just wal-bench`, `just cost-bench`,
-`just demo`, `just outbox`, `just try SPEC --data DIR`. Every setting
+`just demo` (`tag=X.Y.Z` for another release), `just outbox`, `just try SPEC --data DIR`. Every setting
 has a default, overridden on the command line (`just postgres=17
 seeds=50 correctness`) or through its environment variable; `just
 --evaluate` shows them.

@@ -1,6 +1,6 @@
 # ADR-0012: Straum ships as one image, from a release
 
-Status: Accepted 2026-11-10; revised 2026-11-19
+Status: Accepted 2026-11-10; revised 2026-11-24
 
 ## Context
 
@@ -80,6 +80,6 @@ render without a tag.
   no workflow); a ruleset on `v*` tags stops a tag moving. A release
   publishes once; a re-run with assets fails.
 - Binaries are Linux musl only. Agents don't make releases.
-- `bench/demo.py` pins the newest release's image, which the README's
-  demo runs. No CI job runs it, so each release bumps the pin and runs
-  `just demo` once.
+- `bench/demo.py` runs the image tagged `latest`, the newest release,
+  which the README's demo runs; `just tag=X.Y.Z demo` runs another. No
+  CI job runs it, so each release runs `just demo` once.
