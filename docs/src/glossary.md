@@ -240,7 +240,7 @@ and this glossary. The clashes at the end are open.
   they get no reading of the slot for too long
   ([What Straum costs the server](postgresql.md#what-straum-costs-the-server)).
 - **Memory watch** (`memory.rs`): the thread that reads Straum's
-  resident memory, Linux's `VmRSS`, each second for `/status`, and ends
+  resident memory, `VmRSS` on Linux or `ps` elsewhere, each second for `/status`, and ends
   Straum when it passes `--max-memory` ([straum run](cli.md#straum-run)).
 - **Status** (`Status`): what `GET /status` and `straum status` show;
   not the stream's status report (`StreamThread::report`).

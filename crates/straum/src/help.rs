@@ -52,7 +52,7 @@ or follow ends it with exit 1, for whatever runs it to start it again.
   --max-load-memory BYTES      commits held while the tables load before
                                Straum stops (1Gi)
   --max-memory BYTES           resident memory before Straum stops (off;
-                               takes Ki, Mi, Gi or Ti; Linux only)
+                               takes Ki, Mi, Gi or Ti)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-run
 ";

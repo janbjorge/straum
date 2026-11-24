@@ -60,12 +60,13 @@ through the app.
 binds the listener and sets a panic hook that aborts the process, since
 after a panic the store may be half written. It builds an `App` around
 an empty `Store` and the `Limits`. It then starts the memory watch
-(`memory.rs`): a thread that reads the process's resident memory from
-`/proc/self/status` every second, records each reading in the app's
+(`memory.rs`): a thread that reads the process's resident memory every
+second, from `/proc/self/status` on Linux and from `ps` where that file
+is missing, as on macOS, records each reading in the app's
 `MemoryReadings` for `/status`, and exits 1 past `--max-memory` when it
 is set. It reads once before the thread starts: a limit it can't read
-fails the start, and without a limit a system with no such file, as
-macOS, runs without the watch. Then `run` builds a `Writer` over
+fails the start, and without a limit a system with neither runs
+without the watch. Then `run` builds a `Writer` over
 a `Postgres` source, spawns the writer thread and serves HTTP until
 SIGTERM or SIGINT.
 

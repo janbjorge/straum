@@ -17,7 +17,7 @@
 //!
 //! What is unknown until every table is loaded is null, as is a time past
 //! the year 9999, which only a broken clock gives. Memory is null where
-//! the system gives no figure, as on macOS; the limit is null when
+//! the system gives no figure; the limit is null when
 //! `--max-memory` is not set.
 
 use std::fmt::Write as _;
@@ -194,7 +194,7 @@ fn number_or_null(number: Option<u64>) -> String {
 
 fn memory(memory: Option<Memory>) -> String {
     let Some(memory) = memory else {
-        return "unknown; Straum reads it from /proc/self/status, on Linux".to_owned();
+        return "unknown; this system has neither /proc/self/status nor ps".to_owned();
     };
     let resident = format_mebibytes(memory.resident_bytes);
     match memory.limit_bytes {
@@ -386,7 +386,7 @@ as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
-memory:       unknown; Straum reads it from /proc/self/status, on Linux
+memory:       unknown; this system has neither /proc/self/status nor ps
 "
             .to_owned()
                 + &version_line()

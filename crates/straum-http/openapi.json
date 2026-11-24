@@ -302,7 +302,7 @@
           "resident_bytes": {
             "type": ["integer", "null"],
             "minimum": 0,
-            "description": "Straum's resident memory at the last reading, taken each second; null where the system gives no figure, as on macOS."
+            "description": "Straum's resident memory at the last reading, taken each second; null where the system has neither /proc/self/status nor ps."
           },
           "max_memory_bytes": {
             "type": ["integer", "null"],

@@ -1,9 +1,9 @@
-//! The tests of `memory.rs`: resident memory read from a status text and
-//! from a file the test writes, the check against the limit, and the
-//! watch that ends when memory passes it.
+//! The tests of `memory.rs`: resident memory read from a status text, from
+//! a file the test writes, from `ps` and from this very process, the
+//! check against the limit, and the watch that ends when memory passes it.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -33,6 +33,13 @@ fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("straum-memory-{}-{name}", std::process::id()))
 }
 
+/// The status file at `path`, as a place to read resident memory.
+fn status_file(path: &Path) -> Resident {
+    Resident::Status {
+        path: path.to_str().unwrap().to_owned(),
+    }
+}
+
 /// Writes a status text holding `kib` kB resident at `path`, whole: a
 /// watch reading it meanwhile sees the old text or the new one.
 fn write_status(path: &PathBuf, kib: u64) {
@@ -51,7 +58,7 @@ fn reads_resident_memory_from_a_status_text() {
 fn refuses_a_status_text_without_a_size() {
     let missing = resident_bytes("Name:\tstraum\nRssAnon:\t30000 kB\n").unwrap_err();
     assert!(matches!(missing, ReadError::NoResident), "{missing:?}");
-    assert_eq!(missing.to_string(), "it has no VmRSS line");
+    assert_eq!(missing.to_string(), "it gives no resident size");
     for line in [
         "VmRSS:",
         "VmRSS:\t lots kB",
@@ -74,15 +81,18 @@ fn reads_resident_memory_from_a_file() {
     let path = scratch("read");
     write_status(&path, 2_048);
     let text = path.to_str().unwrap();
-    assert_eq!(read_resident(text).unwrap(), 2 * MEBIBYTE);
+    let resident = status_file(&path);
+    assert_eq!(resident.read().unwrap(), 2 * MEBIBYTE);
     fs::write(&path, "Name:\tstraum\n").unwrap();
-    let error = read_resident(text).unwrap_err();
+    let error = resident.read().unwrap_err();
     assert_eq!(
         error.to_string(),
-        format!("--max-memory needs {text} to read Straum's resident memory: it has no VmRSS line")
+        format!(
+            "--max-memory needs {text} to read Straum's resident memory: it gives no resident size"
+        )
     );
     fs::remove_file(&path).unwrap();
-    let error = read_resident(text).unwrap_err();
+    let error = resident.read().unwrap_err();
     let MemoryError::Unreadable {
         error: ReadError::File(_),
         ..
@@ -113,10 +123,10 @@ fn stops_only_past_the_limit() {
 fn the_watch_ends_once_memory_passes_the_limit() {
     let path = scratch("watch");
     write_status(&path, 1_024);
-    let text = path.to_str().unwrap().to_owned();
+    let resident = status_file(&path);
     let readings = MemoryReadings::default();
     let recorded = readings.clone();
-    let watching = thread::spawn(move || watch(&text, Some(2 * MEBIBYTE), &recorded));
+    let watching = thread::spawn(move || watch(&resident, Some(2 * MEBIBYTE), &recorded));
     thread::sleep(Duration::from_millis(300));
     assert!(!watching.is_finished(), "the watch ended under the limit");
     let under = Memory {
@@ -136,7 +146,7 @@ fn the_watch_ends_once_memory_passes_the_limit() {
     };
     assert_eq!(readings.last(), Some(past));
     fs::remove_file(&path).unwrap();
-    let gone = watch(path.to_str().unwrap(), Some(2 * MEBIBYTE), &readings);
+    let gone = watch(&status_file(&path), Some(2 * MEBIBYTE), &readings);
     assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
 }
 
@@ -148,8 +158,8 @@ fn without_a_limit_the_watch_only_records() {
     write_status(&path, 1 << 30);
     let readings = MemoryReadings::default();
     let recorded = readings.clone();
-    let text = path.to_str().unwrap().to_owned();
-    let watching = thread::spawn(move || watch(&text, None, &recorded));
+    let resident = status_file(&path);
+    let watching = thread::spawn(move || watch(&resident, None, &recorded));
     thread::sleep(Duration::from_millis(300));
     assert!(!watching.is_finished(), "the watch ended with no limit");
     let read = Memory {
@@ -160,4 +170,40 @@ fn without_a_limit_the_watch_only_records() {
     fs::remove_file(&path).unwrap();
     let gone = watching.join().unwrap();
     assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
+}
+
+/// This process's own resident memory reads on any system the tests run
+/// on: Linux from its status file, macOS from `ps`.
+#[test]
+fn reads_this_process_resident_memory() {
+    let resident = Resident::of_this_process().read().unwrap();
+    assert!(resident > MEBIBYTE, "{resident} bytes");
+}
+
+#[test]
+fn reads_resident_memory_from_ps_output() {
+    assert_eq!(
+        ps_resident_bytes("38912\n").unwrap(),
+        38_912 * BYTES_PER_KIB
+    );
+    assert_eq!(
+        ps_resident_bytes("  1024  \n").unwrap(),
+        1024 * BYTES_PER_KIB
+    );
+    let gone = ps_resident_bytes("").unwrap_err();
+    assert!(matches!(gone, ReadError::NoResident), "{gone:?}");
+    for text in ["lots", "-1", "38912 kB", "1\n2\n"] {
+        let error = ps_resident_bytes(text).unwrap_err();
+        assert!(
+            matches!(error, ReadError::Malformed(_)),
+            "{text}: {error:?}"
+        );
+    }
+}
+
+/// `ps` of a process that is not there gives no figure.
+#[test]
+fn ps_of_no_process_is_unreadable() {
+    let error = Resident::Ps { pid: u32::MAX }.read().unwrap_err();
+    assert!(matches!(error, MemoryError::Unreadable { .. }), "{error:?}");
 }

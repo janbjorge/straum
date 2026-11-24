@@ -110,8 +110,8 @@ fn run_with_one_kibibyte(spec: &str, dsn: &str) -> (Option<i32>, String) {
 }
 
 /// Past `--max-memory` Straum stops with exit 1, from the start on, so
-/// a load is watched too; the line names the flag and both sizes.
-#[cfg(target_os = "linux")]
+/// a load is watched too; the line names the flag and both sizes. Linux
+/// gives the figure in `/proc`, macOS through `ps`.
 #[test]
 fn past_max_memory_straum_stops() {
     let scratch = Scratch::new();
@@ -131,22 +131,6 @@ fn past_max_memory_straum_stops() {
     assert!(
         stop.ends_with(" MiB of resident memory, past the --max-memory limit of 0.0 MiB"),
         "{log}"
-    );
-}
-
-/// Where `/proc/self/status` is missing, a set `--max-memory` fails the
-/// start rather than run with no limit.
-#[cfg(not(target_os = "linux"))]
-#[test]
-fn max_memory_without_proc_fails_the_start() {
-    let scratch = Scratch::new();
-    let spec = scratch.file("spec.sql", SPEC);
-    let (code, log) = run_with_one_kibibyte(&spec, &silent_server());
-    assert_eq!(code, Some(1), "{log}");
-    assert_eq!(
-        log,
-        "straum: --max-memory needs /proc/self/status to read Straum's resident memory: \
-         No such file or directory (os error 2)\n"
     );
 }
 

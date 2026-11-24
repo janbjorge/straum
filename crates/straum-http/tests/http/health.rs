@@ -72,7 +72,7 @@ as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
-memory:       unknown; Straum reads it from /proc/self/status, on Linux
+memory:       unknown; this system has neither /proc/self/status nor ps
 "
         .to_owned()
             + &format!("version:      {}\n", straum_http::VERSION)

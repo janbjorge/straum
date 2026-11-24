@@ -536,9 +536,10 @@ fn run_writer(mut writer: Writer<Postgres>) {
 /// Reads resident memory once, then watches it from before the load on,
 /// recording each reading in `readings`. A set `--max-memory` that can't
 /// be read fails the start instead of passing for no limit; without one,
-/// a system with no figure, as macOS, goes without the watch.
+/// a system with neither a status file nor `ps` goes without the watch.
 fn start_memory_watch(limit: Option<u64>, readings: MemoryReadings) -> Result<(), Failure> {
-    if let Err(error) = memory::read_resident(memory::STATUS) {
+    let resident = memory::Resident::of_this_process();
+    if let Err(error) = resident.read() {
         if limit.is_none() {
             return Ok(());
         }
@@ -546,7 +547,7 @@ fn start_memory_watch(limit: Option<u64>, readings: MemoryReadings) -> Result<()
     }
     thread::Builder::new()
         .name("straum-memory".into())
-        .spawn(move || watch_memory(limit, &readings))
+        .spawn(move || watch_memory(&resident, limit, &readings))
         .map_err(Failure::StartingWatch)?;
     Ok(())
 }
@@ -554,11 +555,11 @@ fn start_memory_watch(limit: Option<u64>, readings: MemoryReadings) -> Result<()
 /// Watches resident memory until it passes `limit`, then ends the
 /// process, as a failed writer does. Without a limit, a figure that can
 /// no longer be read only ends the watch.
-fn watch_memory(limit: Option<u64>, readings: &MemoryReadings) {
-    let stop = memory::watch(memory::STATUS, limit, readings);
-    if let (None, MemoryError::Unreadable { path, error }) = (limit, &stop) {
+fn watch_memory(resident: &memory::Resident, limit: Option<u64>, readings: &MemoryReadings) {
+    let stop = memory::watch(resident, limit, readings);
+    if let (None, MemoryError::Unreadable { source, error }) = (limit, &stop) {
         log(&format!(
-            "stopped reading resident memory from {path}: {error}"
+            "stopped reading resident memory from {source}: {error}"
         ));
         return;
     }
@@ -657,7 +658,13 @@ mod tests {
                 "listening on x: gone",
             ),
             (
-                Failure::Memory(memory::read_resident("/nowhere/status").unwrap_err()),
+                Failure::Memory(
+                    memory::Resident::Status {
+                        path: "/nowhere/status".to_owned(),
+                    }
+                    .read()
+                    .unwrap_err(),
+                ),
                 "--max-memory needs /nowhere/status to read Straum's resident memory: \
                  No such file or directory (os error 2)",
             ),
