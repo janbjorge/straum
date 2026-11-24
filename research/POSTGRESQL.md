@@ -162,9 +162,18 @@ transaction still open in the reorder buffer (`logical.c:1956-1965`,
 the database pins WAL however current the acks are (I). Straum acks
 what the stream has read, not what the writer has applied: the slot
 is temporary and never streamed twice, so the commits read and not yet
-applied wait in Straum's memory, and a load holds no WAL on the
-server (I). Lag counts from Straum's own applied position, not
-`confirmed_flush_lsn`.
+applied wait in Straum's memory (I). Lag counts from Straum's own
+applied position, not `confirmed_flush_lsn`.
+
+Measured 2026-11-24 with `just taxi load` (PostgreSQL 18, six months of
+trips, 20.3 million rows, 1.7 GiB, loaded in about 22 s, 1,000-trip
+updates written throughout). WAL not yet confirmed while the tables
+loaded: 2 to 28 MiB, against 21 to 511 MiB at 11b1407, which confirmed
+only what was applied. WAL the slot kept: physical 0.5 to 29 MiB;
+logical fell from 150 MiB to 24 MiB at one running-transactions record
+and climbed to 436 MiB before the next, against 541 MiB at the end of
+the load at 11b1407. Straum held up to 733 MiB of commits on logical,
+721 MiB on physical; its memory peaked at 1.05 GiB and 1.26 GiB.
 
 ## 3. Freshness
 

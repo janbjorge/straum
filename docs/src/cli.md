@@ -97,8 +97,9 @@ fact table's views as they finish loading with how long it took, the
 rows read and the rows per second, then that it streams:
 
 ```text
-straum: opened a stream at 0/17E99D8; loading 2 tables, estimated 1265 rows and 0.1 MiB: public.zones (dim zones) 265 rows, 0.0 MiB, columns id, borough; public.trips (view trips) 1000 rows, 0.1 MiB, columns at, kind, fare
-straum: loaded dim zones in 0.1 s: 265 rows, 0.0 MiB on disk, 2650 rows/s
+straum: opened a stream at 0/B81BDF18; loading 2 tables, estimated 20331249 rows and 1698.1 MiB: public.taxi_zones (dim taxi_zones) 265 rows, 0.0 MiB, columns location_id, borough; public.yellow_trips (views trips, dropoffs) 20330984 rows, 1698.1 MiB, columns pickup_at, payment_type, pu_location_id, fare_amount, do_location_id, tip_amount, trip_distance
+straum: loaded dim taxi_zones in 0.0 s: 265 rows, 0.0 MiB on disk, 287471 rows/s
+straum: loaded views trips, dropoffs in 22.4 s: 20332093 rows, 1698.1 MiB on disk, 908779 rows/s
 ```
 
 The estimates come from PostgreSQL's catalog: rows as the last

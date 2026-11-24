@@ -37,6 +37,14 @@ asks does, and asks the materialized views too where one can answer;
 their answers must equal Straum's as well. A median, percentile, mode or
 distinct count has no such form: its row says it needs the raw rows.
 
+load: starts Straum while a writer changes trips, and samples each
+second, until Straum is ready: the WAL PostgreSQL keeps for Straum's slot,
+Straum's memory and its /readyz text. Then it stops the writer, waits for
+Straum to apply the last change, and checks the fares by payment type
+against PostgreSQL. Straum reads the WAL while the tables load and holds
+the commits itself, so the WAL kept should stay small however long the
+load takes. Straum's log goes to stderr.
+
 shell: leaves you in `straum shell` at the trips.
 
 --wal physical has Straum read the physical WAL instead of logical decoding.
@@ -288,11 +296,12 @@ def main() -> int:
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=["asks", "transactions", "materialized", "shell"],
+        choices=["asks", "transactions", "materialized", "load", "shell"],
         default="asks",
         help="asks: time the asks on both sides (default); "
         "transactions: what one large transaction costs Straum; "
         "materialized: the asks over materialized views too, and their upkeep; "
+        "load: the WAL kept and memory held while Straum loads under writes; "
         "shell: open straum shell at the trips",
     )
     parser.add_argument(
@@ -372,6 +381,8 @@ async def run(
                 return await transactions(pg, straum, dsn, flags)
             case "materialized":
                 return await materialized(pg, straum, dsn, flags)
+            case "load":
+                return await load_under_writes(pg, url, straum, dsn, flags)
             case _:
                 return await asks(pg, straum, dsn, flags)
 
@@ -522,6 +533,121 @@ async def materialized(
     ]
     print_table(table, headers, "lrrrrr")
     return 0
+
+
+# Trips one write changes; well under --max-transaction-rows.
+WRITE_ROWS = 1_000
+
+
+async def load_under_writes(
+    pg: asyncpg.Connection, url: str, straum: str, dsn: str, flags: list[str]
+) -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    stopped = asyncio.Event()
+    async with connected(url) as writer_pg:
+        writer = asyncio.create_task(write_until(writer_pg, stopped))
+        started = time.perf_counter()
+        server = await asyncio.create_subprocess_exec(
+            straum,
+            "run",
+            SPEC,
+            "--listen",
+            f"127.0.0.1:{port}",
+            *flags,
+            env=os.environ | {"STRAUM_DSN": dsn},
+        )
+        samples = []
+        try:
+            async with aiohttp.ClientSession(
+                f"http://127.0.0.1:{port}",
+                headers={"Content-Type": "application/json"},
+            ) as http:
+                process = psutil.Process(server.pid)
+                while True:
+                    if server.returncode is not None:
+                        raise SystemExit("taxi: straum stopped while loading")
+                    ready, why = await readiness(http)
+                    # What the server keeps, and what Straum has reported.
+                    kept, behind = await pg.fetchrow(
+                        "SELECT"
+                        " max(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)),"
+                        " max(pg_wal_lsn_diff(pg_current_wal_lsn(),"
+                        " coalesce(confirmed_flush_lsn, restart_lsn)))"
+                        " FROM pg_replication_slots WHERE slot_name LIKE 'straum%'"
+                    )
+                    seconds = time.perf_counter() - started
+                    samples.append((seconds, kept, behind, held(process), why))
+                    if ready:
+                        break
+                    await asyncio.sleep(1)
+                stopped.set()
+                writes, before_last = await writer
+                log(f"{writes:,} writes during the load; waiting for the last")
+                # The last write is the next commit after `before_last`.
+                while await applied(http) <= before_last:
+                    await asyncio.sleep(0.05)
+                await check(pg, http, "fares after the load", FARES_SQL, FARES_ASK)
+        finally:
+            stopped.set()
+            with contextlib.suppress(ProcessLookupError):
+                server.terminate()
+            await server.wait()
+    table = [
+        (
+            f"{seconds:.0f}",
+            mebibytes(kept),
+            mebibytes(behind),
+            f"{memory / 2**20:,.0f} MiB",
+            why,
+        )
+        for seconds, kept, behind, memory, why in samples
+    ]
+    headers = [
+        "Second",
+        "WAL kept for the slot",
+        "Not yet reported",
+        "Straum memory",
+        "/readyz",
+    ]
+    print_table(table, headers, "rrrrl")
+    return 0
+
+
+def mebibytes(count: int | None) -> str:
+    return "no slot" if count is None else f"{count / 2**20:,.1f} MiB"
+
+
+async def write_until(
+    pg: asyncpg.Connection, stopped: asyncio.Event
+) -> tuple[int, int]:
+    """Changes WRITE_ROWS trips a transaction, round the table, until
+    `stopped`: how many transactions, and the WAL position before the
+    last."""
+    trips = await pg.fetchval("SELECT max(id) FROM yellow_trips")
+    writes = 0
+    first = 1
+    before = 0
+    while not stopped.is_set():
+        before = lsn(await pg.fetchval("SELECT pg_current_wal_lsn()::text"))
+        await pg.execute(
+            "UPDATE yellow_trips SET fare_amount = fare_amount + 1"
+            f" WHERE id >= {first} AND id < {first + WRITE_ROWS}"
+        )
+        writes += 1
+        first = first + WRITE_ROWS if first + WRITE_ROWS <= trips else 1
+    return writes, before
+
+
+async def readiness(http: aiohttp.ClientSession) -> tuple[bool, str]:
+    """Whether Straum is ready, and its /readyz text; not listening yet
+    reads as not ready."""
+    try:
+        async with http.get("/readyz") as response:
+            return response.status == 200, (await response.text()).strip()
+    except aiohttp.ClientError:
+        return False, "not listening"
 
 
 # Refreshes of each kind per materialized view; the median counts. Each

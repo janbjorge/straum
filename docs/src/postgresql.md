@@ -266,8 +266,11 @@ counts from where the slot was made.
 While the tables load, the stream reads on and Straum holds the commits
 it reads in memory, up to `--max-load-memory` (1 GiB by default), past
 which it stops. None is applied until the load ends, but each is
-confirmed once read, so the server keeps no WAL for the load: a long
-load meets `--max-load-memory`, not `--max-retained-wal`.
+confirmed once read, so a long load meets `--max-load-memory`, not
+`--max-retained-wal`. A physical slot then keeps a few MiB of WAL. A
+logical slot's restart point moves only at the server's
+running-transactions record, so it keeps the WAL written since the last
+one, about 15 s of writes.
 
 With logical decoding, `REPLICA IDENTITY FULL` makes each update and
 delete of a spec table log its whole old row, so they write more WAL;

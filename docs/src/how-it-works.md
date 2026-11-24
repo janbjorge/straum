@@ -118,7 +118,8 @@ read wait in Straum's memory, and the slot is never streamed again, so
 the server needs none of it back. Lag counts from what the writer has
 applied. While the tables load the stream reads on and holds every
 commit until the writer takes them, up to `--max-load-memory` (1 GiB by
-default) of them, so the server keeps no WAL for the load.
+default) of them, so the WAL the server keeps no longer grows with the
+load ([What Straum costs the server](postgresql.md)).
 
 Straum stops with exit 1 when a change does not fit what it holds, and
 the next start loads from a new slot: an update or delete whose old row is
