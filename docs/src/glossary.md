@@ -201,6 +201,8 @@ and this glossary. The clashes at the end are open.
   `--max-lag`; else "not ready" and why.
 - **Lag** (`Lag`): time since Straum last caught up with PostgreSQL's
   write-ahead log (WAL) ([States](deploy.md#states)). Also "behind".
+- **Caught up** (`Wal::applied`): the position every commit up to is
+  applied, WAL with nothing for Straum included; the lag counts to it.
 - **Snapshot** (`Snapshot`, `TransactionSnapshot`): the database at the
   consistent point, which the load reads.
 - **Consistent point** (`Snapshot::at`, `Consistency`): where the

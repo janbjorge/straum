@@ -8,6 +8,7 @@
 //! {"ready": true, "why_not": null, "applied": "16/B374D848",
 //!  "committed": "2024-01-02T00:00:00.123456Z",
 //!  "as_of": "2024-01-02T00:01:00Z", "lag_ms": 1300, "max_lag_ms": 30000,
+//!  "caught_up": "16/B374D848",
 //!  "commits_per_second": 12, "changes_per_second": 480,
 //!  "wal_written": "16/C0000000", "wal_retained_bytes": 268435456,
 //!  "max_retained_wal_bytes": 4294967296,
@@ -84,6 +85,11 @@ pub(crate) fn json(status: &Status) -> Vec<u8> {
     fields.push(format!("\"lag_ms\":{lag_ms}"));
     let max_lag_ms = status.limits.max_lag.as_millis();
     fields.push(format!("\"max_lag_ms\":{max_lag_ms}"));
+    let caught_up = match status.wal {
+        Some(wal) => quoted(&wal.applied.to_string()),
+        None => NULL.to_owned(),
+    };
+    fields.push(format!("\"caught_up\":{caught_up}"));
     let (commits, changes) = match status.applying {
         Some(rate) => (
             rate.commits_per_second.to_string(),
@@ -148,15 +154,22 @@ fn as_of(status: &Status) -> String {
     }
 }
 
+/// The lag, and the position it counts to: every commit up to there is
+/// applied, WAL that holds nothing for Straum included, so on a quiet
+/// server it runs ahead of `applied`, which only a commit moves.
 fn lag(status: &Status) -> String {
-    match status.lag {
-        None => UNKNOWN.to_owned(),
-        Some(lag) => format!(
-            "{:.1} s, at most {} s",
-            lag.as_secs_f64(),
-            status.limits.max_lag.as_secs()
-        ),
+    let Some(lag) = status.lag else {
+        return UNKNOWN.to_owned();
+    };
+    let mut text = format!(
+        "{:.1} s, at most {} s",
+        lag.as_secs_f64(),
+        status.limits.max_lag.as_secs()
+    );
+    if let Some(wal) = status.wal {
+        let _ = write!(text, "; caught up to {}", wal.applied);
     }
+    text
 }
 
 fn applying(status: &Status) -> String {
@@ -261,7 +274,7 @@ mod tests {
 ready:        yes
 applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
 as of:        2024-01-02T00:01:00Z, every commit before it applied
-lag:          1.3 s, at most 30 s
+lag:          1.3 s, at most 30 s; caught up to 16/B374D848
 applying:     12 commits and 480 changes a second
 WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
 memory:       512.0 MiB resident, at most 2048.0 MiB
@@ -308,7 +321,7 @@ memory:       512.0 MiB resident, at most 2048.0 MiB
         let expected = concat!(
             r#"{"ready":true,"why_not":null,"applied":"16/B374D848","#,
             r#""committed":"2024-01-02T00:00:00.123456Z","as_of":"2024-01-02T00:01:00Z","#,
-            r#""lag_ms":1300,"max_lag_ms":30000,"#,
+            r#""lag_ms":1300,"max_lag_ms":30000,"caught_up":"16/B374D848","#,
             r#""commits_per_second":12,"changes_per_second":480,"wal_written":"16/C0000000","#,
             r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296,"#,
             r#""resident_bytes":536870912,"max_memory_bytes":2147483648,"#,
@@ -329,6 +342,7 @@ memory:       512.0 MiB resident, at most 2048.0 MiB
             "lag_ms",
             "commits_per_second",
             "changes_per_second",
+            "caught_up",
         ] {
             assert!(loading[unknown].is_null(), "{unknown}");
         }

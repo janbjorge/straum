@@ -258,6 +258,7 @@
           "as_of",
           "lag_ms",
           "max_lag_ms",
+          "caught_up",
           "commits_per_second",
           "changes_per_second",
           "wal_written",
@@ -283,6 +284,10 @@
           "as_of": { "type": ["string", "null"], "format": "date-time" },
           "lag_ms": { "type": ["integer", "null"], "minimum": 0 },
           "max_lag_ms": { "type": "integer", "minimum": 0 },
+          "caught_up": {
+            "type": ["string", "null"],
+            "description": "The LSN lag_ms counts to: every commit up to it is applied, WAL that holds nothing for Straum included, so on a quiet server it runs ahead of applied."
+          },
           "commits_per_second": {
             "type": ["integer", "null"],
             "minimum": 0,

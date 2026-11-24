@@ -180,13 +180,13 @@ Prints what the Straum at `--url` has done, from its `GET /status`.
 ```text
 $ straum status
 ready:        yes
-applied:      0/B81BDEA0, where the stream started
-as of:        2026-11-24T18:11:11.474154709Z, every commit before it applied
-lag:          0.4 s, at most 30 s
+applied:      0/B81BDEB0, where the stream started
+as of:        2026-11-24T19:04:42.083217042Z, every commit before it applied
+lag:          0.8 s, at most 30 s; caught up to 0/B81BDF88
 applying:     0 commits and 0 changes a second
-WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDF78
-memory:       130.9 MiB resident, no --max-memory set
-version:      0.18.0-2-g5fc7de9-dirty
+WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDF88
+memory:       145.0 MiB resident, no --max-memory set
+version:      0.18.1-dirty
 ```
 
 | Line | Shows |
@@ -194,7 +194,7 @@ version:      0.18.0-2-g5fc7de9-dirty
 | `ready` | `yes`, or `no` and why, as `/readyz` says. |
 | `applied` | The last commit applied and when it committed. |
 | `as of` | The `as_of` answers carry. It keeps moving while the database is quiet. |
-| `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
+| `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. The lag counts to the position Straum has caught up to: every commit up to there is applied, WAL that holds nothing for Straum included. On a quiet server it runs ahead of `applied`, which only a commit to the spec's tables moves. |
 | `applying` | Commits and changes applied each second between the last two readings of PostgreSQL's WAL, about a second apart. With `lag`, it tells a Straum catching up from one falling further behind. Unknown in the stream's first second. |
 | `memory` | Resident memory at the last reading, about a second old, against `--max-memory` when it is set. Where neither `/proc/self/status` nor `ps` gives it, the line says it is unknown. |
 | `version` | The version of the Straum serving, as [`straum version`](#straum-version) prints it; a build `just taxi` makes names its commit as `git describe` does, and any other build outside a release says `0.0.0`. |

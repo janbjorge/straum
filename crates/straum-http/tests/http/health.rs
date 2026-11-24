@@ -105,6 +105,11 @@ fn status_says_what_the_stream_applied() {
         "{}",
         lines[3]
     );
+    assert!(
+        lines[3].ends_with("; caught up to 16/B374D848"),
+        "{}",
+        lines[3]
+    );
     assert_eq!(
         lines[4],
         "applying:     unknown for the stream's first second"
