@@ -36,7 +36,8 @@ script waits on 3 and gives up on 1. Prose lives in the guide.
 
 No metrics and no OTLP. Straum writes what people read, as plain text:
 `GET /status` (ready or why not, lag, apply rate, WAL held against
-the cap, resident memory against `--max-memory`, LSN, `as_of`);
+the cap, resident memory against `--max-memory`, LSN, `as_of`,
+version);
 `GET /views` (each view's widths with their cells, horizons, bucket
 range, typed keys and measures, each dim's rows and the view keys that
 read it);

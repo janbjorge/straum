@@ -47,6 +47,13 @@ mod status;
 mod time;
 mod views;
 
+/// Straum's version: the release's, which CI builds with, else
+/// Cargo.toml's, which never names one.
+pub const VERSION: &str = match option_env!("STRAUM_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 use std::fmt;
 use std::future::{Future, poll_fn};
 use std::io;

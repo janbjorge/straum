@@ -186,6 +186,7 @@ lag:          0.6 s, at most 30 s
 applying:     0 commits and 0 changes a second
 WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDFC0
 memory:       not watched; --max-memory is not set
+version:      0.0.0
 ```
 
 | Line | Shows |
@@ -196,6 +197,7 @@ memory:       not watched; --max-memory is not set
 | `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
 | `applying` | Commits and changes applied each second between the last two readings of PostgreSQL's WAL, about a second apart. With `lag`, it tells a Straum catching up from one falling further behind. Unknown in the stream's first second. |
 | `memory` | Resident memory at the last reading, about a second old, against `--max-memory`. Without `--max-memory` nothing reads it, and the line says so. |
+| `version` | The version of the Straum serving, as [`straum version`](#straum-version) prints it; a build outside a release says `0.0.0`. |
 
 A failure ends the process (architecture decision record ADR-0009), so
 the status counts no starts or failures: whatever runs Straum counts

@@ -11,7 +11,8 @@
 //!  "commits_per_second": 12, "changes_per_second": 480,
 //!  "wal_written": "16/C0000000", "wal_retained_bytes": 268435456,
 //!  "max_retained_wal_bytes": 4294967296,
-//!  "resident_bytes": 536870912, "max_memory_bytes": 2147483648}
+//!  "resident_bytes": 536870912, "max_memory_bytes": 2147483648,
+//!  "version": "0.12.0"}
 //! ```
 //!
 //! What is unknown until every table is loaded is null, as is a time past
@@ -23,6 +24,7 @@ use std::time::SystemTime;
 
 use straum_app::{Memory, Rate, Status, format_mebibytes};
 
+use crate::VERSION;
 use crate::json::{NULL, quoted, quoted_or_null};
 use crate::time::rfc3339_of;
 
@@ -55,6 +57,7 @@ pub(crate) fn write(status: &Status) -> String {
     write_line(&mut out, "applying", &applying(status));
     write_line(&mut out, "WAL retained", &wal(status));
     write_line(&mut out, "memory", &memory(status.memory));
+    write_line(&mut out, "version", VERSION);
     out
 }
 
@@ -106,6 +109,7 @@ pub(crate) fn json(status: &Status) -> Vec<u8> {
     };
     fields.push(format!("\"resident_bytes\":{resident}"));
     fields.push(format!("\"max_memory_bytes\":{max_memory}"));
+    fields.push(format!("\"version\":{}", quoted(VERSION)));
     format!("{{{}}}\n", fields.join(",")).into_bytes()
 }
 
@@ -254,7 +258,20 @@ applying:     12 commits and 480 changes a second
 WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
 memory:       512.0 MiB resident, at most 2048.0 MiB
 "
+            .to_owned()
+                + &version_line()
         );
+    }
+
+    /// The last line of the status, which names the version built.
+    fn version_line() -> String {
+        format!("version:      {VERSION}\n")
+    }
+
+    #[test]
+    fn names_the_version_built() {
+        assert!(write(&status()).ends_with(&version_line()));
+        assert_eq!(json_of(&status())["version"], VERSION);
     }
 
     fn json_of(status: &Status) -> serde_json::Value {
@@ -269,9 +286,9 @@ memory:       512.0 MiB resident, at most 2048.0 MiB
             r#""lag_ms":1300,"max_lag_ms":30000,"#,
             r#""commits_per_second":12,"changes_per_second":480,"wal_written":"16/C0000000","#,
             r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296,"#,
-            r#""resident_bytes":536870912,"max_memory_bytes":2147483648}"#,
-            "\n",
+            r#""resident_bytes":536870912,"max_memory_bytes":2147483648,"#,
         );
+        let expected = format!("{expected}\"version\":\"{VERSION}\"}}\n");
         assert_eq!(String::from_utf8(json(&status())).unwrap(), expected);
     }
 
@@ -346,6 +363,8 @@ applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
 memory:       not watched; --max-memory is not set
 "
+            .to_owned()
+                + &version_line()
         );
     }
 

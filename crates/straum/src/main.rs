@@ -186,14 +186,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             };
             print(help)
         }
-        Command::Version => {
-            // CI builds with the release's version; Cargo.toml never names it.
-            let version = match option_env!("STRAUM_VERSION") {
-                Some(version) => version,
-                None => env!("CARGO_PKG_VERSION"),
-            };
-            print(&format!("straum {version}\n"))
-        }
+        Command::Version => print(&format!("straum {}\n", straum_http::VERSION)),
         Command::Plan(args) => plan(&args),
         Command::Run(args) => run(args),
         Command::Status { server, output } => {

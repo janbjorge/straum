@@ -74,6 +74,8 @@ applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
 memory:       not watched; --max-memory is not set
 "
+        .to_owned()
+            + &format!("version:      {}\n", straum_http::VERSION)
     );
     server.stop();
 }
@@ -115,7 +117,8 @@ fn status_says_what_the_stream_applied() {
         lines[6],
         "memory:       3.0 MiB resident, at most 1024.0 MiB"
     );
-    assert_eq!(lines.len(), 7);
+    assert_eq!(lines[7], format!("version:      {}", straum_http::VERSION));
+    assert_eq!(lines.len(), 8);
     server.stop();
 }
 

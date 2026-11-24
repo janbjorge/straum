@@ -264,7 +264,8 @@
           "wal_retained_bytes",
           "max_retained_wal_bytes",
           "resident_bytes",
-          "max_memory_bytes"
+          "max_memory_bytes",
+          "version"
         ],
         "additionalProperties": false,
         "properties": {
@@ -307,6 +308,10 @@
             "type": ["integer", "null"],
             "minimum": 0,
             "description": "The --max-memory limit, past which Straum stops; null without it."
+          },
+          "version": {
+            "type": "string",
+            "description": "The version of Straum serving, as straum version prints it."
           }
         }
       },
