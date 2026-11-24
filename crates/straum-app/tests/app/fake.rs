@@ -112,8 +112,8 @@ pub struct Database {
     /// Asks for a commit that wait the whole wait and find none, before
     /// the next one is handed out.
     pub waits: usize,
-    /// What reading the WAL returns instead of a slot that has confirmed
-    /// every commit applied.
+    /// What reading the WAL returns instead of one where Straum has applied
+    /// every commit handed out.
     pub wal: Option<Wal>,
     /// Every load, dims and facts, in order.
     pub loads: Vec<String>,
@@ -382,7 +382,7 @@ impl Source for Fake {
         let applied = self.stream.as_ref().expect("open first").applied;
         Ok(database.wal.unwrap_or(Wal {
             written: database.lsn(),
-            confirmed: applied,
+            applied,
             restart: applied,
         }))
     }

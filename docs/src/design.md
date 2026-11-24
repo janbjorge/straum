@@ -115,10 +115,13 @@ PostgreSQL; they answer 503 meanwhile. Only at the end does the writer
 take the write lock, swap the loaded store in for the empty one and set
 `Following` at L, and Straum is ready. The stream thread runs from
 `open` on: it reads the stream, queues commits for the writer, answers
-the server's keepalives and confirms what the writer has applied, so
-the server can recycle WAL. While no commit it has queued waits to be
-applied, it confirms the WAL it has read; otherwise only what the
-writer has applied, which during a load is nothing. While the tables
+the server's keepalives and confirms what it has read, so the server
+can recycle WAL: the commits queued wait in memory, and no slot is
+streamed twice, so nothing confirmed is asked for again
+(`next_report`). Apart from that it keeps what is applied for the lag:
+the last commit the writer has applied, or, while no commit it has
+queued waits and no transaction is open, the WAL it has read. During a
+load that is the start. While the tables
 load its queue has no bound in commits, only `--max-load-memory` in
 bytes; the writer's first `Stream::next` ends that, and from then 64
 commits or 200,000 changes bound it, so the thread reads nothing more
@@ -407,9 +410,9 @@ Where both are taken, the store's lock comes first.
 `Following` exists only while every table is loaded; a failure removes
 it (`Writer::step`), and its absence is what "not ready" means. A
 writer whose step failed is done: another step panics, and Straum exits
-instead (ADR-0009). The `Lag` keeps the WAL readings the slot hasn't
-confirmed, at most an hour of them, and the last reading the slot had
-confirmed in full; `as_of` and readiness derive from it. A `Commit` is
+instead (ADR-0009). The `Lag` keeps the WAL readings Straum hasn't
+applied, at most an hour of them, and the last reading Straum had
+applied in full; `as_of` and readiness derive from it. A `Commit` is
 one transaction, whole, with the end of its commit record as its LSN.
 The stream delivers nothing before the commit, and the store sees it as
 one.

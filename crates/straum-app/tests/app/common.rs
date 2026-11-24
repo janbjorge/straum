@@ -236,11 +236,12 @@ pub fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
         .expect("the writer held the store while it loaded")
 }
 
-/// A WAL reading whose slot holds WAL from `confirmed` on.
-pub fn wal(written: u64, confirmed: u64) -> Wal {
+/// A WAL reading with every commit up to `applied` applied, and the slot
+/// holding WAL from there on.
+pub fn wal(written: u64, applied: u64) -> Wal {
     Wal {
         written: Lsn(written),
-        confirmed: Lsn(confirmed),
-        restart: Lsn(confirmed),
+        applied: Lsn(applied),
+        restart: Lsn(applied),
     }
 }

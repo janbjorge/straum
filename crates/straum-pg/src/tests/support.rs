@@ -758,20 +758,13 @@ pub(super) fn copy_data(body: &[u8]) -> Vec<u8> {
     message(b'd', body)
 }
 
-/// A primary keepalive at WAL position `end`, asking for a reply or not.
-pub(super) fn keepalive(end: u64, reply: Reply) -> Vec<u8> {
+/// A primary keepalive at WAL position `end`, asking for no reply.
+pub(super) fn keepalive(end: u64) -> Vec<u8> {
     let mut body = vec![b'k'];
     body.extend(end.to_be_bytes());
     body.extend(0_i64.to_be_bytes());
-    body.push(u8::from(reply == Reply::Asked));
+    body.push(0);
     copy_data(&body)
-}
-
-/// Whether a keepalive asks the client to answer at once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Reply {
-    Asked,
-    NotAsked,
 }
 
 /// `ErrorResponse` with SQLSTATE `code` and message `text`.

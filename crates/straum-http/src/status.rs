@@ -172,7 +172,7 @@ mod tests {
             lag: Some(Duration::from_millis(1_300)),
             wal: Some(Wal {
                 written: Lsn(0x16_C000_0000),
-                confirmed: Lsn(0x16_B374_D848),
+                applied: Lsn(0x16_B374_D848),
                 restart: Lsn(0x16_B000_0000),
             }),
             limits: Limits {

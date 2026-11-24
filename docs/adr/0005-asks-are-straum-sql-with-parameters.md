@@ -1,6 +1,6 @@
 # ADR-0005: Asks are Straum SQL with parameters
 
-Status: Accepted 2026-11-10; revised 2026-11-19
+Status: Accepted 2026-11-10; revised 2026-11-24
 
 ## Context
 
@@ -44,7 +44,7 @@ without floats: a sum at either scale, an avg as sum over count. A null
 meets no comparison; a boolean takes `=` and `<>`.
 
 An answer is `{"as_of", "rows"}`, each row keyed by its `SELECT`
-names. `as_of` is when the slot last confirmed all WAL the server had
+names. `as_of` is when Straum last had applied all WAL the server had
 written (ADR-0009): every commit before it is in the answer. The LSN
 goes in a `Straum-LSN` header. avg rounds half to even four places past
 its column's scale, trailing zeros dropped, in `straum-http`. A

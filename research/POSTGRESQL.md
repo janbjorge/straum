@@ -159,7 +159,12 @@ flush position moves the slot (`walsender.c:2652-2658`, R);
 release is not tied to it directly: `restart_lsn` follows the oldest
 transaction still open in the reorder buffer (`logical.c:1956-1965`,
 `snapbuild.c:1252-1269`, R), so one long-open transaction anywhere in
-the database pins WAL however current the acks are (I).
+the database pins WAL however current the acks are (I). Straum acks
+what the stream has read, not what the writer has applied: the slot
+is temporary and never streamed twice, so the commits read and not yet
+applied wait in Straum's memory, and a load holds no WAL on the
+server (I). Lag counts from Straum's own applied position, not
+`confirmed_flush_lsn`.
 
 ## 3. Freshness
 
@@ -248,8 +253,10 @@ fill the server's disk. The costs:
   connection, Straum stops, and the next start loads again.
 - **Lag still holds WAL while connected.** `max_slot_wal_keep_size`
   defaults to unlimited (`utils/misc/guc_parameters.dat:2136-2143`, R)
-  and Azure fixes it at `-1` (§7). Straum reads the WAL held for its
-  slot every second and stops past `--max-retained-wal` (4Gi).
+  and Azure fixes it at `-1` (§7). A writer behind by more than the
+  stream's queue stops the stream reading, so the acks stand still.
+  Straum reads the WAL held for its slot every second and stops past
+  `--max-retained-wal` (4Gi).
 - **Each replica is a slot plus a walsender**, and each walsender reads
   and decodes all WAL itself (`walsender.c:3729-3745`, R), so N slots
   cost about N times the decode (I). Default is one replica.

@@ -126,8 +126,8 @@ fn readiness_says_why_not() {
 
 #[test]
 fn readiness_says_how_far_behind() {
-    // WAL written while the load took a second, which the slot hasn't
-    // confirmed.
+    // WAL written while the load took a second, which Straum hasn't
+    // applied.
     let mut fake = fake();
     fake.wal.written = Lsn(START.0 + 1);
     fake.pause = Duration::from_secs(1);

@@ -85,7 +85,7 @@ pub struct Answered {
     /// The answer reflects every commit up to here and none after.
     pub applied: Lsn,
     /// Every commit made before this, by Straum's clock, is in the answer:
-    /// when the slot was last known to have confirmed all the WAL there
+    /// when Straum was last known to have applied all the WAL there
     /// was. Unlike the time of the commit at `applied`, it moves on while
     /// the database is idle.
     pub as_of: SystemTime,
@@ -105,7 +105,7 @@ pub struct Status {
     pub committed: Option<SystemTime>,
     /// As [`Answered::as_of`]. `None` until every table is loaded.
     pub as_of: Option<SystemTime>,
-    /// The time since Straum's slot was last known to have confirmed all
+    /// The time since Straum was last known to have applied all
     /// the WAL there was. `None` until every table is loaded.
     pub lag: Option<Duration>,
     /// The last reading of the server's WAL, while a stream runs.
@@ -146,7 +146,7 @@ impl App {
         let applied = state.applied.ok_or(AnswerError::NotReady)?;
         let WindowAnswer { answer, cut } =
             (state.store.ask_window(ask, window)).map_err(AnswerError::Invalid)?;
-        // The slot never confirms past what the store holds, so the time
+        // Straum never counts as applied what the store lacks, so the time
         // the progress was last caught up is never ahead of the answer.
         let as_of = self.progress().following.as_ref().expect(FOLLOWING).as_of();
         Ok(Answered {
@@ -276,7 +276,7 @@ pub(crate) mod tests {
             lag: Lag::new(Instant::now()),
             wal: Wal {
                 written: Lsn(1),
-                confirmed: Lsn(1),
+                applied: Lsn(1),
                 restart: Lsn(1),
             },
         });

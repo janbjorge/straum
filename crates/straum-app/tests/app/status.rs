@@ -30,7 +30,7 @@ fn ready_only_within_the_lag_bound() {
     } = watched(app, |_, _| thread::sleep(Duration::from_millis(60)));
     assert_eq!(writer.app().status().lag, None);
 
-    // WAL written during the load that the slot hasn't confirmed.
+    // WAL written during the load that Straum hasn't applied.
     database.borrow_mut().wal = Some(wal(200, 100));
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
     assert!(writer.app().status().lag.unwrap() >= Duration::from_millis(2));
@@ -103,7 +103,7 @@ fn status_after_a_start(database: &RefCell<Database>, writer: &mut Writer<Fake>)
     assert!(status.lag.unwrap() < Duration::from_secs(1));
     let caught_up = Wal {
         written: start,
-        confirmed: start,
+        applied: start,
         restart: start,
     };
     assert_eq!(status.wal, Some(caught_up));
@@ -118,7 +118,7 @@ fn status_while_waiting_for_a_commit(
 ) {
     let held = Wal {
         written: Lsn(start.0 + 50),
-        confirmed: start,
+        applied: start,
         restart: Lsn(start.0 - 20),
     };
     database.borrow_mut().wal = Some(held);

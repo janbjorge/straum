@@ -461,7 +461,7 @@ mod tests {
         fn wal(&mut self) -> Result<Wal, SourceError> {
             Ok(Wal {
                 written: Lsn(1),
-                confirmed: Lsn(1),
+                applied: Lsn(1),
                 restart: Lsn(1),
             })
         }

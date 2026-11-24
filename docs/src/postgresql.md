@@ -250,7 +250,9 @@ role `CONNECTION LIMIT` needs room for them. Run one Straum per
 database: a second needs another slot and load, and with logical
 decoding the server decodes the WAL once for each.
 
-The server keeps WAL until Straum confirms it, every second. Past
+The server keeps WAL until Straum confirms it has read it, every
+second; the commits read and not yet applied wait in Straum's memory,
+since a stopped Straum starts over from a new slot. Past
 `--max-retained-wal` (4 GiB by default) Straum stops, so one that
 cannot keep up cannot fill the disk. A watchdog on its own connection
 checks that every second, during loads too. Past the limit, or when it
@@ -263,9 +265,9 @@ counts from where the slot was made.
 
 While the tables load, the stream reads on and Straum holds the commits
 it reads in memory, up to `--max-load-memory` (1 GiB by default), past
-which it stops. None is applied until the load ends, so the server
-keeps the WAL of the whole load, and a load longer than
-`--max-retained-wal` allows stops Straum too.
+which it stops. None is applied until the load ends, but each is
+confirmed once read, so the server keeps no WAL for the load: a long
+load meets `--max-load-memory`, not `--max-retained-wal`.
 
 With logical decoding, `REPLICA IDENTITY FULL` makes each update and
 delete of a spec table log its whole old row, so they write more WAL;

@@ -108,15 +108,17 @@ one. A delete removes the old row. Both streams give the whole old row.
 ![Following and answering at once](diagrams/follow.svg)
 
 *The stream thread hands the writer whole commits and reports what it has
-applied. The writer takes the write lock per commit; asks take the read
+read. The writer takes the write lock per commit; asks take the read
 lock.*
 
 A long ask delays the writer, which shows as lag. The stream reads up to
-64 commits or 200,000 changes ahead of the writer and confirms what has
-been applied, so PostgreSQL can recycle write-ahead log (WAL). While the
-tables load it reads on and holds every commit until the writer takes
-them, up to `--max-load-memory` (1 GiB by default) of them. Nothing is
-applied until the load ends, so the server still keeps the load's WAL.
+64 commits or 200,000 changes ahead of the writer and confirms what it
+has read, so PostgreSQL can recycle write-ahead log (WAL): the commits
+read wait in Straum's memory, and the slot is never streamed again, so
+the server needs none of it back. Lag counts from what the writer has
+applied. While the tables load the stream reads on and holds every
+commit until the writer takes them, up to `--max-load-memory` (1 GiB by
+default) of them, so the server keeps no WAL for the load.
 
 Straum stops with exit 1 when a change does not fit what it holds, and
 the next start loads from a new slot: an update or delete whose old row is

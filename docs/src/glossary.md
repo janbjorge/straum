@@ -297,7 +297,7 @@ and this glossary. The clashes at the end are open.
 - **Replication connection**: the session that creates the slot and
   streams; the load reads the slot's snapshot on a plain connection.
 - **LSN** (`Lsn`): log sequence number, a WAL position; a `Wal` reading
-  holds `written`, `confirmed` and `restart`.
+  holds `written`, `applied` and `restart`.
 - **OID** (`Oid`): object identifier, PostgreSQL's id for a catalog row:
   table, type, enum label.
 - **Catalog** (`Catalog`, `Class`, `Column`): the system tables as the

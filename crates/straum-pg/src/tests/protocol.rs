@@ -1,7 +1,8 @@
 //! The PostgreSQL wire protocol against a fake server: signing in,
 //! queries, copies and the replication stream, with each error a broken
-//! or hostile server can cause, and how the stream answers keepalives and
-//! reports what was applied.
+//! or hostile server can cause, and the reading of the server's WAL.
+//! What the stream reports is tested apart from any server, in
+//! `stream.rs`.
 
 use std::time::{Duration, Instant};
 use std::{slice, thread};
@@ -319,15 +320,8 @@ fn copy_both_errors() {
     }
 }
 
-/// A stream from a fake server, and the thread that returns what the
-/// client sent the server.
-struct FakeStream {
-    stream: Stream,
-    received: thread::JoinHandle<Vec<u8>>,
-}
-
 /// A stream from a fake server that sends `parts` once it has started.
-fn scripted_stream(parts: Vec<Part>) -> FakeStream {
+fn scripted_stream(parts: Vec<Part>) -> Stream {
     let mut start = signed_in();
     start.extend(message(b'N', b"SNOTICE\0Mstarting\0\0"));
     start.extend(message(b'W', &[0, 0, 0]));
@@ -336,17 +330,13 @@ fn scripted_stream(parts: Vec<Part>) -> FakeStream {
     let server = scripted(script);
     let mut connection = Connection::connect(&server.dsn, ConnectionKind::Replication).unwrap();
     connection.copy_both("START_REPLICATION").unwrap();
-    let stream = Stream::start(
+    Stream::start(
         connection,
         Reader::Logical(Decoder::new(Vec::new(), ROW_LIMIT)),
         Lsn(0x10),
         LOAD_MEMORY,
     )
-    .unwrap();
-    FakeStream {
-        stream,
-        received: server.received,
-    }
+    .unwrap()
 }
 
 #[test]
@@ -369,7 +359,7 @@ fn stream_errors() {
     ];
     for (reply, expected) in cases {
         let mut fake = scripted_stream(vec![now(reply)]);
-        assert_eq!(fake.stream.next(LONG).unwrap_err().to_string(), expected);
+        assert_eq!(fake.next(LONG).unwrap_err().to_string(), expected);
     }
 }
 
@@ -378,12 +368,12 @@ fn stream_errors() {
 #[test]
 fn a_check_of_the_stream_gives_its_failure() {
     let mut quiet = scripted_stream(vec![later(LONG, Vec::new())]);
-    assert!(quiet.stream.check().is_ok());
+    assert!(quiet.check().is_ok());
     let fatal = error_response("57P01", "terminating connection");
     let mut failed = scripted_stream(vec![now(fatal)]);
     let wait = Wait::new("the stream to fail");
     let error = loop {
-        if let Err(error) = failed.stream.check() {
+        if let Err(error) = failed.check() {
             break error;
         }
         wait.poll();
@@ -398,16 +388,16 @@ fn a_check_of_the_stream_gives_its_failure() {
 /// send at any time, passes by: the stream goes on.
 #[test]
 fn notices_and_settings_on_the_stream_pass_by() {
-    let quiet = later(Duration::from_secs(2), keepalive(0x18, Reply::NotAsked));
+    let quiet = later(Duration::from_secs(2), keepalive(0x18));
     let mut fake = scripted_stream(vec![
         now(message(b'N', b"SWARNING\0Mwatch out\0\0")),
         now(message(b'S', b"TimeZone\0UTC\0")),
         quiet,
     ]);
-    assert_eq!(fake.stream.next(Duration::from_millis(300)).unwrap(), None);
+    assert_eq!(fake.next(Duration::from_millis(300)).unwrap(), None);
     // Any other message still ends it.
     let mut ended = scripted_stream(vec![now(message(b'c', b""))]);
-    assert!(ended.stream.next(LONG).is_err());
+    assert!(ended.next(LONG).is_err());
 }
 
 /// Under `synchronous_commit = off` a commit is acknowledged before its
@@ -429,7 +419,7 @@ fn an_asynchronous_commit_counts_before_it_is_written() {
     let acknowledged = db.insert_lsn();
     let wal = source.wal().unwrap();
     assert!(wal.written >= acknowledged, "{wal:?} {acknowledged:?}");
-    assert!(wal.confirmed < wal.written, "{wal:?}");
+    assert!(wal.applied < wal.written, "{wal:?}");
 
     let commit = source.next_commit(3 * LONG).unwrap().unwrap();
     assert!(commit.lsn <= acknowledged);
@@ -442,7 +432,7 @@ fn an_asynchronous_commit_counts_before_it_is_written() {
     let deadline = Instant::now() + 3 * LONG;
     loop {
         let wal = source.wal().unwrap();
-        if wal.confirmed >= wal.written {
+        if wal.applied >= wal.written {
             break;
         }
         assert!(Instant::now() < deadline, "never caught up: {wal:?}");
@@ -458,23 +448,23 @@ fn reads_the_servers_wal() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     let start = source.open(&spec).unwrap();
-    // A new slot has confirmed everything before its consistent point, and
-    // the stream may have confirmed idle WAL after it since.
+    // Everything before the start is applied, and idle WAL after it may
+    // be since.
     let wal = source.wal().unwrap();
-    assert!(wal.confirmed >= start, "{wal:?}");
+    assert!(wal.applied >= start, "{wal:?}");
     assert!(wal.restart <= start && start <= wal.written, "{wal:?}");
 
     db.run(&Rng::new(1).trip(1));
     let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(source.wal().unwrap().written >= commit.lsn);
     // Asking for the next commit says this one is applied, and the stream
-    // tells the server within a status interval.
+    // counts it within a status interval.
     assert_eq!(
         source.next_commit(Duration::from_millis(100)).unwrap(),
         None
     );
-    let wait = Wait::new("the slot to confirm the commit");
-    while source.wal().unwrap().confirmed < commit.lsn {
+    let wait = Wait::new("the commit to count as applied");
+    while source.wal().unwrap().applied < commit.lsn {
         wait.poll();
     }
 
@@ -485,18 +475,20 @@ fn reads_the_servers_wal() {
             AND pid <> pg_backend_pid()",
     );
     // The reading tries once more on a new connection, and gets through.
-    assert!(source.wal().unwrap().confirmed >= commit.lsn);
+    assert!(source.wal().unwrap().applied >= commit.lsn);
 
     // A slot the server doesn't have.
     let mut connection = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
-    let error = read_wal(&mut connection, "nope").unwrap_err().to_string();
+    let error = read_wal(&mut connection, "nope", start)
+        .unwrap_err()
+        .to_string();
     assert_eq!(error, "PostgreSQL sent no WAL position for slot nope");
 }
 
 /// The reply to the reading of the WAL: the insert position, the slot's
-/// confirmed and restart positions, and the segment size.
+/// restart position, and the segment size.
 fn wal_reply() -> Vec<u8> {
-    let columns = ["0/3000000", "0/2000000", "0/1000000", "16777216"];
+    let columns = ["0/3000000", "0/1000000", "16777216"];
     let mut description = i16::try_from(columns.len()).unwrap().to_be_bytes().to_vec();
     let mut row = description.clone();
     for (column, value) in columns.iter().enumerate() {
@@ -532,7 +524,7 @@ fn a_silent_server_fails_the_reading_of_the_wal() {
     let mut connection = None;
     let reading = plain(&mut connection, &silent.dsn).unwrap();
     let clock = Instant::now();
-    assert!(read_wal(reading, "straum").is_err());
+    assert!(read_wal(reading, "straum", Lsn(0)).is_err());
     assert!(clock.elapsed() >= just_within);
     assert!(
         clock.elapsed() < WAL_READ_TIMEOUT + slack,
@@ -542,123 +534,19 @@ fn a_silent_server_fails_the_reading_of_the_wal() {
     let slow = scripted(vec![now(signed_in()), later(just_within, wal_reply())]);
     let mut connection = None;
     let reading = plain(&mut connection, &slow.dsn).unwrap();
+    let wal = read_wal(reading, "straum", Lsn(0x200_0000)).unwrap();
     assert_eq!(
-        read_wal(reading, "straum").unwrap().confirmed,
-        Lsn(0x200_0000)
+        (wal.applied, wal.restart),
+        (Lsn(0x200_0000), Lsn(0x100_0000))
     );
 }
 
 #[test]
 fn the_stream_waits_at_most_the_wait() {
     // The server stays quiet past the wait.
-    let quiet = later(Duration::from_secs(2), keepalive(0x18, Reply::NotAsked));
+    let quiet = later(Duration::from_secs(2), keepalive(0x18));
     let mut fake = scripted_stream(vec![quiet]);
     let clock = Instant::now();
-    assert_eq!(fake.stream.next(Duration::from_millis(200)).unwrap(), None);
+    assert_eq!(fake.next(Duration::from_millis(200)).unwrap(), None);
     assert!(clock.elapsed() >= Duration::from_millis(200));
-}
-
-/// `XLogData` holding `message`: its start, end and send time are zero.
-fn xlog_data(message: &[u8]) -> Vec<u8> {
-    let mut body = vec![b'w'];
-    body.extend([0; 24]);
-    body.extend(message);
-    copy_data(&body)
-}
-
-/// A transaction with no changes whose commit ends at `end`.
-fn empty_commit(end: u64) -> Vec<u8> {
-    let mut begin = vec![b'B'];
-    begin.extend([0; 20]);
-    let mut commit = vec![b'C', 0];
-    commit.extend(0_u64.to_be_bytes());
-    commit.extend(end.to_be_bytes());
-    commit.extend(0_i64.to_be_bytes());
-    [xlog_data(&begin), xlog_data(&commit)].concat()
-}
-
-/// The applied positions the client reported in standby status updates.
-fn reported(received: &[u8]) -> Vec<u64> {
-    // CopyData of 38 bytes holding a standby status update.
-    let frame = [b'd', 0, 0, 0, 38, b'r'];
-    let mut positions = Vec::new();
-    for (at, window) in received.windows(frame.len()).enumerate() {
-        if window == frame {
-            let applied = received[at + 6..at + 14].try_into().unwrap();
-            positions.push(u64::from_be_bytes(applied));
-        }
-    }
-    positions
-}
-
-#[test]
-fn the_stream_answers_and_reports() {
-    let pause = Duration::from_millis(1_500);
-    let commit = empty_commit(0x20);
-    // A message split across a read timeout, a keepalive asking for an
-    // answer between transactions, then a commit.
-    let (head, tail) = commit.split_at(5);
-    let mut fake = scripted_stream(vec![
-        now(keepalive(0x18, Reply::NotAsked)),
-        now(head.to_vec()),
-        later(pause, tail.to_vec()),
-        later(pause, keepalive(0x40, Reply::Asked)),
-        now(empty_commit(0x50)),
-    ]);
-    assert_eq!(fake.stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x20));
-    assert_eq!(fake.stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x50));
-    drop(fake.stream);
-    // The start, then once the first commit is applied, everything up to
-    // the keepalive at 0x40.
-    let reported = reported(&fake.received.join().unwrap());
-    assert!(reported.contains(&0x40), "{reported:x?}");
-    for position in &reported {
-        assert!([0x10, 0x18, 0x20, 0x40].contains(position), "{reported:x?}");
-    }
-}
-
-/// A report between transactions may name a keepalive's position past
-/// the last commit; one sent inside the next transaction must not go
-/// back to that commit, which would move a physical slot back.
-#[test]
-fn the_stream_never_reports_less_than_before() {
-    let pause = Duration::from_millis(500);
-    let mut begin = vec![b'B'];
-    begin.extend([0; 20]);
-    let mut fake = scripted_stream(vec![
-        now(empty_commit(0x20)),
-        later(pause, keepalive(0x40, Reply::Asked)),
-        later(pause, xlog_data(&begin)),
-        later(pause, keepalive(0x48, Reply::Asked)),
-        // Open until the wait below ends.
-        later(pause * 4, Vec::new()),
-    ]);
-    assert_eq!(fake.stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x20));
-    // Asking again applies 0x20; nothing more commits.
-    assert_eq!(fake.stream.next(pause * 4).unwrap(), None);
-    drop(fake.stream);
-    let reported = reported(&fake.received.join().unwrap());
-    assert!(reported.contains(&0x40), "{reported:x?}");
-    for pair in reported.windows(2) {
-        assert!(pair[0] <= pair[1], "{reported:x?}");
-    }
-}
-
-#[test]
-fn a_commit_handed_out_is_not_yet_applied() {
-    // The writer takes the commit at 0x20 and never asks for the next, so
-    // it may still be applying it: nothing past the start is reported, not
-    // even the keepalive that follows.
-    let mut fake = scripted_stream(vec![
-        now(empty_commit(0x20)),
-        later(Duration::from_millis(500), keepalive(0x40, Reply::Asked)),
-    ]);
-    assert_eq!(fake.stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x20));
-    thread::sleep(Duration::from_millis(1_500));
-    drop(fake.stream);
-    let reported = reported(&fake.received.join().unwrap());
-    assert_ne!(reported, Vec::<u64>::new());
-    for position in &reported {
-        assert_eq!(*position, 0x10, "{reported:x?}");
-    }
 }

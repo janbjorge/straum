@@ -35,11 +35,12 @@ pub trait Source {
     fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
-    /// last one is applied, so PostgreSQL may recycle the WAL before it.
+    /// last one is applied.
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError>;
 
-    /// Reads how far the server has written WAL and how much of it the
-    /// stream's slot holds, from [`Source::open`] on.
+    /// Reads how far the server has written WAL, how much of it the
+    /// stream's slot holds, and how far Straum has applied, from
+    /// [`Source::open`] on.
     fn wal(&mut self) -> Result<Wal, SourceError>;
 }
 
@@ -48,9 +49,8 @@ pub trait Source {
 pub struct Wal {
     /// How far the server has written WAL.
     pub written: Lsn,
-    /// Every commit up to here is applied, as far as the server knows: the
-    /// slot's `confirmed_flush_lsn`.
-    pub confirmed: Lsn,
+    /// Every commit up to here is applied by Straum.
+    pub applied: Lsn,
     /// The server keeps WAL from here on for the slot: its `restart_lsn`.
     pub restart: Lsn,
 }

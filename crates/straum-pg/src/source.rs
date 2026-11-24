@@ -631,10 +631,21 @@ impl Postgres {
     /// still the ones loaded and published; its connection goes after a
     /// failure.
     fn read_wal_once(&mut self) -> Result<Wal, Error> {
+        // Taken before the server's position, so the lag a reading gives
+        // is never shorter than it is.
+        let applied = match &self.state {
+            State::Loading(snapshot) => snapshot.stream.caught_up(),
+            State::Streaming(stream) => stream.caught_up(),
+            State::Closed => return Err(Error::Stopped),
+        };
         let wal = match plain(&mut self.plain, &self.settings.dsn) {
-            Ok(connection) => {
-                read_wal_and_check(connection, &self.slot, &self.followed, &self.settings)
-            }
+            Ok(connection) => read_wal_and_check(
+                connection,
+                &self.slot,
+                applied,
+                &self.followed,
+                &self.settings,
+            ),
             Err(error) => Err(error),
         };
         if wal.is_err() {
@@ -695,34 +706,37 @@ fn loaded(snapshot: &mut Snapshot, tables: &[Identifier]) -> Result<(), Error> {
 fn read_wal_and_check(
     connection: &mut Connection,
     slot: &str,
+    applied: Lsn,
     followed: &Followed,
     settings: &Settings,
 ) -> Result<Wal, Error> {
-    let wal = read_wal(connection, slot)?;
+    let wal = read_wal(connection, slot, applied)?;
     let publication = &settings.publication;
     catalog::still_followed(connection, followed, publication, settings.replication)?;
     Ok(wal)
 }
 
-/// The server's WAL position, and how far the slot has confirmed and keeps
-/// WAL.
-pub(crate) fn read_wal(connection: &mut Connection, slot: &str) -> Result<Wal, Error> {
+/// The server's WAL position and where the slot keeps WAL from, beside
+/// `applied`, how far the stream has applied.
+pub(crate) fn read_wal(
+    connection: &mut Connection,
+    slot: &str,
+    applied: Lsn,
+) -> Result<Wal, Error> {
     // The insert position, not the write position: a commit is
     // acknowledged once inserted under synchronous_commit = off, and
     // as_of must not lead it (ADR-0005).
     let rows = connection.rows(&format!(
-        "SELECT pg_current_wal_insert_lsn(), coalesce(confirmed_flush_lsn, restart_lsn), \
-                restart_lsn, (SELECT setting FROM pg_settings WHERE name = 'wal_segment_size') \
+        "SELECT pg_current_wal_insert_lsn(), restart_lsn, \
+                (SELECT setting FROM pg_settings WHERE name = 'wal_segment_size') \
          FROM pg_replication_slots WHERE slot_name = {}",
         escape_literal(slot)
     ))?;
-    let Some([inserted, confirmed, restart, segment_bytes]) = rows.first().map(Vec::as_slice)
-    else {
+    let Some([inserted, restart, segment_bytes]) = rows.first().map(Vec::as_slice) else {
         return Err(no_wal_position(slot));
     };
-    let (Some(inserted), Some(confirmed), Some(restart), Some(segment_bytes)) = (
+    let (Some(inserted), Some(restart), Some(segment_bytes)) = (
         lsn_of(inserted.as_deref()),
-        lsn_of(confirmed.as_deref()),
         lsn_of(restart.as_deref()),
         whole_number(segment_bytes.as_deref()),
     ) else {
@@ -730,7 +744,7 @@ pub(crate) fn read_wal(connection: &mut Connection, slot: &str) -> Result<Wal, E
     };
     Ok(Wal {
         written: record_end(inserted, segment_bytes),
-        confirmed,
+        applied,
         restart,
     })
 }

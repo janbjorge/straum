@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="336" viewBox="0 0 720 336" role="img" aria-labelledby="t d">
   <title id="t">One writer applies commits; asks read meanwhile</title>
-  <desc id="d">PostgreSQL sends changes through the slot to the stream thread, which decodes up to 64 commits or 200,000 changes ahead and answers keepalives. It hands whole commits to the writer, which applies each under the write lock and reports what it applied; the stream thread confirms that to PostgreSQL. Apps post asks, which read the store under the read lock and get rows with as_of.</desc>
+  <desc id="d">PostgreSQL sends changes through the slot to the stream thread, which decodes up to 64 commits or 200,000 changes ahead and answers keepalives. It hands whole commits to the writer, which applies each under the write lock and reports what it applied for the lag; the stream thread confirms to PostgreSQL what it has read. Apps post asks, which read the store under the read lock and get rows with as_of.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}

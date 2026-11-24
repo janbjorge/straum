@@ -2,8 +2,10 @@
 //! The thread decodes commits ahead of the writer (`decode.rs` for the
 //! logical stream, `physical.rs` for the physical one) and queues them;
 //! `Stream::next` takes them off the queue for `source.rs`. Meanwhile the
-//! thread answers keepalives and reports the applied LSN (a WAL position)
-//! in standby status updates, so PostgreSQL never times Straum out.
+//! thread answers keepalives and reports the LSN (a WAL position) it has
+//! read in standby status updates, so PostgreSQL never times Straum out
+//! and may recycle that WAL: the slot is never streamed again. What the
+//! writer has applied goes to the lag instead (`report.rs`).
 //! While the tables load the thread reads on and queues every commit, up
 //! to `--max-load-memory` bytes of them; once the writer takes the first,
 //! the queue holds a few commits ahead of it and the thread waits for room.
@@ -22,6 +24,7 @@ use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{self, CopyMessage};
 use crate::physical::Replay;
+use crate::report::{Progress, Reported, next_report};
 use crate::unexpected::Unexpected;
 use crate::value;
 use crate::wal::pipeline::Sight;
@@ -82,7 +85,10 @@ pub(crate) struct Stream {
 
 /// What the writer and the stream's thread both read and write.
 struct Shared {
+    /// The last commit handed out before the writer asked again.
     applied: AtomicU64,
+    /// Every commit up to here is applied, as of the thread's last report.
+    caught_up: AtomicU64,
     stop: AtomicBool,
     /// Set by the thread before it queues its error, which a full queue
     /// holds back.
@@ -111,6 +117,7 @@ impl Shared {
     fn new(start: Lsn) -> Shared {
         Shared {
             applied: AtomicU64::new(start.0),
+            caught_up: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             loading: AtomicBool::new(true),
@@ -145,7 +152,7 @@ impl Stream {
             shared: Arc::clone(&shared),
             sent: start,
             idle: start,
-            reported: start,
+            reported: Reported::at(start),
             last_report: Instant::now(),
             max_load_memory,
         };
@@ -211,6 +218,12 @@ impl Stream {
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err(Error::Stopped),
         }
+    }
+
+    /// Every commit up to here is applied, as of the thread's last report:
+    /// the last one applied, or the last keepalive once nothing waits.
+    pub(crate) fn caught_up(&self) -> Lsn {
+        Lsn(self.shared.caught_up.load(Ordering::Acquire))
     }
 }
 
@@ -290,9 +303,8 @@ struct StreamThread {
     /// The server's position at the last keepalive between transactions.
     /// Every commit up to it has been queued.
     idle: Lsn,
-    /// The last position reported. A physical slot moves its restart
-    /// point to whatever is reported, back too, so no report goes below.
-    reported: Lsn,
+    /// What the last report told the server, and what it knew applied.
+    reported: Reported,
     last_report: Instant,
 }
 
@@ -447,25 +459,28 @@ impl StreamThread {
         Ok(Room::Full)
     }
 
-    /// Tells the server what is applied, so it may recycle the WAL before
-    /// it. With every queued commit applied and no transaction open, that is
-    /// everything up to the last keepalive.
+    /// Tells the server what is read, so it may recycle the WAL before
+    /// it, and keeps what is applied for the lag.
     fn report(&mut self) -> Result<(), Error> {
-        let applied = Lsn(self.shared.applied.load(Ordering::Acquire));
         // A physical keepalive may name WAL not read yet; the replay
         // knows what it has read.
         let idle = match &self.reader {
             Reader::Logical(_) => self.idle,
             Reader::Physical(replay) => Lsn(replay.read()),
         };
-        let done = if applied >= self.sent && !self.reader.in_transaction() {
-            applied.max(idle)
-        } else {
-            applied
+        let progress = Progress {
+            applied: Lsn(self.shared.applied.load(Ordering::Acquire)),
+            sent: self.sent,
+            idle,
+            in_transaction: self.reader.in_transaction(),
+            loading: self.shared.loading.load(Ordering::Acquire),
         };
-        self.reported = self.reported.max(done);
+        self.reported = next_report(self.reported, progress);
+        self.shared
+            .caught_up
+            .store(self.reported.applied.0, Ordering::Release);
         self.connection
-            .send_copy_data(&status_update(self.reported.0))?;
+            .send_copy_data(&status_update(self.reported.position.0))?;
         self.last_report = Instant::now();
         Ok(())
     }
@@ -534,7 +549,8 @@ fn has_room(queued: usize, changes: usize) -> bool {
     queued == 0 || queued.saturating_add(changes) <= QUEUED_CHANGES
 }
 
-/// A standby status update saying everything before `done` is applied.
+/// A standby status update saying the server may recycle the WAL before
+/// `done`.
 pub(crate) fn status_update(done: u64) -> Vec<u8> {
     let now = value::timestamp_micros(SystemTime::now());
     let mut message = Vec::with_capacity(STATUS_UPDATE_SIZE);
@@ -559,6 +575,7 @@ const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::tests::support::{LOAD_MEMORY, now, scripted, signed_in};
     use crate::wire::ConnectionKind;
     use straum_domain::Identifier;
@@ -609,7 +626,7 @@ mod tests {
             max_load_memory,
             sent: Lsn(0),
             idle: Lsn(0),
-            reported: Lsn(0),
+            reported: Reported::at(Lsn(0)),
             last_report: Instant::now(),
         };
         let stream = Stream {
@@ -778,5 +795,21 @@ mod tests {
         );
         assert_eq!(footprint(&commit_with_text("")), empty);
         assert!(empty > footprint(&commit_of(1)));
+    }
+
+    /// A status update names one position three times, in the order and
+    /// size the protocol gives, and asks for no reply.
+    #[test]
+    fn a_status_update_names_the_position() {
+        let message = status_update(0x16_B374_D848);
+        assert_eq!(message.len(), STATUS_UPDATE_SIZE);
+        assert_eq!(message[0], b'r');
+        for position in 0..STATUS_UPDATE_POSITIONS {
+            let at = 1 + 8 * position;
+            let bytes: [u8; 8] = message[at..at + 8].try_into().unwrap();
+            assert_eq!(u64::from_be_bytes(bytes), 0x16_B374_D848);
+        }
+        assert_eq!(message[STATUS_UPDATE_SIZE - 1], 0);
+        assert_ne!(status_update(1), status_update(2));
     }
 }

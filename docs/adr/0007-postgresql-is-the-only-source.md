@@ -1,6 +1,6 @@
 # ADR-0007: PostgreSQL is the only source
 
-Status: Accepted 2026-11-10; revised 2026-11-23
+Status: Accepted 2026-11-10; revised 2026-11-24
 
 ## Context
 
@@ -69,7 +69,7 @@ parser for the physical stream (ADR-0008).
   commits; held longer, it blocked a test's `ALTER TABLE`.
 - The load takes one plain connection more while it runs, which a
   role's `CONNECTION LIMIT` must leave room for. The stream confirms
-  idle WAL during the load until it queues a commit of a spec table.
+  all the WAL it reads during the load, the commits held in memory.
 - `FULL` adds WAL on `UPDATE` and `DELETE` only. A row's identity is
   the whole row, so a dim row held twice comes out once per delete.
 - From 19 a logical slot turns on decoding under `wal_level = replica`

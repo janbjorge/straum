@@ -30,12 +30,6 @@ const FILLER: &str = "CREATE TABLE $S.filler AS
 /// About 20 MiB more WAL into the filler's table.
 const FILLER_MORE: &str = "INSERT INTO $S.filler
     SELECT repeat('x', 1000) FROM generate_series(1, 20000)";
-/// About 2 MiB of WAL into the filler's table, a quarter of the small
-/// limit: a stream reporting each step would keep the slot within it.
-const FILLER_STEP: &str = "INSERT INTO $S.filler
-    SELECT repeat('x', 1000) FROM generate_series(1, 2000)";
-/// Steps of [`FILLER_STEP`]: about 20 MiB, past the small limit.
-const FILLER_STEPS: u32 = 10;
 /// How often [`stream_reading_nothing`] looks at the walsender.
 const STUCK_SAMPLE: Duration = Duration::from_millis(500);
 /// Samples in a row a walsender must sit still to count as blocked.
@@ -193,29 +187,6 @@ fn ends_a_walsender_whose_client_reads_nothing() {
     assert!(matches!(watchdog.verdict(), Some(Verdict::Retained { .. })));
 }
 
-/// A load ahead of a commit the logical stream queued, which holds the
-/// slot's report at its start: past the limit the watchdog ends it, and
-/// the load's connection with it.
-#[test]
-fn ends_a_logical_slot_a_load_holds_past_the_limit() {
-    let pg = postgres();
-    load_holds(&pg, "logicalheld", Replication::Logical, SMALL_LIMIT_BYTES);
-}
-
-/// The same while the physical stream's tables load.
-#[test]
-fn ends_a_physical_slot_a_load_holds_past_the_limit() {
-    let pg = postgres_at_replica(&tag());
-    load_holds(&pg, "physicalheld", PHYSICAL, SMALL_LIMIT_BYTES);
-}
-
-/// Within the limit the slot stays and the load goes on.
-#[test]
-fn keeps_a_slot_a_load_holds_within_the_limit() {
-    let pg = postgres_at_replica(&tag());
-    load_holds(&pg, "withinlimit", PHYSICAL, MAX_RETAINED_WAL_BYTES);
-}
-
 /// A physical slot keeps WAL from the redo point, before it was made;
 /// that WAL is the server's to recycle at its next checkpoint, so the
 /// watchdog counts only what came after. Past the limit after it, the
@@ -275,70 +246,6 @@ fn ends_the_stream_when_the_watchdog_cannot_read_the_slot() {
 fn keeps_the_stream_when_the_watchdog_connects_again() {
     let pg = postgres_at_replica(&tag());
     watchdog_cut_off(&pg, "rewatched", Reconnect::Allowed);
-}
-
-/// Opens a source with `limit`, commits a row of a spec table that nothing
-/// applies, writes the filler in steps before any table loads, and checks
-/// the slot ends only past the limit.
-fn load_holds(pg: &PostgresContainer, name: &str, replication: Replication, limit: u64) {
-    let mut db = Db::new(pg, name, TABLES);
-    let dsn = reader(&mut db, pg);
-    let mut source = Postgres::new(dsn, name, ROW_LIMIT, limit, replication, LOAD_MEMORY);
-    let spec = db.spec(SPEC);
-    source.open(&spec).unwrap();
-    assert_eq!(straum_slots(&mut db), 1, "{name}: no slot");
-    // A commit queued and not applied keeps the stream's report at its
-    // start, so the filler after it stays in the slot. Each step waits for
-    // a report after it, so a report that moved on would keep the slot
-    // within the limit.
-    db.run("INSERT INTO $S.trips (id, at) VALUES (1, '2024-01-15')");
-    db.run("CREATE TABLE $S.filler (pad text)");
-    for _ in 0..FILLER_STEPS {
-        if straum_slots(&mut db) == 0 {
-            break;
-        }
-        db.run(FILLER_STEP);
-        await_report_after_sent(&mut db);
-    }
-    if limit < MAX_RETAINED_WAL_BYTES {
-        assert_slot_goes(&mut db, &format!("{name}: the slot outlived the limit"));
-        let error = load_all(&mut source, &spec).unwrap_err().to_string();
-        assert!(error.contains("--max-retained-wal"), "{name}: {error}");
-    } else {
-        thread::sleep(ROUNDS);
-        assert_eq!(
-            straum_slots(&mut db),
-            1,
-            "{name}: the slot ended within the limit"
-        );
-        load_all(&mut source, &spec).unwrap();
-    }
-}
-
-/// Waits until the walsender of Straum's slot has sent the WAL flushed so
-/// far and the stream has reported once since, or the slot is gone.
-fn await_report_after_sent(db: &mut Db) {
-    let flushed = db.rows("SELECT pg_current_wal_flush_lsn()::text");
-    let flushed = flushed[0][0].clone().unwrap();
-    let query = format!(
-        "SELECT r.sent_lsn >= '{flushed}', r.reply_time::text
-         FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid
-         WHERE s.slot_name LIKE 'straum%'"
-    );
-    let wait = Wait::new("a report after the filler was sent");
-    let mut reply_when_sent = None;
-    loop {
-        let rows = db.rows(&query);
-        let Some([sent, reply]) = rows.first().map(Vec::as_slice) else {
-            return;
-        };
-        match &reply_when_sent {
-            None if sent.as_deref() == Some("t") => reply_when_sent = Some(reply.clone()),
-            Some(before) if before != reply => return,
-            _ => {}
-        }
-        wait.poll();
-    }
 }
 
 /// Loads, fills the stream's queue with commits nobody applies, writes

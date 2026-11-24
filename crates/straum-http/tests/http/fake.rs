@@ -107,8 +107,8 @@ pub(crate) fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
     vec![int(JAN_1 + hour * HOUR), int(kind), int(zone), fare]
 }
 
-/// Four trips on 2024-01-01 UTC, one in a zone with no row, and a slot
-/// that has confirmed all there is.
+/// Four trips on 2024-01-01 UTC, one in a zone with no row, and Straum
+/// caught up with all there is.
 pub(crate) fn fake() -> Fake {
     Fake {
         trips: vec![
@@ -128,7 +128,7 @@ pub(crate) fn fake() -> Fake {
         pause: Duration::ZERO,
         wal: Wal {
             written: START,
-            confirmed: START,
+            applied: START,
             restart: START,
         },
     }

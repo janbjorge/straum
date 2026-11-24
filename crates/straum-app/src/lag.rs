@@ -1,6 +1,6 @@
 //! How far Straum is behind the server. The writer reads the server's WAL
 //! position a second or so apart and hands each reading to `Lag`, which
-//! keeps the ones the slot hasn't confirmed yet; `App::status` asks it how
+//! keeps the ones Straum hasn't applied yet; `App::status` asks it how
 //! long ago Straum was last caught up.
 
 use std::collections::VecDeque;
@@ -8,18 +8,18 @@ use std::time::{Duration, Instant};
 
 use crate::source::{Lsn, Wal};
 
-/// Readings kept while the slot hasn't confirmed them: an hour's worth.
+/// Readings kept while Straum hasn't applied them: an hour's worth.
 /// Past this the newest two merge, which can only make the lag longer.
 const READINGS: usize = 3_600;
 
 /// The WAL readings that tell how far behind the server Straum is.
 #[derive(Debug)]
 pub(crate) struct Lag {
-    /// The server's position at each reading the slot hasn't confirmed
+    /// The server's position at each reading Straum hasn't applied
     /// yet, oldest first.
-    unconfirmed: VecDeque<Reading>,
-    /// The last reading the slot had confirmed all of. WAL it hasn't
-    /// confirmed was written after it.
+    unapplied: VecDeque<Reading>,
+    /// The last reading Straum had applied all of. WAL it hasn't
+    /// applied was written after it.
     caught_up: Instant,
 }
 
@@ -30,36 +30,36 @@ struct Reading {
 }
 
 impl Lag {
-    /// Nothing unconfirmed as of `at`.
+    /// Nothing unapplied as of `at`.
     pub(crate) fn new(at: Instant) -> Lag {
         Lag {
-            unconfirmed: VecDeque::new(),
+            unapplied: VecDeque::new(),
             caught_up: at,
         }
     }
 
     /// Takes a reading of the server's WAL, made at `at`.
     pub(crate) fn read(&mut self, wal: &Wal, at: Instant) {
-        let full = self.unconfirmed.len() == READINGS;
-        match self.unconfirmed.back_mut() {
+        let full = self.unapplied.len() == READINGS;
+        match self.unapplied.back_mut() {
             // The later of two readings at one position is the closer
             // bound.
             Some(last) if last.written >= wal.written => last.at = at,
             Some(last) if full => last.written = wal.written,
-            _ => self.unconfirmed.push_back(Reading {
+            _ => self.unapplied.push_back(Reading {
                 at,
                 written: wal.written,
             }),
         }
-        while let Some(oldest) = self.unconfirmed.front()
-            && oldest.written <= wal.confirmed
+        while let Some(oldest) = self.unapplied.front()
+            && oldest.written <= wal.applied
         {
             self.caught_up = oldest.at;
-            self.unconfirmed.pop_front();
+            self.unapplied.pop_front();
         }
     }
 
-    /// The time since the slot was last known to have confirmed all the
+    /// The time since Straum was last known to have applied all the
     /// WAL there was, at the reading that said so. Readings a second apart
     /// make it up to a second longer than it is, never shorter; when they
     /// stop, as on a silent server, it grows, since nothing is known since.
@@ -72,11 +72,11 @@ impl Lag {
 mod tests {
     use super::*;
 
-    fn wal(server: u64, confirmed: u64) -> Wal {
+    fn wal(server: u64, applied: u64) -> Wal {
         Wal {
             written: Lsn(server),
-            confirmed: Lsn(confirmed),
-            restart: Lsn(confirmed),
+            applied: Lsn(applied),
+            restart: Lsn(applied),
         }
     }
 
@@ -118,8 +118,8 @@ mod tests {
         assert_eq!(lag.behind(start + secs(41)), secs(41));
     }
 
-    /// Every reading kept. The WAL the slot hasn't confirmed was written
-    /// after the last reading the slot had confirmed all of.
+    /// Every reading kept. The WAL Straum hasn't applied was written
+    /// after the last reading Straum had applied all of.
     struct Naive {
         start: Instant,
         readings: Vec<NaiveReading>,
@@ -139,10 +139,10 @@ mod tests {
             let Some(last) = self.readings.last() else {
                 return now.saturating_duration_since(self.start);
             };
-            let confirmed = last.wal.confirmed;
+            let applied = last.wal.applied;
             let mut since = self.start;
             for reading in self.readings.iter().rev() {
-                if reading.wal.written <= confirmed {
+                if reading.wal.written <= applied {
                     since = reading.at;
                     break;
                 }
@@ -177,14 +177,14 @@ mod tests {
             };
             let mut at = start;
             let mut server = 100;
-            let mut confirmed = 100;
+            let mut applied = 100;
             for _ in 0..200 {
                 at += Duration::from_millis(random.below(2_000));
-                // The server stands still now and then; the slot confirms
+                // The server stands still now and then; Straum applies
                 // some, all or none of what it has.
                 server += random.below(3) * random.below(50);
-                confirmed += random.below(server - confirmed + 1) * random.below(2);
-                let reading = wal(server, confirmed);
+                applied += random.below(server - applied + 1) * random.below(2);
+                let reading = wal(server, applied);
                 lag.read(&reading, at);
                 naive.read(reading, at);
                 let now = at + Duration::from_millis(random.below(3_000));
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stuck_slot_keeps_a_bounded_number_of_readings() {
+    fn a_stuck_writer_keeps_a_bounded_number_of_readings() {
         let start = Instant::now();
         let mut lag = Lag::new(start);
         let mut naive = Naive {
@@ -208,15 +208,15 @@ mod tests {
             lag.read(&reading, at);
             naive.read(reading, at);
         }
-        assert_eq!(lag.unconfirmed.len(), READINGS);
+        assert_eq!(lag.unapplied.len(), READINGS);
         let end = start + secs(total);
         assert_eq!(lag.behind(end), naive.behind(end));
         // Confirming up to a merged reading: never shorter than the truth.
-        for confirmed in [100 + READINGS as u64, 100 + total - 1] {
-            let reading = wal(100 + total, confirmed);
+        for applied in [100 + READINGS as u64, 100 + total - 1] {
+            let reading = wal(100 + total, applied);
             lag.read(&reading, end);
             naive.read(reading, end);
-            assert!(lag.behind(end) >= naive.behind(end), "{confirmed}");
+            assert!(lag.behind(end) >= naive.behind(end), "{applied}");
         }
         assert!(lag.behind(end) > naive.behind(end));
     }

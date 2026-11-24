@@ -181,7 +181,7 @@ the edges on either side.
 ```
 
 `as_of` says every commit made before this time is in the answer. It
-is Straum's wall time when it last confirmed it had applied all the
+is Straum's wall time when it last knew it had applied all the
 write-ahead log (WAL) PostgreSQL had written, so it keeps moving on a
 quiet database. A transaction is applied whole, so an answer never
 sees half of one. An answer can predate a client's commit ([Seeing
