@@ -125,7 +125,8 @@ still held there, since the ends of a range are read from the narrowest
 buckets that fit them. The same range with its bounds on the edges of a
 width still held answers, read from those wider buckets, as does an ask
 with no time key and both ends open. Each width read too far back is
-named once, the narrowest first.
+named once, the narrowest first. [`straum views`](cli.md#straum-views)
+and `GET /views` show each width's horizon before an ask meets it.
 
 ## HAVING
 
@@ -310,7 +311,7 @@ sees the connection close.
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
 | `GET /livez` | 200 `live` while the process serves. Lag never fails it. |
 | `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes` and `max_retained_wal_bytes`. What is unknown until every table is loaded is null. |
-| `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names, the name of its time and range of buckets as JSON, which `straum shell` completes from. |
+| `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names, the name of its time, range of buckets and each width kept for a time with its horizon as JSON, which `straum shell` completes from. |
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has, 503 while Straum is [loading](deploy.md#states). |
 

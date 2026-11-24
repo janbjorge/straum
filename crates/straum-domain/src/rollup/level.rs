@@ -41,6 +41,14 @@ pub(super) struct Horizon {
     pub(super) kept_from: Option<i64>,
 }
 
+/// A width kept only for a time, and the start of its first bucket kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptFrom {
+    pub width: Width,
+    /// `None` before the first `advance`.
+    pub kept_from: Option<i64>,
+}
+
 /// Rows a load adds at once, each with its key codes beside it.
 #[derive(Clone, Copy)]
 pub(super) struct CodedRows<'a> {
@@ -350,6 +358,21 @@ impl Rollup {
             None => widest.end,
         };
         Some(widest.start..end)
+    }
+
+    /// Each width kept only for a time, narrowest first.
+    pub(crate) fn horizons(&self) -> Vec<KeptFrom> {
+        let mut horizons = Vec::new();
+        for level in &self.levels {
+            let Some(horizon) = &level.horizon else {
+                continue;
+            };
+            horizons.push(KeptFrom {
+                width: level.width,
+                kept_from: horizon.kept_from,
+            });
+        }
+        horizons
     }
 
     /// The runs of whole buckets that cover `from..to` as `cover` says.

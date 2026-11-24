@@ -327,9 +327,10 @@ table in plain text for an ask sent with `Accept: text/plain`.
 
 The other endpoints reuse these paths. `GET /views` takes the read lock
 once and reports what the store holds (`App::held`): per view its
-widths, cells, range of buckets, keys with the types the load set, and
-measures; per dim its rows. `GET /views/NAME` builds an ask of its own
-(`App::rows_ask`), every measure by the bucket and every key over all
+widths, cells, range of buckets at any width, each width kept for a
+time with its horizon (`Store::horizons`), keys with the types the load
+set, and measures; per dim its rows. `GET /views/NAME` builds an ask of
+its own (`App::rows_ask`), every measure by the bucket and every key over all
 the buckets the view holds, and runs it like any other
 (`App::ask_window`). The store builds only the rows of the window asked
 for, at most 1000, but still merges every cell into its group.

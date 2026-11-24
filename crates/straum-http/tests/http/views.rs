@@ -72,7 +72,7 @@ fn views_as_json_name_each_views_keys_and_measures() {
         reply.body,
         concat!(
             r#"{"views":[{"name":"trips","time":"bucket","#,
-            r#""from":"2024-01-01T00:00:00Z","to":"2024-01-02T00:00:00Z","#,
+            r#""from":"2024-01-01T00:00:00Z","to":"2024-01-02T00:00:00Z","kept":[],"#,
             r#""keys":[{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},"#,
             r#"{"name":"zone_id","type":"integer"},{"name":"borough","type":"text"}],"#,
             r#""measures":["trips","fare","fare_avg","fare_max"]}]}"#,

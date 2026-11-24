@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use straum_app::{AnswerError, App, Step, Writer};
+use straum_app::{AnswerError, App, HeldKept, Step, Writer};
 use straum_domain::{AnswerRow, Ask, AskError, AskKey, Spec, Store, Width};
 
 use crate::common::{DAY, LIMITS, database, insert, int, row};
@@ -175,4 +175,26 @@ fn the_store_is_advanced_to_each_commit_s_time_before_its_changes() {
             row(int(9 * DAY), 1)
         ]
     );
+}
+
+/// The held view names the hour kept a day and its horizon, and its
+/// range runs from the first day held, though the hour there is gone.
+#[test]
+fn the_held_view_names_each_kept_width_and_its_horizon() {
+    let database = database();
+    database.borrow_mut().commit(vec![
+        trip_at(1, 2 * DAY + 600),
+        trip_at(2, 9 * DAY + 2 * HOUR),
+    ]);
+    database.borrow_mut().clock = days(10);
+    let mut writer = writer_of(Fake::new(&database));
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let view = writer.app().held().unwrap().views.remove(0);
+    let kept = HeldKept {
+        width: Width { seconds: 3_600 },
+        kept_for: Width { seconds: 86_400 },
+        kept_from: Some(9 * DAY),
+    };
+    assert_eq!(view.kept, [kept]);
+    assert_eq!(view.range, Some(2 * DAY..9 * DAY + 3 * HOUR));
 }

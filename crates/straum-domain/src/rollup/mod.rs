@@ -7,7 +7,6 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::ops::Range;
 use std::{mem, panic, thread};
 
 use crate::aggregate::{Aggregate, Reads};
@@ -27,6 +26,7 @@ mod tests;
 
 pub(crate) use cells::Cells;
 pub(crate) use distinct::DistinctCells;
+pub use level::KeptFrom;
 use level::{CodedRows, Horizon, Level, MoveCell, Shift};
 pub use row_error::RowError;
 pub(crate) use row_error::{arity, split_rows};
@@ -333,13 +333,6 @@ impl Rollup {
     /// wider one.
     pub(crate) fn level_count(&self) -> usize {
         self.levels.len()
-    }
-
-    /// From the start of the first `date_bin` bucket to the end of the
-    /// last. Rows without a time are in no bucket
-    /// an ask reads, so they count for nothing here.
-    pub(crate) fn range(&self) -> Option<Range<i64>> {
-        self.levels[DATE_BIN.0].span()
     }
 
     /// Moves the horizon of every level kept for a time to `at`, in Unix

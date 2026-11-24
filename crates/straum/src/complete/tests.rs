@@ -81,6 +81,22 @@ fn reads_the_views_a_straum_serves() {
     }
 }
 
+/// The widths a view keeps only for a time are for people to read: the
+/// shell reads the view as it would without them, whatever their shape.
+#[test]
+fn a_view_with_kept_widths_still_completes() {
+    let to = r#""to":"2026-01-01T11:00:00Z","#;
+    let kept = r#""kept":[{"width":"15 minutes","for":"2 days","from":null}],"#;
+    let with_kept = VIEWS.replacen(to, &format!("{to}{kept}"), 1);
+    assert_eq!(read_views(&with_kept), Some(held()));
+    let odd = VIEWS.replacen(to, &format!(r#"{to}"kept":1,"#), 1);
+    let views = read_views(&odd).unwrap();
+    let line = "SELECT orders FROM orders WHERE ";
+    let Completion { candidates, .. } = complete(&views, line, line.len());
+    assert_eq!(candidates, offers(line));
+    assert_ne!(candidates, Vec::<String>::new());
+}
+
 #[test]
 fn a_scale_that_is_not_a_number_is_left_out() {
     let scaled = r#"{"views":[{"name":"v","time":"t","measures":[],

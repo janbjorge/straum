@@ -236,8 +236,8 @@ dim public.taxi_zones
 
 | Line | Shows |
 | --- | --- |
-| `buckets` | The bucket widths the view keeps. |
-| `holds` | The [cells](how-it-works.md#cells) at the narrowest width, and the bound cells of a view that keeps them; then the range of its buckets, which an ask without bounds reads. A few trips in the month carry a wrong year, hence 2003. |
+| `buckets` | The bucket widths the view keeps. A width [kept for a time](spec.md#keeping-a-width-for-a-time) says for how long and where its buckets start, its horizon, as in `1 hour kept for 14 days from 2026-11-10T00:00:00Z, 1 day, 7 days`; before Straum first reads PostgreSQL's time it has no `from`. |
+| `holds` | The [cells](how-it-works.md#cells) at the narrowest width, and the bound cells of a view that keeps them; then the range of every bucket it holds at any width, which an ask without bounds reads. A few trips in the month carry a wrong year, hence 2003. |
 | `keys` | Every name an ask may group or filter by, with the type a parameter for it must have. |
 | `measures` | The names an ask may select after the keys. |
 | `asked as` | The keys of the views that read a dim's columns. An ask names a view, never a dim, so it reads the dim through these. |
@@ -246,9 +246,10 @@ Until every table is loaded it prints `not ready: ` and why, and exits
 with 3.
 
 `--json` prints each view's keys with their types, the name of its
-time, its measures and the range of buckets it holds, as `GET /views`
-sends with `Accept: application/json`. It leaves out the cells and the
-dims.
+time, its measures, the range of buckets it holds and each width kept
+for a time, under `kept` with its `width`, `for` and `from`, as `GET
+/views` sends with `Accept: application/json`. It leaves out the cells
+and the dims.
 
 ## straum ask
 

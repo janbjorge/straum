@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use crate::identifier::Identifier;
 use crate::projection::{AttributeIndex, Projection};
-use crate::rollup::{PartIndex, Rollup};
+use crate::rollup::{KeptFrom, PartIndex, Rollup};
 use crate::spec::{Fact, Key, KeyPart, Ref, Spec};
 use crate::value::{ColumnType, Datum, Value};
 
@@ -211,11 +211,20 @@ impl Store {
         Some(self.projections[dim.0].len())
     }
 
-    /// From the start of the fact's first `date_bin` bucket to the end of
-    /// its last, in Unix seconds; none while it has no bucket.
+    /// Every bucket the fact holds at any width, in Unix seconds: the
+    /// range an ask without bounds reads. The `date_bin` buckets while
+    /// that width is kept for good; from the first widest bucket once it
+    /// is kept for a time. None while the fact has no bucket.
     pub fn range(&self, fact: &str) -> Option<Range<i64>> {
         let fact = self.fact_index(fact)?;
-        self.keyed(fact).range()
+        self.keyed(fact).open_range()
+    }
+
+    /// Each width the view keeps only for a time, narrowest first, with
+    /// its horizon; empty for a view that keeps every width.
+    pub fn horizons(&self, fact: &str) -> Option<Vec<KeptFrom>> {
+        let fact = self.fact_index(fact)?;
+        Some(self.keyed(fact).horizons())
     }
 
     /// The type of a key the view names, as the load set it.

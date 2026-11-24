@@ -12,7 +12,9 @@ use crate::random::{change_dim, load_dims, random_dims, trip, trips};
 use crate::reference::reference;
 use crate::views::{spec, typed};
 use crate::{AT, DAY, Dims, END, HOUR, START, WEEK, WIDTH, trips_ask};
-use straum_domain::{Ask, AskError, AskKey, Datum, Retention, Spec, SpecError, Store, Width};
+use straum_domain::{
+    Ask, AskError, AskKey, Datum, KeptFrom, Retention, Spec, SpecError, Store, Width,
+};
 
 /// Seconds in a day, as a time.
 const DAY_SECONDS: i64 = 86_400;
@@ -563,4 +565,80 @@ fn each_width_read_past_its_horizon_is_named_once() {
     let mut expected = past(WIDTH, QUARTER_KEPT_FROM);
     expected.extend(past(HOUR, HOUR_KEPT_FROM));
     assert_eq!(store.ask(&mixed), Err(expected));
+}
+
+/// 2024-01-20 00:07 UTC: a trip long before every horizon, inside the
+/// week that starts on 2024-01-18.
+const OLD: i64 = START + 5 * DAY_SECONDS + 7 * 60;
+
+/// A trip long before every horizon and one at `NOW`.
+fn old_and_now(spec: &Spec) -> Store {
+    let mut store = typed(spec);
+    for at in [OLD, NOW] {
+        store.add_row("trips", &trip_at(Datum::Int(at))).unwrap();
+    }
+    store
+}
+
+/// After `advance` the old quarter hour is gone, but its week is held:
+/// the range runs from that week to the end of the last quarter hour.
+#[test]
+fn the_range_after_advance_starts_at_the_first_week() {
+    let mut store = old_and_now(&day_and_week());
+    store.advance(NOW);
+    let first_week = width(WEEK).bucket_start(OLD).unwrap();
+    let end = NOW_EDGE + QUARTER_SECONDS;
+    assert_eq!(store.range("trips"), Some(first_week..end));
+}
+
+/// Without retention the range is the quarter hours held, `advance` or
+/// not.
+#[test]
+fn without_retention_the_range_is_the_date_bin_span() {
+    let mut store = old_and_now(&spec());
+    store.advance(NOW);
+    let first_quarter = width(WIDTH).bucket_start(OLD).unwrap();
+    let end = NOW_EDGE + QUARTER_SECONDS;
+    assert_eq!(store.range("trips"), Some(first_quarter..end));
+}
+
+/// Each retained width, narrowest first, with no horizon before the
+/// first `advance` and its horizon after.
+#[test]
+fn horizons_name_each_retained_width() {
+    let mut store = old_and_now(&day_and_week());
+    let unset = vec![
+        KeptFrom {
+            width: width(WIDTH),
+            kept_from: None,
+        },
+        KeptFrom {
+            width: width(HOUR),
+            kept_from: None,
+        },
+    ];
+    assert_eq!(store.horizons("trips"), Some(unset));
+    store.advance(NOW);
+    let set = vec![
+        KeptFrom {
+            width: width(WIDTH),
+            kept_from: Some(QUARTER_KEPT_FROM),
+        },
+        KeptFrom {
+            width: width(HOUR),
+            kept_from: Some(HOUR_KEPT_FROM),
+        },
+    ];
+    assert_eq!(store.horizons("trips"), Some(set));
+}
+
+/// A view that keeps every width has no horizon, and a name no view has
+/// has none either.
+#[test]
+fn horizons_are_empty_without_retention_and_none_for_no_view() {
+    let mut store = old_and_now(&spec());
+    store.advance(NOW);
+    assert_eq!(store.horizons("trips"), Some(Vec::new()));
+    assert_eq!(store.horizons("rides"), None);
+    assert_eq!(store.range("rides"), None);
 }

@@ -128,6 +128,7 @@ fn held_says_what_the_store_holds_once_loaded() {
                 cells: 1,
                 bound_cells: None,
                 range: Some(0..3_600),
+                kept: Vec::new(),
             },
             HeldView {
                 name: id("logins"),
@@ -138,6 +139,7 @@ fn held_says_what_the_store_holds_once_loaded() {
                 cells: 0,
                 bound_cells: Some(0),
                 range: None,
+                kept: Vec::new(),
             },
         ],
         dims: vec![HeldDim {

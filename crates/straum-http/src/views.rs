@@ -1,26 +1,31 @@
 //! `GET /views`: every view asks may read and how much of it Straum holds.
 //! `routes.rs` takes a `Held` from the app and hands it here. `write`
 //! turns it into plain text for people, as `straum views` prints it;
-//! `json` turns it into each view's names and the range of buckets it
-//! holds, for a program that sends `Accept: application/json`, as
-//! `straum shell` does to complete names:
+//! `json` turns it into each view's names, the range of buckets it
+//! holds and each width it keeps only for a time, for a program that
+//! sends `Accept: application/json`, as `straum shell` does to complete
+//! names:
 //!
 //! ```json
 //! {"views": [{"name": "trips", "from": "2024-01-01T00:00:00Z",
 //!             "to": "2024-01-03T00:00:00Z",
+//!             "kept": [{"width": "15 minutes", "for": "2 days",
+//!                       "from": "2024-01-02T00:00:00Z"}],
 //!             "keys": [{"name": "bucket", "type": "timestamptz"},
 //!                      {"name": "fare", "type": "numeric", "scale": 2}],
 //!             "measures": ["trips"]}]}
 //! ```
 //!
-//! `from` and `to` are null for a view with no bucket. A type is
+//! `from` and `to` are null for a view with no bucket, and a kept
+//! width's `from` before its first horizon; `kept` is empty for a view
+//! that keeps every width for good. A type is
 //! `integer`, `numeric` with its `scale`, `boolean`, `text`,
 //! `timestamptz` or `timestamp`.
 
 use std::fmt::Write as _;
 
-use straum_app::{Held, HeldDim, HeldView, ViewKey};
-use straum_domain::{ColumnType, Identifier};
+use straum_app::{Held, HeldDim, HeldKept, HeldView, ViewKey};
+use straum_domain::{ColumnType, Identifier, Width};
 
 use crate::json::{NULL, quoted, quoted_or_null};
 use crate::time::{rfc3339, rfc3339_or_unix_second};
@@ -61,12 +66,29 @@ fn view_json(view: &HeldView) -> String {
         Some(range) => (edge_json(range.start), edge_json(range.end)),
         None => (NULL.to_owned(), NULL.to_owned()),
     };
+    let mut kept = Vec::with_capacity(view.kept.len());
+    for held_kept in &view.kept {
+        kept.push(kept_json(held_kept));
+    }
     format!(
-        "{{\"name\":{},\"time\":{},\"from\":{from},\"to\":{to},\"keys\":[{}],\"measures\":[{}]}}",
+        "{{\"name\":{},\"time\":{},\"from\":{from},\"to\":{to},\"kept\":[{}],\"keys\":[{}],\"measures\":[{}]}}",
         quoted(view.name.as_str()),
         quoted(time.name.as_str()),
+        kept.join(","),
         keys.join(","),
         measures.join(",")
+    )
+}
+
+fn kept_json(kept: &HeldKept) -> String {
+    let from = match kept.kept_from {
+        Some(seconds) => edge_json(seconds),
+        None => NULL.to_owned(),
+    };
+    format!(
+        "{{\"width\":{},\"for\":{},\"from\":{from}}}",
+        quoted(&kept.width.to_string()),
+        quoted(&kept.kept_for.to_string())
     )
 }
 
@@ -89,7 +111,10 @@ fn key_json(name: &str, column: ColumnType) -> String {
 }
 
 fn view_text(view: &HeldView) -> String {
-    let widths: Vec<String> = view.widths.iter().map(ToString::to_string).collect();
+    let mut widths = Vec::with_capacity(view.widths.len());
+    for width in &view.widths {
+        widths.push(width_text(*width, &view.kept));
+    }
     let mut holds = counted(view.cells, "cell");
     if let Some(bound) = view.bound_cells {
         let _ = write!(holds, " and {}", counted(bound, "bound cell"));
@@ -117,6 +142,22 @@ fn view_text(view: &HeldView) -> String {
         keys.join(", "),
         measures.join(", ")
     )
+}
+
+/// A width, and for one kept only for a time how long and, once the
+/// store is advanced, from when.
+fn width_text(width: Width, kept: &[HeldKept]) -> String {
+    let mut text = width.to_string();
+    for held_kept in kept {
+        if held_kept.width != width {
+            continue;
+        }
+        let _ = write!(text, " kept for {}", held_kept.kept_for);
+        if let Some(kept_from) = held_kept.kept_from {
+            let _ = write!(text, " from {}", rfc3339_or_unix_second(kept_from));
+        }
+    }
+    text
 }
 
 /// A dim, and the view keys an ask reads it through: an ask names a view,
@@ -168,8 +209,8 @@ fn column_type(column_type: ColumnType) -> String {
 
 #[cfg(test)]
 mod tests {
-    use straum_app::HeldKey;
-    use straum_domain::{Identifier, Table, Width};
+    use straum_app::{HeldKept, HeldKey};
+    use straum_domain::{Identifier, Table};
 
     use super::*;
     use crate::json::{Field, Json};
@@ -200,7 +241,17 @@ mod tests {
             cells: 412,
             bound_cells: Some(1),
             range: Some(1_704_067_200..1_704_240_000),
+            kept: Vec::new(),
         }
+    }
+
+    /// Quarter hours kept for 2 days, from `kept_from`.
+    fn kept(kept_from: Option<i64>) -> Vec<HeldKept> {
+        vec![HeldKept {
+            width: Width { seconds: 900 },
+            kept_for: Width { seconds: 172_800 },
+            kept_from,
+        }]
     }
 
     fn zones(rows: usize) -> HeldDim {
@@ -231,6 +282,7 @@ mod tests {
                     cells: 1,
                     bound_cells: None,
                     range: None,
+                    kept: Vec::new(),
                 },
             ],
             dims: vec![zones(1)],
@@ -309,13 +361,13 @@ dim public.zones
         let expected = [
             r#"{"views":["#,
             start,
-            r#""from":"2024-01-01T00:00:00Z","to":"2024-01-03T00:00:00Z","#,
+            r#""from":"2024-01-01T00:00:00Z","to":"2024-01-03T00:00:00Z","kept":[],"#,
             &format!(r#""keys":[{keys}],{measures},"#),
             start,
-            r#""from":null,"to":null,"#,
+            r#""from":null,"to":null,"kept":[],"#,
             &format!(r#""keys":[{{"name":"bucket","type":"timestamptz"}}],{measures},"#),
             start,
-            r#""from":"1970-01-01T00:00:00Z","to":null,"#,
+            r#""from":"1970-01-01T00:00:00Z","to":null,"kept":[],"#,
             &format!(r#""keys":[{keys}],{measures}"#),
             "]}\n",
         ];
@@ -347,10 +399,58 @@ dim public.zones
             panic!("a view is not an object");
         };
         let view = names(view);
-        assert_eq!(view, ["name", "time", "from", "to", "keys", "measures"]);
+        assert_eq!(
+            view,
+            ["name", "time", "from", "to", "kept", "keys", "measures"]
+        );
         for dropped in ["buckets", "cells", "bound_cells", "dims"] {
             assert!(!view.contains(&dropped.to_owned()), "{dropped}");
             assert!(!names(&top).contains(&dropped.to_owned()), "{dropped}");
         }
+    }
+
+    /// A width kept for a time says for how long and, once the store is
+    /// advanced, from when; the widths kept for good say only themselves.
+    #[test]
+    fn a_kept_width_says_how_long_and_from_when() {
+        let advanced = HeldView {
+            kept: kept(Some(1_704_153_600)),
+            ..trips()
+        };
+        let text = view_text(&advanced);
+        let buckets = "buckets:  15 minutes kept for 2 days from 2024-01-02T00:00:00Z, 1 day\n";
+        assert!(text.contains(buckets), "{text}");
+        let fresh = HeldView {
+            kept: kept(None),
+            ..trips()
+        };
+        let text = view_text(&fresh);
+        assert!(
+            text.contains("buckets:  15 minutes kept for 2 days, 1 day\n"),
+            "{text}"
+        );
+        assert!(view_text(&trips()).contains("buckets:  15 minutes, 1 day\n"));
+    }
+
+    #[test]
+    fn a_kept_width_goes_into_the_json_with_its_horizon() {
+        let advanced = HeldView {
+            kept: kept(Some(1_704_153_600)),
+            ..trips()
+        };
+        let set =
+            r#""kept":[{"width":"15 minutes","for":"2 days","from":"2024-01-02T00:00:00Z"}],"#;
+        assert!(
+            view_json(&advanced).contains(set),
+            "{}",
+            view_json(&advanced)
+        );
+        let fresh = HeldView {
+            kept: kept(None),
+            ..trips()
+        };
+        let unset = r#""kept":[{"width":"15 minutes","for":"2 days","from":null}],"#;
+        assert!(view_json(&fresh).contains(unset), "{}", view_json(&fresh));
+        assert!(view_json(&trips()).contains(r#""kept":[],"#));
     }
 }

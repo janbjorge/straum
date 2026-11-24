@@ -1,6 +1,7 @@
 //! What the store holds, as asks may read it. `App::held` reads every
 //! view and dim under the store's lock into one `Held`: per view its
-//! widths, keys, measures and how many cells it keeps, per dim its rows
+//! widths, keys, measures, how many cells it keeps and each width kept
+//! only for a time with its horizon, per dim its rows
 //! and the view keys that read it. `App::rows_ask` builds, from the spec
 //! alone, the ask for every row a view holds.
 
@@ -34,9 +35,21 @@ pub struct HeldView {
     pub cells: usize,
     /// Bound cells at the `date_bin` width, for a view that keeps them.
     pub bound_cells: Option<usize>,
-    /// From the start of the first `date_bin` bucket to the end of the
-    /// last, in Unix seconds; `None` for a view with no bucket.
+    /// Every bucket an ask without bounds reads, at any width, in Unix
+    /// seconds; `None` for a view with no bucket.
     pub range: Option<Range<i64>>,
+    /// Each width kept only for a time, narrowest first.
+    pub kept: Vec<HeldKept>,
+}
+
+/// A width a view keeps only for a time, and where it keeps it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldKept {
+    pub width: Width,
+    pub kept_for: Width,
+    /// The start of the first bucket kept, in Unix seconds; `None`
+    /// before the store is first advanced.
+    pub kept_from: Option<i64>,
 }
 
 /// A key an ask may name, and the type of its values.
@@ -148,7 +161,26 @@ fn held_view(store: &Store, fact: &Fact) -> HeldView {
         cells: store.cells(name).expect(IN_SPEC),
         bound_cells: store.bound_cells(name),
         range: store.range(name),
+        kept: held_kept(store, fact),
     }
+}
+
+/// Each width the view keeps only for a time, with how long the spec
+/// keeps it and where the store keeps it from.
+fn held_kept(store: &Store, fact: &Fact) -> Vec<HeldKept> {
+    let mut kept = Vec::new();
+    for horizon in store.horizons(fact.name.as_str()).expect(IN_SPEC) {
+        for retention in &fact.time.retained {
+            if retention.width == horizon.width {
+                kept.push(HeldKept {
+                    width: horizon.width,
+                    kept_for: retention.kept_for,
+                    kept_from: horizon.kept_from,
+                });
+            }
+        }
+    }
+    kept
 }
 
 fn measure_names(fact: &Fact) -> Vec<Identifier> {
