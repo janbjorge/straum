@@ -87,7 +87,15 @@ from materialized import (
     answer_cell,
     create_statements,
 )
-from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_service
+from stack import (
+    POSTGRES,
+    POSTGRES_IMAGE,
+    POSTGRES_PORT,
+    Stack,
+    build_environment,
+    git_version,
+    postgres_service,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "trips.sql"
@@ -799,6 +807,7 @@ def build() -> str:
         ["cargo", "build", "--release", "--locked", "-p", "straum"]
         + ["--message-format=json-render-diagnostics"],
         cwd=ROOT,
+        env=build_environment(os.environ, git_version()),
         check=True,
         stdout=subprocess.PIPE,
         text=True,

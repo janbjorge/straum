@@ -81,6 +81,33 @@ def listing(*names: str) -> str:
     return "[" + ",".join(projects) + "]"
 
 
+class BuildVersion(unittest.TestCase):
+    """A local build names the commit it is built from, as a release
+    names its tag, so `straum version` and `/status` don't say 0.0.0."""
+
+    stack = COPIES[0]
+
+    def test_a_local_build_names_its_commit(self):
+        built = self.stack.build_environment({"PATH": "/bin"}, "v0.12.0-3-gabc1234-dirty")
+        self.assertEqual(
+            built, {"PATH": "/bin", "STRAUM_VERSION": "0.12.0-3-gabc1234-dirty"}
+        )
+        untagged = self.stack.build_environment({}, "abc1234")
+        self.assertEqual(untagged, {"STRAUM_VERSION": "abc1234"})
+
+    def test_a_version_set_wins(self):
+        given = {"STRAUM_VERSION": "9.9.9"}
+        self.assertEqual(self.stack.build_environment(given, "v0.12.0"), given)
+
+    def test_without_git_the_build_keeps_cargo_s_version(self):
+        self.assertEqual(self.stack.build_environment({"PATH": "/bin"}, None), {"PATH": "/bin"})
+
+    def test_this_checkout_names_a_version(self):
+        described = self.stack.git_version()
+        self.assertIsNotNone(described)
+        self.assertNotEqual(described.strip(), "")
+
+
 class ProjectNames(unittest.TestCase):
     def test_a_run_is_named_for_its_tool_and_process(self):
         for copy in COPIES:

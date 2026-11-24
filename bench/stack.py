@@ -12,10 +12,14 @@ network, on an error or SIGTERM too.
 
 bench/try_your_data.py carries its own copy, since it runs from a URL
 where this file is not beside it.
+
+A bench that builds Straum builds it with `build_environment`, so the
+binary names the commit it is built from, as a release names its tag.
 """
 
 import json
 import os
+import pathlib
 import re
 import signal
 import subprocess
@@ -135,6 +139,35 @@ class Stack:
 
     def compose_command(self, *args: str) -> subprocess.CompletedProcess[str]:
         return compose(self.name, "-f", "-", *args, input_text=self.compose)
+
+
+def git_version() -> str | None:
+    """The commit this checkout is at, as `git describe` names it: the
+    last tag, the commits since and the hash, `-dirty` with changes not
+    committed. None without git or a repository."""
+    try:
+        described = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            cwd=pathlib.Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return described.stdout.strip() or None
+
+
+def build_environment(environ: Mapping[str, str], described: str | None) -> dict[str, str]:
+    """`environ` for `cargo build`, with STRAUM_VERSION set to the commit
+    `described` names, without its tag's leading `v`, as CI sets a
+    release's. A STRAUM_VERSION already set wins; without a description
+    the build keeps Cargo.toml's version."""
+    built = dict(environ)
+    if "STRAUM_VERSION" in built or described is None:
+        return built
+    built["STRAUM_VERSION"] = described.removeprefix("v")
+    return built
 
 
 def run_name(tool: str, pid: int) -> str:

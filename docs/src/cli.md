@@ -180,13 +180,13 @@ Prints what the Straum at `--url` has done, from its `GET /status`.
 ```text
 $ straum status
 ready:        yes
-applied:      0/B81BDEE8, where the stream started
-as of:        2026-11-24T16:12:14.93754425Z, every commit before it applied
-lag:          0.6 s, at most 30 s
+applied:      0/B81BDEA0, where the stream started
+as of:        2026-11-24T18:11:11.474154709Z, every commit before it applied
+lag:          0.4 s, at most 30 s
 applying:     0 commits and 0 changes a second
-WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDFC0
-memory:       unknown; Straum reads it from /proc/self/status, on Linux
-version:      0.0.0
+WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDF78
+memory:       130.9 MiB resident, no --max-memory set
+version:      0.18.0-2-g5fc7de9-dirty
 ```
 
 | Line | Shows |
@@ -197,7 +197,7 @@ version:      0.0.0
 | `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
 | `applying` | Commits and changes applied each second between the last two readings of PostgreSQL's WAL, about a second apart. With `lag`, it tells a Straum catching up from one falling further behind. Unknown in the stream's first second. |
 | `memory` | Resident memory at the last reading, about a second old, against `--max-memory` when it is set. Where neither `/proc/self/status` nor `ps` gives it, the line says it is unknown. |
-| `version` | The version of the Straum serving, as [`straum version`](#straum-version) prints it; a build outside a release says `0.0.0`. |
+| `version` | The version of the Straum serving, as [`straum version`](#straum-version) prints it; a build `just taxi` makes names its commit as `git describe` does, and any other build outside a release says `0.0.0`. |
 
 A failure ends the process (architecture decision record ADR-0009), so
 the status counts no starts or failures: whatever runs Straum counts
