@@ -3,13 +3,15 @@
 //! days back from it answer only by the day. The trips run ten days back
 //! from the server's `now()`, so the horizon falls among them. Allowed
 //! asks equal the view body run in PostgreSQL; an ask by the hour from
-//! before the horizon is refused, naming it.
+//! before the horizon is refused, naming it. Both streams read the
+//! snapshot's time, so the test runs over each.
 
-use straum_app::{AnswerError, App};
+use straum_app::{AnswerError, App, Writer};
 use straum_domain::{Ask, AskError, AskKey, Width};
 
 use super::references::*;
 use super::support::*;
+use crate::Postgres;
 
 /// Trips by kind, hours kept two days, days for good. `$S` is the
 /// test's schema.
@@ -81,10 +83,29 @@ fn from_on(ask: Ask, from: Option<i64>) -> Ask {
 #[test]
 fn a_kept_width_loads_with_its_horizon_at_the_snapshot() {
     let pg = postgres();
-    let mut db = Db::new(&pg, "retention", KEEP_TABLES);
+    loads_with_its_horizon(&pg, "retention", Db::writer);
+}
+
+/// The physical stream takes its snapshot after the stream is consistent,
+/// on a server that has no logical decoding.
+#[test]
+fn a_kept_width_loads_with_its_horizon_at_the_snapshot_on_the_physical_wal() {
+    let pg = postgres_at_replica(&tag());
+    loads_with_its_horizon(&pg, "retention_physical", Db::physical_writer);
+}
+
+/// Loads the trips through the writer `writer_of` makes, then checks the
+/// hours' horizon lies two days back from the server's clock as the load
+/// ran, and that the asks either side of it answer or are refused.
+fn loads_with_its_horizon(
+    pg: &PostgresContainer,
+    name: &str,
+    writer_of: fn(&Db, &str) -> Writer<Postgres>,
+) {
+    let mut db = Db::new(pg, name, KEEP_TABLES);
     db.run(TRIPS);
     let before = server_now(&mut db);
-    let mut writer = db.writer(KEEP_SPEC);
+    let mut writer = writer_of(&db, KEEP_SPEC);
     started(&mut writer);
     let after = server_now(&mut db) + 1;
     let app = writer.app();
