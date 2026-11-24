@@ -3,9 +3,9 @@
 //! and `execute` runs the command. `straum run` starts one writer thread,
 //! which loads every table, then applies the stream, and ends the process
 //! on a failure, while `straum-http` serves asks. With `--max-memory` a
-//! thread watches resident memory (`memory.rs`) and ends the process past
-//! it. The other commands talk to a running Straum through `client.rs`,
-//! or prompt at it (`shell.rs`).
+//! thread watches resident memory (`memory.rs`), records it for `/status`
+//! and ends the process past it. The other commands talk to a running
+//! Straum through `client.rs`, or prompt at it (`shell.rs`).
 
 #![forbid(unsafe_code)]
 
@@ -29,7 +29,7 @@ use std::process::{self, ExitCode};
 use std::thread;
 
 use rustyline::error::ReadlineError;
-use straum_app::{App, Step, Writer};
+use straum_app::{App, MemoryReadings, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
 use straum_http::{AskSyntax, QueryError};
 use straum_notation::SqlError;
@@ -443,9 +443,6 @@ fn run(
         max_memory,
     }: Run,
 ) -> Result<(), Failure> {
-    if let Some(limit) = max_memory {
-        start_memory_watch(limit)?;
-    }
     let SpecFile { spec, definitions } = read_spec(&spec)?;
     let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
         return Err(Failure::NoDsn);
@@ -467,6 +464,9 @@ fn run(
     }));
 
     let app = App::new(spec, limits);
+    if let Some(limit) = max_memory {
+        start_memory_watch(limit, app.memory_readings())?;
+    }
     let writer = Writer::new(
         app.clone(),
         Postgres::new(
@@ -544,20 +544,20 @@ fn run_writer(mut writer: Writer<Postgres>) {
 
 /// Reads resident memory once, so a set `--max-memory` that can't be read
 /// fails the start instead of passing for no limit, then watches it from
-/// before the load on.
-fn start_memory_watch(limit: u64) -> Result<(), Failure> {
+/// before the load on, recording each reading in `readings`.
+fn start_memory_watch(limit: u64, readings: MemoryReadings) -> Result<(), Failure> {
     memory::read_resident(memory::STATUS).map_err(Failure::Memory)?;
     thread::Builder::new()
         .name("straum-memory".into())
-        .spawn(move || stop_past(limit))
+        .spawn(move || stop_past(limit, &readings))
         .map_err(Failure::StartingWatch)?;
     Ok(())
 }
 
 /// Watches resident memory until it passes `limit`, then ends the
 /// process, as a failed writer does.
-fn stop_past(limit: u64) {
-    let stop = memory::watch(memory::STATUS, limit);
+fn stop_past(limit: u64, readings: &MemoryReadings) {
+    let stop = memory::watch(memory::STATUS, limit, readings);
     log(&stop.to_string());
     process::exit(PAST_MAX_MEMORY);
 }

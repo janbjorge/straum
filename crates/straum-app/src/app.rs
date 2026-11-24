@@ -13,6 +13,7 @@ use straum_domain::{Answer, Ask, AskError, Cut, Spec, Store, Window, WindowAnswe
 
 use crate::lag::Lag;
 use crate::loading::Loading;
+use crate::memory::{Memory, MemoryReadings};
 use crate::source::{LoadCounts, Lsn, Wal};
 
 /// The store may be half updated, so nothing reads it again.
@@ -53,6 +54,8 @@ pub struct App {
     /// The store's spec, which never changes, read without its lock.
     pub(crate) spec: Arc<Spec>,
     pub(crate) limits: Limits,
+    /// The binary's memory watch records here; the status reads it.
+    memory: MemoryReadings,
 }
 
 /// Behind the store's lock: the store, and the commit it holds up to.
@@ -123,6 +126,9 @@ pub struct Status {
     pub wal: Option<Wal>,
     /// How far the load is, while a table loads.
     pub loading: Option<Loading>,
+    /// The last reading of resident memory; `None` when nothing watches
+    /// it.
+    pub memory: Option<Memory>,
     pub limits: Limits,
 }
 
@@ -142,7 +148,13 @@ impl App {
             })),
             counts: Arc::new(LoadCounts::default()),
             limits,
+            memory: MemoryReadings::default(),
         }
+    }
+
+    /// Where a memory watch records its readings for the status.
+    pub fn memory_readings(&self) -> MemoryReadings {
+        self.memory.clone()
     }
 
     /// Answers once every table is loaded.
@@ -186,6 +198,7 @@ impl App {
                 lag: None,
                 wal: None,
                 loading: self.loading(progress.loading.as_ref()),
+                memory: self.memory.last(),
                 limits: self.limits,
             };
         };
@@ -198,6 +211,7 @@ impl App {
             lag: Some(lag),
             wal: Some(following.wal),
             loading: None,
+            memory: self.memory.last(),
             limits: self.limits,
         }
     }

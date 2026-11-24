@@ -260,7 +260,9 @@
           "max_lag_ms",
           "wal_written",
           "wal_retained_bytes",
-          "max_retained_wal_bytes"
+          "max_retained_wal_bytes",
+          "resident_bytes",
+          "max_memory_bytes"
         ],
         "additionalProperties": false,
         "properties": {
@@ -283,7 +285,17 @@
             "description": "The LSN PostgreSQL has written to."
           },
           "wal_retained_bytes": { "type": ["integer", "null"], "minimum": 0 },
-          "max_retained_wal_bytes": { "type": "integer", "minimum": 0 }
+          "max_retained_wal_bytes": { "type": "integer", "minimum": 0 },
+          "resident_bytes": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Straum's resident memory at the last reading, taken each second; null without --max-memory."
+          },
+          "max_memory_bytes": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "The --max-memory limit, past which Straum stops; null without it."
+          }
         }
       },
       "Views": {

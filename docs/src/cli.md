@@ -184,6 +184,7 @@ applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
 as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
 lag:          0.0 s, at most 30 s
 WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
+memory:       412.3 MiB resident, at most 1800.0 MiB
 ```
 
 | Line | Shows |
@@ -192,6 +193,7 @@ WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
 | `applied` | The last commit applied and when it committed. |
 | `as of` | The `as_of` answers carry. It keeps moving while the database is quiet. |
 | `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
+| `memory` | Resident memory at the last reading, about a second old, against `--max-memory`. Without `--max-memory` nothing reads it, and the line says so. |
 
 A failure ends the process (architecture decision record ADR-0009), so
 the status counts no starts or failures: whatever runs Straum counts

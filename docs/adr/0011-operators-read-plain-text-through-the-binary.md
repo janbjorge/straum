@@ -35,7 +35,8 @@ unit not running; `straum status` too, after printing the status. A
 script waits on 3 and gives up on 1. Prose lives in the guide.
 
 No metrics and no OTLP. Straum writes what people read, as plain text:
-`GET /status` (ready or why not, lag, WAL held against the cap, LSN,
+`GET /status` (ready or why not, lag, WAL held against the cap,
+resident memory against `--max-memory`, LSN,
 `as_of`); `GET /views` (each view's widths,
 horizons, cells, bucket range, typed keys and measures, each dim's rows and
 the view keys that read it);

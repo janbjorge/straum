@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use straum_app::{AnswerError, App, Error, Limits, Lsn, Status, Step, Wal, Writer};
+use straum_app::{AnswerError, App, Error, Limits, Lsn, Memory, Status, Step, Wal, Writer};
 use straum_domain::{AskError, Instead, Value};
 
 use crate::common::{
@@ -14,6 +14,27 @@ use crate::common::{
     watched, watching, zone,
 };
 use crate::fake::{Database, Fake, id, time};
+
+/// The status shows the last reading a memory watch recorded, and none
+/// before one or without one.
+#[test]
+fn status_shows_the_last_memory_reading() {
+    let app = App::new(spec(), LIMITS);
+    assert_eq!(app.status().memory, None);
+    let readings = app.memory_readings();
+    for resident_bytes in [100, 300] {
+        readings.record(Memory {
+            resident_bytes,
+            limit_bytes: 1_000,
+        });
+    }
+    let last = Memory {
+        resident_bytes: 300,
+        limit_bytes: 1_000,
+    };
+    assert_eq!(app.status().memory, Some(last));
+    assert_eq!(app.clone().status().memory, Some(last));
+}
 
 #[test]
 fn ready_only_within_the_lag_bound() {
@@ -85,6 +106,7 @@ fn status_before_the_first_step(app: &App) {
             lag: None,
             wal: None,
             loading: None,
+            memory: None,
             limits: LIMITS,
         }
     );

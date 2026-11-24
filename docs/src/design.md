@@ -56,16 +56,17 @@ through the app.
 
 ## Running
 
-`run` in the binary first starts the memory watch when `--max-memory`
-is set (`memory.rs`): a thread that reads the process's resident memory
-from `/proc/self/status` every second and exits 1 past the limit. It
-reads once before the thread starts, so a limit it can't read fails the
-start. Then `run` reads the spec and the data source name (DSN),
+`run` in the binary reads the spec and the data source name (DSN),
 binds the listener and sets a panic hook that aborts the process, since
 after a panic the store may be half written. It builds an `App` around
-an empty `Store` and the `Limits`, and a `Writer` over a `Postgres`
-source, then spawns the writer thread and serves HTTP until SIGTERM or
-SIGINT.
+an empty `Store` and the `Limits`. When `--max-memory` is set, it then
+starts the memory watch (`memory.rs`): a thread that reads the
+process's resident memory from `/proc/self/status` every second,
+records each reading in the app's `MemoryReadings` for `/status`, and
+exits 1 past the limit. It reads once before the thread starts, so a
+limit it can't read fails the start. Then `run` builds a `Writer` over
+a `Postgres` source, spawns the writer thread and serves HTTP until
+SIGTERM or SIGINT.
 
 `run_writer` logs a failed step's error and exits 1, and PostgreSQL
 drops the temporary slot as the connection closes. Straum never retries

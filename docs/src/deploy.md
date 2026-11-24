@@ -122,7 +122,8 @@ straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-reta
 With `--max-memory` set, resident memory past it stops Straum the same
 way, loads included, so the log says why instead of the kernel killing
 the process without a word. A spec too big for the limit fails each
-start.
+start. `straum status` shows resident memory against the limit, so
+a rise shows before the limit stops Straum.
 
 ```text
 straum: Straum holds 1843.2 MiB of resident memory, past the --max-memory limit of 1800.0 MiB

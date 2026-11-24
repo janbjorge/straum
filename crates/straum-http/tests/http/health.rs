@@ -7,7 +7,7 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{Limits, Lsn};
+use straum_app::{Limits, Lsn, Memory};
 
 use crate::fake::{LIMITS, START, fake, writer, writer_with};
 use crate::{call, first_hour, read_reply, serve, started};
@@ -71,6 +71,7 @@ applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 WAL retained: unknown until every table is loaded
+memory:       not watched; --max-memory is not set
 "
     );
     server.stop();
@@ -80,6 +81,10 @@ WAL retained: unknown until every table is loaded
 fn status_says_what_the_stream_applied() {
     let (mut writer, server) = started(writer());
     writer.step().unwrap();
+    writer.app().memory_readings().record(Memory {
+        resident_bytes: 3 << 20,
+        limit_bytes: 1 << 30,
+    });
     let reply = call(server.address, "GET", "/status", "");
     let lines: Vec<&str> = reply.body.lines().collect();
     assert_eq!(lines[0], "ready:        yes");
@@ -101,7 +106,11 @@ fn status_says_what_the_stream_applied() {
         lines[4],
         "WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/B374D848"
     );
-    assert_eq!(lines.len(), 5);
+    assert_eq!(
+        lines[5],
+        "memory:       3.0 MiB resident, at most 1024.0 MiB"
+    );
+    assert_eq!(lines.len(), 6);
     server.stop();
 }
 

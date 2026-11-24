@@ -9,16 +9,18 @@
 //!  "committed": "2024-01-02T00:00:00.123456Z",
 //!  "as_of": "2024-01-02T00:01:00Z", "lag_ms": 1300, "max_lag_ms": 30000,
 //!  "wal_written": "16/C0000000", "wal_retained_bytes": 268435456,
-//!  "max_retained_wal_bytes": 4294967296}
+//!  "max_retained_wal_bytes": 4294967296,
+//!  "resident_bytes": 536870912, "max_memory_bytes": 2147483648}
 //! ```
 //!
 //! What is unknown until every table is loaded is null, as is a time past
-//! the year 9999, which only a broken clock gives.
+//! the year 9999, which only a broken clock gives. Memory is null without
+//! `--max-memory`, as nothing then reads it.
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
 
-use straum_app::{Status, format_mebibytes};
+use straum_app::{Memory, Status, format_mebibytes};
 
 use crate::json::{NULL, quoted, quoted_or_null};
 use crate::time::rfc3339_of;
@@ -50,6 +52,7 @@ pub(crate) fn write(status: &Status) -> String {
     write_line(&mut out, "as of", &as_of(status));
     write_line(&mut out, "lag", &lag(status));
     write_line(&mut out, "WAL retained", &wal(status));
+    write_line(&mut out, "memory", &memory(status.memory));
     out
 }
 
@@ -83,6 +86,15 @@ pub(crate) fn json(status: &Status) -> Vec<u8> {
     fields.push(format!("\"wal_retained_bytes\":{retained}"));
     let max_retained = status.limits.max_retained_wal;
     fields.push(format!("\"max_retained_wal_bytes\":{max_retained}"));
+    let (resident, max_memory) = match status.memory {
+        Some(memory) => (
+            memory.resident_bytes.to_string(),
+            memory.limit_bytes.to_string(),
+        ),
+        None => (NULL.to_owned(), NULL.to_owned()),
+    };
+    fields.push(format!("\"resident_bytes\":{resident}"));
+    fields.push(format!("\"max_memory_bytes\":{max_memory}"));
     format!("{{{}}}\n", fields.join(",")).into_bytes()
 }
 
@@ -143,6 +155,17 @@ fn wal(status: &Status) -> String {
     }
 }
 
+fn memory(memory: Option<Memory>) -> String {
+    match memory {
+        None => "not watched; --max-memory is not set".to_owned(),
+        Some(memory) => format!(
+            "{} resident, at most {}",
+            format_mebibytes(memory.resident_bytes),
+            format_mebibytes(memory.limit_bytes)
+        ),
+    }
+}
+
 fn timestamp(time: SystemTime) -> String {
     match rfc3339_of(time) {
         Some(text) => text,
@@ -155,7 +178,7 @@ fn timestamp(time: SystemTime) -> String {
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use straum_app::{Estimate, Limits, Loading, Lsn, Wal};
+    use straum_app::{Estimate, Limits, Loading, Lsn, Memory, Wal};
 
     use super::*;
 
@@ -177,6 +200,10 @@ mod tests {
                 restart: Lsn(0x16_B000_0000),
             }),
             loading: None,
+            memory: Some(Memory {
+                resident_bytes: 512 << 20,
+                limit_bytes: 2 << 30,
+            }),
             limits: Limits {
                 max_lag: Duration::from_secs(30),
                 max_retained_wal: FOUR_GIBIBYTES,
@@ -195,6 +222,7 @@ applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
 as of:        2024-01-02T00:01:00Z, every commit before it applied
 lag:          1.3 s, at most 30 s
 WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
+memory:       512.0 MiB resident, at most 2048.0 MiB
 "
         );
     }
@@ -209,7 +237,8 @@ WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
             r#"{"ready":true,"why_not":null,"applied":"16/B374D848","#,
             r#""committed":"2024-01-02T00:00:00.123456Z","as_of":"2024-01-02T00:01:00Z","#,
             r#""lag_ms":1300,"max_lag_ms":30000,"wal_written":"16/C0000000","#,
-            r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296}"#,
+            r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296,"#,
+            r#""resident_bytes":536870912,"max_memory_bytes":2147483648}"#,
             "\n",
         );
         assert_eq!(String::from_utf8(json(&status())).unwrap(), expected);
@@ -225,6 +254,8 @@ WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
         }
         assert!(loading["wal_written"].is_null());
         assert!(loading["wal_retained_bytes"].is_null());
+        assert!(loading["resident_bytes"].is_null());
+        assert!(loading["max_memory_bytes"].is_null());
         let streaming = json_of(&status());
         assert!(streaming["why_not"].is_null());
         assert_eq!(streaming["wal_written"], "16/C0000000");
@@ -247,7 +278,7 @@ WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
         assert_eq!(why_not(&status()), None);
     }
 
-    /// No stream yet: every table is loading.
+    /// No stream yet: every table is loading, and no `--max-memory`.
     fn loading() -> Status {
         Status {
             ready: false,
@@ -256,6 +287,7 @@ WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
             as_of: None,
             lag: None,
             wal: None,
+            memory: None,
             ..status()
         }
     }
@@ -272,6 +304,7 @@ applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 WAL retained: unknown until every table is loaded
+memory:       not watched; --max-memory is not set
 "
         );
     }

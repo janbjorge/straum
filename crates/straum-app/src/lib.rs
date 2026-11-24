@@ -10,12 +10,14 @@ mod app;
 mod held;
 mod lag;
 mod loading;
+mod memory;
 mod source;
 mod writer;
 
 pub use app::{AnswerError, Answered, App, Limits, Status};
 pub use held::{Held, HeldDim, HeldKept, HeldKey, HeldView, ViewKey};
 pub use loading::Loading;
+pub use memory::{Memory, MemoryReadings};
 pub use source::{
     Change, Commit, Drift, Estimate, LoadCounts, Lsn, Opened, Source, SourceError, Wal,
 };

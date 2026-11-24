@@ -108,22 +108,34 @@ fn stops_only_past_the_limit() {
 }
 
 /// The watch reads again and again while memory stays under the limit,
-/// and ends once it passes it or can't be read.
+/// records each reading, and ends once it passes it or can't be read.
 #[test]
 fn the_watch_ends_once_memory_passes_the_limit() {
     let path = scratch("watch");
     write_status(&path, 1_024);
     let text = path.to_str().unwrap().to_owned();
-    let watching = thread::spawn(move || watch(&text, 2 * MEBIBYTE));
+    let readings = MemoryReadings::default();
+    let recorded = readings.clone();
+    let watching = thread::spawn(move || watch(&text, 2 * MEBIBYTE, &recorded));
     thread::sleep(Duration::from_millis(300));
     assert!(!watching.is_finished(), "the watch ended under the limit");
+    let under = Memory {
+        resident_bytes: MEBIBYTE,
+        limit_bytes: 2 * MEBIBYTE,
+    };
+    assert_eq!(readings.last(), Some(under));
     write_status(&path, 3_072);
     let stop = watching.join().unwrap();
     assert_eq!(
         stop.to_string(),
         "Straum holds 3.0 MiB of resident memory, past the --max-memory limit of 2.0 MiB"
     );
+    let past = Memory {
+        resident_bytes: 3 * MEBIBYTE,
+        limit_bytes: 2 * MEBIBYTE,
+    };
+    assert_eq!(readings.last(), Some(past));
     fs::remove_file(&path).unwrap();
-    let gone = watch(path.to_str().unwrap(), 2 * MEBIBYTE);
+    let gone = watch(path.to_str().unwrap(), 2 * MEBIBYTE, &readings);
     assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
 }
