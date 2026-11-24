@@ -258,6 +258,8 @@
           "as_of",
           "lag_ms",
           "max_lag_ms",
+          "commits_per_second",
+          "changes_per_second",
           "wal_written",
           "wal_retained_bytes",
           "max_retained_wal_bytes",
@@ -280,6 +282,16 @@
           "as_of": { "type": ["string", "null"], "format": "date-time" },
           "lag_ms": { "type": ["integer", "null"], "minimum": 0 },
           "max_lag_ms": { "type": "integer", "minimum": 0 },
+          "commits_per_second": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Commits applied each second between the last two readings of the server's WAL, about a second apart; null until the second reading after the load."
+          },
+          "changes_per_second": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Inserts, updates and deletes applied each second, over the same interval as commits_per_second."
+          },
           "wal_written": {
             "type": ["string", "null"],
             "description": "The LSN PostgreSQL has written to."

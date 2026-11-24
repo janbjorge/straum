@@ -96,7 +96,8 @@ pub(crate) const STATUS_HELP: &str = "\
 usage: straum status [flags]
 
 Prints what the Straum at URL has done: ready or why not, how far behind
-PostgreSQL, the WAL retained for it and its memory against its limit.
+PostgreSQL, how fast it applies, the WAL retained for it and its memory
+against its limit.
 Exits with 3 while Straum is not ready. In a pod:
 kubectl exec deployment/straum -- /straum status
 

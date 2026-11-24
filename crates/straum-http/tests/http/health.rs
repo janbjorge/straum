@@ -70,6 +70,7 @@ ready:        no, loading
 applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
+applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
 memory:       not watched; --max-memory is not set
 "
@@ -104,13 +105,17 @@ fn status_says_what_the_stream_applied() {
     );
     assert_eq!(
         lines[4],
-        "WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/B374D848"
+        "applying:     unknown for the stream's first second"
     );
     assert_eq!(
         lines[5],
+        "WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/B374D848"
+    );
+    assert_eq!(
+        lines[6],
         "memory:       3.0 MiB resident, at most 1024.0 MiB"
     );
-    assert_eq!(lines.len(), 6);
+    assert_eq!(lines.len(), 7);
     server.stop();
 }
 

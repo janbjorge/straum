@@ -16,6 +16,7 @@ use straum_domain::{Identifier, RowError, Spec, Store};
 use crate::app::{App, Following, Progress, State};
 use crate::lag::Lag;
 use crate::loading::{Load, Loading, loaded, loads, planned};
+use crate::rate::Applying;
 use crate::source::{Change, Commit, Drift, Lsn, Opened, Source, SourceError, Wal};
 
 const STARTED: &str = "the writer applies commits only to a started stream";
@@ -239,6 +240,7 @@ impl<S: Source> Writer<S> {
             committed: None,
             lag,
             wal,
+            applying: Applying::starting(self.wal_read_at),
         });
         Ok(start)
     }
@@ -272,6 +274,7 @@ impl<S: Source> Writer<S> {
                 let following = progress.following();
                 following.applied = commit.lsn;
                 following.committed = Some(commit.committed);
+                following.applying.count(commit.changes.len());
                 return Ok(commit.lsn);
             }
         }
@@ -284,6 +287,7 @@ impl<S: Source> Writer<S> {
         let following = progress.following();
         following.lag.read(&wal, self.wal_read_at);
         following.wal = wal;
+        following.applying.close(self.wal_read_at);
         Ok(())
     }
 

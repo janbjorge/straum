@@ -180,11 +180,12 @@ Prints what the Straum at `--url` has done, from its `GET /status`.
 ```text
 $ straum status
 ready:        yes
-applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
-as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
-lag:          0.0 s, at most 30 s
-WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
-memory:       412.3 MiB resident, at most 1800.0 MiB
+applied:      0/B81BDEE8, where the stream started
+as of:        2026-11-24T16:12:14.93754425Z, every commit before it applied
+lag:          0.6 s, at most 30 s
+applying:     0 commits and 0 changes a second
+WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDFC0
+memory:       not watched; --max-memory is not set
 ```
 
 | Line | Shows |
@@ -193,6 +194,7 @@ memory:       412.3 MiB resident, at most 1800.0 MiB
 | `applied` | The last commit applied and when it committed. |
 | `as of` | The `as_of` answers carry. It keeps moving while the database is quiet. |
 | `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
+| `applying` | Commits and changes applied each second between the last two readings of PostgreSQL's WAL, about a second apart. With `lag`, it tells a Straum catching up from one falling further behind. Unknown in the stream's first second. |
 | `memory` | Resident memory at the last reading, about a second old, against `--max-memory`. Without `--max-memory` nothing reads it, and the line says so. |
 
 A failure ends the process (architecture decision record ADR-0009), so

@@ -223,6 +223,9 @@ and this glossary. The clashes at the end are open.
   stops Straum ([Following](how-it-works.md#following)).
 - **Apply** (`State::apply`): putting a commit into the store under the
   write lock.
+- **Apply rate** (`Rate`): commits and changes applied each second
+  between the last two readings of the server's WAL, which `/status`
+  shows.
 - **Source** (`Source`, `Postgres`): the port to PostgreSQL. "Source of
   truth" means PostgreSQL itself.
 - **Plain connection** (`Postgres::plain`): a connection beside the

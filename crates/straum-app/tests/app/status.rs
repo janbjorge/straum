@@ -15,6 +15,34 @@ use crate::common::{
 };
 use crate::fake::{Database, Fake, id, time};
 
+/// The status shows how fast the writer applied between the last two
+/// readings of the server's WAL, a second apart, and nothing before the
+/// second reading.
+#[test]
+fn status_shows_how_fast_the_writer_applies() {
+    let Harness {
+        database,
+        mut writer,
+    } = setup();
+    database.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    assert_eq!(writer.app().status().applying, None);
+    database
+        .borrow_mut()
+        .commit(vec![trip(2, 1, 1, 10), trip(3, 1, 1, 10)]);
+    writer.step().unwrap();
+    assert_eq!(writer.app().status().applying, None);
+    thread::sleep(Duration::from_millis(1_100));
+    // The writer reads the WAL before this commit, closing the interval
+    // that held the one before.
+    database.borrow_mut().commit(vec![trip(4, 1, 1, 10)]);
+    writer.step().unwrap();
+    let rate = writer.app().status().applying.unwrap();
+    assert_eq!(rate.commits_per_second, 1, "{rate:?}");
+    // Two changes over a little more than a second.
+    assert!((1..=2).contains(&rate.changes_per_second), "{rate:?}");
+}
+
 /// The status shows the last reading a memory watch recorded, and none
 /// before one or without one.
 #[test]
@@ -105,6 +133,7 @@ fn status_before_the_first_step(app: &App) {
             as_of: None,
             lag: None,
             wal: None,
+            applying: None,
             loading: None,
             memory: None,
             limits: LIMITS,

@@ -14,6 +14,7 @@ use straum_domain::{Answer, Ask, AskError, Cut, Spec, Store, Window, WindowAnswe
 use crate::lag::Lag;
 use crate::loading::Loading;
 use crate::memory::{Memory, MemoryReadings};
+use crate::rate::{Applying, Rate};
 use crate::source::{LoadCounts, Lsn, Wal};
 
 /// The store may be half updated, so nothing reads it again.
@@ -87,6 +88,9 @@ pub(crate) struct Following {
     pub(crate) lag: Lag,
     /// The last reading of the server's WAL.
     pub(crate) wal: Wal,
+    /// What the writer applied since that reading, and how fast it
+    /// applied before it.
+    pub(crate) applying: Applying,
 }
 
 /// An ask's answer, and how fresh it is.
@@ -124,6 +128,9 @@ pub struct Status {
     pub lag: Option<Duration>,
     /// The last reading of the server's WAL, while a stream runs.
     pub wal: Option<Wal>,
+    /// How fast the writer applied between the last two readings of the
+    /// server's WAL. `None` until a second reading after the load.
+    pub applying: Option<Rate>,
     /// How far the load is, while a table loads.
     pub loading: Option<Loading>,
     /// The last reading of resident memory; `None` when nothing watches
@@ -197,6 +204,7 @@ impl App {
                 as_of: None,
                 lag: None,
                 wal: None,
+                applying: None,
                 loading: self.loading(progress.loading.as_ref()),
                 memory: self.memory.last(),
                 limits: self.limits,
@@ -210,6 +218,7 @@ impl App {
             as_of: Some(following.as_of()),
             lag: Some(lag),
             wal: Some(following.wal),
+            applying: following.applying.rate,
             loading: None,
             memory: self.memory.last(),
             limits: self.limits,
@@ -283,6 +292,7 @@ pub(crate) mod tests {
 
     use super::{App, Following, Limits, Lsn, Wal};
     use crate::lag::Lag;
+    use crate::rate::Applying;
 
     pub(crate) fn id(name: &str) -> Identifier {
         Identifier::new(name).unwrap()
@@ -324,6 +334,7 @@ pub(crate) mod tests {
                 applied: Lsn(1),
                 restart: Lsn(1),
             },
+            applying: Applying::starting(Instant::now()),
         });
     }
 
