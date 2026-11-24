@@ -2,9 +2,9 @@
 //! cases and HTTP meet. `main` reads the command line (`command_line.rs`)
 //! and `execute` runs the command. `straum run` starts one writer thread,
 //! which loads every table, then applies the stream, and ends the process
-//! on a failure, while `straum-http` serves asks. With `--max-memory` a
-//! thread watches resident memory (`memory.rs`), records it for `/status`
-//! and ends the process past it. The other commands talk to a running
+//! on a failure, while `straum-http` serves asks. A thread watches
+//! resident memory where Linux gives it (`memory.rs`), records it for
+//! `/status` and ends the process past `--max-memory`. The other commands talk to a running
 //! Straum through `client.rs`, or prompt at it (`shell.rs`).
 
 #![forbid(unsafe_code)]
@@ -457,9 +457,7 @@ fn run(
     }));
 
     let app = App::new(spec, limits);
-    if let Some(limit) = max_memory {
-        start_memory_watch(limit, app.memory_readings())?;
-    }
+    start_memory_watch(max_memory, app.memory_readings())?;
     let writer = Writer::new(
         app.clone(),
         Postgres::new(
@@ -535,22 +533,35 @@ fn run_writer(mut writer: Writer<Postgres>) {
     }
 }
 
-/// Reads resident memory once, so a set `--max-memory` that can't be read
-/// fails the start instead of passing for no limit, then watches it from
-/// before the load on, recording each reading in `readings`.
-fn start_memory_watch(limit: u64, readings: MemoryReadings) -> Result<(), Failure> {
-    memory::read_resident(memory::STATUS).map_err(Failure::Memory)?;
+/// Reads resident memory once, then watches it from before the load on,
+/// recording each reading in `readings`. A set `--max-memory` that can't
+/// be read fails the start instead of passing for no limit; without one,
+/// a system with no figure, as macOS, goes without the watch.
+fn start_memory_watch(limit: Option<u64>, readings: MemoryReadings) -> Result<(), Failure> {
+    if let Err(error) = memory::read_resident(memory::STATUS) {
+        if limit.is_none() {
+            return Ok(());
+        }
+        return Err(Failure::Memory(error));
+    }
     thread::Builder::new()
         .name("straum-memory".into())
-        .spawn(move || stop_past(limit, &readings))
+        .spawn(move || watch_memory(limit, &readings))
         .map_err(Failure::StartingWatch)?;
     Ok(())
 }
 
 /// Watches resident memory until it passes `limit`, then ends the
-/// process, as a failed writer does.
-fn stop_past(limit: u64, readings: &MemoryReadings) {
+/// process, as a failed writer does. Without a limit, a figure that can
+/// no longer be read only ends the watch.
+fn watch_memory(limit: Option<u64>, readings: &MemoryReadings) {
     let stop = memory::watch(memory::STATUS, limit, readings);
+    if let (None, MemoryError::Unreadable { path, error }) = (limit, &stop) {
+        log(&format!(
+            "stopped reading resident memory from {path}: {error}"
+        ));
+        return;
+    }
     log(&stop.to_string());
     process::exit(PAST_MAX_MEMORY);
 }

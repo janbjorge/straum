@@ -116,12 +116,12 @@ fn the_watch_ends_once_memory_passes_the_limit() {
     let text = path.to_str().unwrap().to_owned();
     let readings = MemoryReadings::default();
     let recorded = readings.clone();
-    let watching = thread::spawn(move || watch(&text, 2 * MEBIBYTE, &recorded));
+    let watching = thread::spawn(move || watch(&text, Some(2 * MEBIBYTE), &recorded));
     thread::sleep(Duration::from_millis(300));
     assert!(!watching.is_finished(), "the watch ended under the limit");
     let under = Memory {
         resident_bytes: MEBIBYTE,
-        limit_bytes: 2 * MEBIBYTE,
+        limit_bytes: Some(2 * MEBIBYTE),
     };
     assert_eq!(readings.last(), Some(under));
     write_status(&path, 3_072);
@@ -132,10 +132,32 @@ fn the_watch_ends_once_memory_passes_the_limit() {
     );
     let past = Memory {
         resident_bytes: 3 * MEBIBYTE,
-        limit_bytes: 2 * MEBIBYTE,
+        limit_bytes: Some(2 * MEBIBYTE),
     };
     assert_eq!(readings.last(), Some(past));
     fs::remove_file(&path).unwrap();
-    let gone = watch(path.to_str().unwrap(), 2 * MEBIBYTE, &readings);
+    let gone = watch(path.to_str().unwrap(), Some(2 * MEBIBYTE), &readings);
+    assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
+}
+
+/// Without a limit the watch records every reading, however large, and
+/// ends only once the file can't be read.
+#[test]
+fn without_a_limit_the_watch_only_records() {
+    let path = scratch("unlimited");
+    write_status(&path, 1 << 30);
+    let readings = MemoryReadings::default();
+    let recorded = readings.clone();
+    let text = path.to_str().unwrap().to_owned();
+    let watching = thread::spawn(move || watch(&text, None, &recorded));
+    thread::sleep(Duration::from_millis(300));
+    assert!(!watching.is_finished(), "the watch ended with no limit");
+    let read = Memory {
+        resident_bytes: 1 << 40,
+        limit_bytes: None,
+    };
+    assert_eq!(readings.last(), Some(read));
+    fs::remove_file(&path).unwrap();
+    let gone = watching.join().unwrap();
     assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
 }

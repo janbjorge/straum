@@ -88,7 +88,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--max-answer-rows ROWS` | `100000` | Rows an ask may get. An answer is written whole in memory, so an ask whose answer has more is [refused with 400](asks.md#errors). |
 | `--max-page-memory BYTES` | `1Gi` | Only with `--wal physical`, else a command line error: the rows Straum may hold from the WAL, pages and open transactions' changes, before it stops. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. |
 | `--max-load-memory BYTES` | `1Gi` | Commits Straum may hold while the tables load, read from the stream ahead of the writer, before it [stops](how-it-works.md#following). It counts their rows' bytes, text by its length, not `Vec` slack. |
-| `--max-memory BYTES` | Off | Resident memory Straum may hold before it [stops](deploy.md#states). Linux only: it reads `VmRSS` in `/proc/self/status` about once a second from the start on, loads included, and where that file can't be read a set limit fails the start. Set it under the memory limit of the pod or host ([Kubernetes](deploy.md#kubernetes)). |
+| `--max-memory BYTES` | Off | Resident memory Straum may hold before it [stops](deploy.md#states). Linux only: Straum reads `VmRSS` in `/proc/self/status` about once a second from the start on, loads included, set or not, for [`straum status`](#straum-status); where that file can't be read a set limit fails the start. Set it under the memory limit of the pod or host ([Kubernetes](deploy.md#kubernetes)). |
 
 It logs to stderr, each line starting `straum: `: the address it
 listens on, the stream it opened with each table to load, its
@@ -185,7 +185,7 @@ as of:        2026-11-24T16:12:14.93754425Z, every commit before it applied
 lag:          0.6 s, at most 30 s
 applying:     0 commits and 0 changes a second
 WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/B81BDFC0
-memory:       not watched; --max-memory is not set
+memory:       unknown; Straum reads it from /proc/self/status, on Linux
 version:      0.0.0
 ```
 
@@ -196,7 +196,7 @@ version:      0.0.0
 | `as of` | The `as_of` answers carry. It keeps moving while the database is quiet. |
 | `lag`, `WAL retained` | Against `--max-lag` and `--max-retained-wal`. |
 | `applying` | Commits and changes applied each second between the last two readings of PostgreSQL's WAL, about a second apart. With `lag`, it tells a Straum catching up from one falling further behind. Unknown in the stream's first second. |
-| `memory` | Resident memory at the last reading, about a second old, against `--max-memory`. Without `--max-memory` nothing reads it, and the line says so. |
+| `memory` | Resident memory at the last reading, about a second old, against `--max-memory` when it is set. Straum reads it on Linux only; elsewhere, as on macOS, the line says it is unknown. |
 | `version` | The version of the Straum serving, as [`straum version`](#straum-version) prints it; a build outside a release says `0.0.0`. |
 
 A failure ends the process (architecture decision record ADR-0009), so

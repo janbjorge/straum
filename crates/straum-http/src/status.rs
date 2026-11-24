@@ -16,8 +16,9 @@
 //! ```
 //!
 //! What is unknown until every table is loaded is null, as is a time past
-//! the year 9999, which only a broken clock gives. Memory is null without
-//! `--max-memory`, as nothing then reads it.
+//! the year 9999, which only a broken clock gives. Memory is null where
+//! the system gives no figure, as on macOS; the limit is null when
+//! `--max-memory` is not set.
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
@@ -103,7 +104,7 @@ pub(crate) fn json(status: &Status) -> Vec<u8> {
     let (resident, max_memory) = match status.memory {
         Some(memory) => (
             memory.resident_bytes.to_string(),
-            memory.limit_bytes.to_string(),
+            number_or_null(memory.limit_bytes),
         ),
         None => (NULL.to_owned(), NULL.to_owned()),
     };
@@ -184,14 +185,21 @@ fn wal(status: &Status) -> String {
     }
 }
 
+fn number_or_null(number: Option<u64>) -> String {
+    match number {
+        Some(number) => number.to_string(),
+        None => NULL.to_owned(),
+    }
+}
+
 fn memory(memory: Option<Memory>) -> String {
-    match memory {
-        None => "not watched; --max-memory is not set".to_owned(),
-        Some(memory) => format!(
-            "{} resident, at most {}",
-            format_mebibytes(memory.resident_bytes),
-            format_mebibytes(memory.limit_bytes)
-        ),
+    let Some(memory) = memory else {
+        return "unknown; Straum reads it from /proc/self/status, on Linux".to_owned();
+    };
+    let resident = format_mebibytes(memory.resident_bytes);
+    match memory.limit_bytes {
+        None => format!("{resident} resident, no --max-memory set"),
+        Some(limit) => format!("{resident} resident, at most {}", format_mebibytes(limit)),
     }
 }
 
@@ -235,7 +243,7 @@ mod tests {
             loading: None,
             memory: Some(Memory {
                 resident_bytes: 512 << 20,
-                limit_bytes: 2 << 30,
+                limit_bytes: Some(2 << 30),
             }),
             limits: Limits {
                 max_lag: Duration::from_secs(30),
@@ -266,6 +274,23 @@ memory:       512.0 MiB resident, at most 2048.0 MiB
     /// The last line of the status, which names the version built.
     fn version_line() -> String {
         format!("version:      {VERSION}\n")
+    }
+
+    #[test]
+    fn memory_without_a_limit_says_so() {
+        let unlimited = Status {
+            memory: Some(Memory {
+                resident_bytes: 512 << 20,
+                limit_bytes: None,
+            }),
+            ..status()
+        };
+        assert!(
+            write(&unlimited).contains("memory:       512.0 MiB resident, no --max-memory set\n")
+        );
+        let json = json_of(&unlimited);
+        assert_eq!(json["resident_bytes"], 512 << 20);
+        assert!(json["max_memory_bytes"].is_null());
     }
 
     #[test]
@@ -361,7 +386,7 @@ as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
-memory:       not watched; --max-memory is not set
+memory:       unknown; Straum reads it from /proc/self/status, on Linux
 "
             .to_owned()
                 + &version_line()

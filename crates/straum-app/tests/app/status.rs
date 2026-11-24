@@ -53,12 +53,12 @@ fn status_shows_the_last_memory_reading() {
     for resident_bytes in [100, 300] {
         readings.record(Memory {
             resident_bytes,
-            limit_bytes: 1_000,
+            limit_bytes: Some(1_000),
         });
     }
     let last = Memory {
         resident_bytes: 300,
-        limit_bytes: 1_000,
+        limit_bytes: Some(1_000),
     };
     assert_eq!(app.status().memory, Some(last));
     assert_eq!(app.clone().status().memory, Some(last));

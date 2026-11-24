@@ -72,7 +72,7 @@ as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 applying:     unknown until every table is loaded
 WAL retained: unknown until every table is loaded
-memory:       not watched; --max-memory is not set
+memory:       unknown; Straum reads it from /proc/self/status, on Linux
 "
         .to_owned()
             + &format!("version:      {}\n", straum_http::VERSION)
@@ -86,7 +86,7 @@ fn status_says_what_the_stream_applied() {
     writer.step().unwrap();
     writer.app().memory_readings().record(Memory {
         resident_bytes: 3 << 20,
-        limit_bytes: 1 << 30,
+        limit_bytes: Some(1 << 30),
     });
     let reply = call(server.address, "GET", "/status", "");
     let lines: Vec<&str> = reply.body.lines().collect();

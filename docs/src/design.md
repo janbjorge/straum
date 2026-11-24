@@ -59,12 +59,13 @@ through the app.
 `run` in the binary reads the spec and the data source name (DSN),
 binds the listener and sets a panic hook that aborts the process, since
 after a panic the store may be half written. It builds an `App` around
-an empty `Store` and the `Limits`. When `--max-memory` is set, it then
-starts the memory watch (`memory.rs`): a thread that reads the
-process's resident memory from `/proc/self/status` every second,
-records each reading in the app's `MemoryReadings` for `/status`, and
-exits 1 past the limit. It reads once before the thread starts, so a
-limit it can't read fails the start. Then `run` builds a `Writer` over
+an empty `Store` and the `Limits`. It then starts the memory watch
+(`memory.rs`): a thread that reads the process's resident memory from
+`/proc/self/status` every second, records each reading in the app's
+`MemoryReadings` for `/status`, and exits 1 past `--max-memory` when it
+is set. It reads once before the thread starts: a limit it can't read
+fails the start, and without a limit a system with no such file, as
+macOS, runs without the watch. Then `run` builds a `Writer` over
 a `Postgres` source, spawns the writer thread and serves HTTP until
 SIGTERM or SIGINT.
 

@@ -1,10 +1,11 @@
-//! The `--max-memory` watch: Straum's resident memory, read from Linux's
-//! `/proc/self/status`, against the limit. `resident_bytes` reads the
-//! `VmRSS` line of the file's text, `read_resident` reads the file, and
-//! `watch` reads it every second, records each reading for `/status`,
-//! until memory passes the limit or the file can't be read, and says why. `main.rs` reads once at the start,
-//! so a limit that can't be read fails there, then runs `watch` on a
-//! thread of its own and ends the process with what it returns.
+//! The memory watch: Straum's resident memory, read from Linux's
+//! `/proc/self/status`, against the `--max-memory` limit when one is set.
+//! `resident_bytes` reads the `VmRSS` line of the file's text,
+//! `read_resident` reads the file, and `watch` reads it every second and
+//! records each reading for `/status`, until memory passes the limit or
+//! the file can't be read, and says why. `main.rs` reads once at the
+//! start, so a limit that can't be read fails there, then runs `watch` on
+//! a thread of its own; past the limit it ends the process.
 
 use std::fmt;
 use std::fs;
@@ -115,10 +116,10 @@ pub(crate) fn check(held: u64, limit: u64) -> Result<(), MemoryError> {
 }
 
 /// Reads resident memory at `path` every second, recording each reading
-/// in `readings`, until it passes `limit` or can't be read, and returns
-/// why it stopped. An unreadable file ends the watch too: a limit nothing
-/// checks would pass for one that holds.
-pub(crate) fn watch(path: &str, limit: u64, readings: &MemoryReadings) -> MemoryError {
+/// in `readings`, until it passes `limit`, if one is set, or can't be
+/// read, and returns why it stopped. An unreadable file ends the watch
+/// too: a limit nothing checks would pass for one that holds.
+pub(crate) fn watch(path: &str, limit: Option<u64>, readings: &MemoryReadings) -> MemoryError {
     loop {
         let held = match read_resident(path) {
             Ok(held) => held,
@@ -128,7 +129,9 @@ pub(crate) fn watch(path: &str, limit: u64, readings: &MemoryReadings) -> Memory
             resident_bytes: held,
             limit_bytes: limit,
         });
-        if let Err(stop) = check(held, limit) {
+        if let Some(limit) = limit
+            && let Err(stop) = check(held, limit)
+        {
             return stop;
         }
         thread::sleep(READ_EVERY);

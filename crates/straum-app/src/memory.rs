@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 
 const READINGS_POISONED: &str = "a thread panicked while it held the memory reading";
 
-/// A reading of resident memory, against the `--max-memory` limit.
+/// A reading of resident memory, and the `--max-memory` limit if one is
+/// set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Memory {
     pub resident_bytes: u64,
-    pub limit_bytes: u64,
+    pub limit_bytes: Option<u64>,
 }
 
 /// Where the watch puts its last reading and the status takes it.
@@ -27,7 +28,7 @@ impl MemoryReadings {
         *self.last.lock().expect(READINGS_POISONED) = Some(memory);
     }
 
-    /// The last reading, or `None` when nothing watches memory.
+    /// The last reading, or `None` where the system gives no figure.
     pub fn last(&self) -> Option<Memory> {
         *self.last.lock().expect(READINGS_POISONED)
     }
