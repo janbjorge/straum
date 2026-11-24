@@ -310,6 +310,7 @@ sees the connection close.
 | `POST /ask` | An ask sent with `Content-Type: application/json`, as JSON; as a table with `Accept: text/plain`. |
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
 | `GET /livez` | 200 `live` while the process serves. Lag never fails it. |
+| `GET /openapi.json` | The OpenAPI 3.1 document of these endpoints. Its JSON schemas are the contract; plain text is for people and may change. |
 | `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes` and `max_retained_wal_bytes`. What is unknown until every table is loaded is null. |
 | `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names, the name of its time, range of buckets and each width kept for a time with its horizon as JSON, which `straum shell` completes from. |
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |

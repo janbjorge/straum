@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = []
+# dependencies = ["openapi-spec-validator==0.7.2"]
 # ///
 """Tests of the check scripts: each rule they hold catches a planted
 break and lets the honest form through.
@@ -10,7 +10,8 @@ The layer check reads Cargo's metadata; these tests hand it metadata
 built here, over a workspace of files in a temporary folder, so they
 need no cargo and no network. The domain syntax check reads a folder of
 Rust files; these tests write one. The chart check reads its oldest
-Kubernetes from Chart.yaml; these tests hand it the line.
+Kubernetes from Chart.yaml; these tests hand it the line. The OpenAPI
+check reads a document; these tests hand it one.
 changed-crates.py maps paths to crates; these tests hand it paths. The
 test filter check reads a justfile and a crate; these tests write both.
 The justfile's guard against a crate recipe with no crate runs under
@@ -21,6 +22,7 @@ way stays shut.
 
 import collections.abc
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -49,6 +51,7 @@ syntax = load("check-domain-syntax")
 chart = load("check-chart")
 changed = load("changed-crates")
 filters = load("check-test-filters")
+openapi = load("check-openapi")
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 
 
@@ -705,6 +708,36 @@ class ChartKubernetesFloor(unittest.TestCase):
     def test_the_chart_has_a_floor(self):
         text = (chart.CHART / "Chart.yaml").read_text()
         self.assertIsNotNone(chart.oldest_kubernetes(text))
+
+
+class OpenApiCheck(unittest.TestCase):
+    def document(self) -> dict:
+        return json.loads(openapi.DOCUMENT.read_text())
+
+    def test_the_document_is_valid(self):
+        self.assertEqual(openapi.errors(self.document()), [])
+
+    def test_refuses_a_broken_document(self):
+        no_info = self.document()
+        del no_info["info"]
+        optional_path = self.document()
+        optional_path["components"]["parameters"]["View"]["required"] = False
+        undeclared = self.document()
+        del undeclared["paths"]["/views/{name}/spec"]["get"]["parameters"]
+        no_description = self.document()
+        no_description["paths"]["/livez"]["get"]["responses"]["200"] = {}
+        dangling = self.document()
+        answer = dangling["paths"]["/ask"]["post"]["responses"]["200"]
+        answer["content"]["application/json"]["schema"]["$ref"] = "#/nowhere"
+        for name, broken in [
+            ("no info", no_info),
+            ("optional path parameter", optional_path),
+            ("undeclared path parameter", undeclared),
+            ("response with no description", no_description),
+            ("dangling $ref", dangling),
+        ]:
+            with self.subTest(name=name):
+                self.assertNotEqual(openapi.errors(broken), [])
 
 
 class ChangedCrates(unittest.TestCase):

@@ -1,2 +1,4 @@
 # ADR-0013: functions stay under 70 lines.
 too-many-lines-threshold = 70
+# OpenAPI is a name, not code; ".." keeps clippy's own list.
+doc-valid-idents = ["OpenAPI", ".."]

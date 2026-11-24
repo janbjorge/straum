@@ -4,7 +4,7 @@
 //! An ask sent as JSON goes body, then `ask.rs`, then the `AskSyntax`, then
 //! the app on a blocking thread, then `answer.rs`; the other routes read the app and
 //! hand what they read to `status.rs` or `views.rs`, or reply with a
-//! view's definition as the spec wrote it.
+//! view's definition as the spec wrote it, or with `openapi.json`.
 
 use std::convert::Infallible;
 use std::fmt::{self, Display};
@@ -42,6 +42,10 @@ const ROWS_PREFIX: &str = "/views/";
 
 /// What follows a view's name in `GET /views/NAME/spec`.
 const SPEC_SUFFIX: &str = "/spec";
+
+/// The OpenAPI document of these routes, built in so the binary serves
+/// the contract it keeps.
+const OPENAPI: &str = include_str!("../openapi.json");
 
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
@@ -143,6 +147,7 @@ pub(crate) async fn handle(
             }
         }
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
+        (&Method::GET, "/openapi.json") => respond(StatusCode::OK, JSON, OPENAPI.into()),
         (&Method::GET, "/readyz") => get_readyz(app),
         (&Method::GET, "/status") => get_status(app, Format::of(accept, Format::Text)),
         (&Method::GET, "/views") => {
@@ -150,7 +155,7 @@ pub(crate) async fn handle(
             views_off_async(app, turns, format).await
         }
         (_, "/ask") => not_allowed("POST"),
-        (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
+        (_, "/livez" | "/openapi.json" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
         (&Method::GET, path) if path.starts_with(ROWS_PREFIX) => {
             let named = &path[ROWS_PREFIX.len()..];
             match named.strip_suffix(SPEC_SUFFIX) {

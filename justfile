@@ -67,12 +67,13 @@ test crates=changed *args: (_named crates)
 cov crates=changed: (_named crates)
     cargo llvm-cov {{ if crates == all { '--workspace' } else { prepend('-p ', crates) } }} --all-targets --fail-under-lines {{ coverage }}
 
-# Layers, no Straum SQL in straum-domain, test filters that select a test, and the tests of the check and bench scripts
+# Layers, no Straum SQL in straum-domain, test filters that select a test, a valid OpenAPI document, and the tests of the check and bench scripts
 [group('check')]
 scripts:
     scripts/check-layers.py
     scripts/check-domain-syntax.py
     scripts/check-test-filters.py
+    scripts/check-openapi.py
     scripts/test-checks.py
     bench/test-stack.py
 

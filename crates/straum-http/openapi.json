@@ -1,0 +1,375 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Straum",
+    "version": "1",
+    "description": "Straum's HTTP routes. The JSON bodies are the contract; plain-text bodies are for people and may change. Every reply carries Cache-Control: no-store. A path not listed is 404 and a listed path asked with another method is 405, both in plain text, the 405 with an Allow header naming the method to use."
+  },
+  "paths": {
+    "/ask": {
+      "post": {
+        "summary": "Answer an ask",
+        "description": "Accept: text/plain gets the answer as a table and the errors as lines.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Ask" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "headers": {
+              "Straum-LSN": { "$ref": "#/components/headers/StraumLsn" },
+              "Server-Timing": { "$ref": "#/components/headers/ServerTiming" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Answer" }
+              },
+              "text/plain": { "schema": { "type": "string" } }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Errors" },
+          "408": { "$ref": "#/components/responses/Errors" },
+          "413": { "$ref": "#/components/responses/Errors" },
+          "415": { "$ref": "#/components/responses/Errors" },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "500": { "$ref": "#/components/responses/Errors" },
+          "503": { "$ref": "#/components/responses/Errors" }
+        }
+      }
+    },
+    "/livez": {
+      "get": {
+        "summary": "Whether the process serves",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Text" },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Whether every table is loaded and Straum is within its lag bound",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Text" },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "503": { "$ref": "#/components/responses/Text" }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "What Straum has done",
+        "description": "Plain text unless the request sends Accept: application/json.",
+        "responses": {
+          "200": {
+            "description": "The status.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Status" }
+              },
+              "text/plain": { "schema": { "type": "string" } }
+            }
+          },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      }
+    },
+    "/views": {
+      "get": {
+        "summary": "Every view and how much of it Straum holds",
+        "description": "Plain text unless the request sends Accept: application/json.",
+        "responses": {
+          "200": {
+            "description": "The views.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Views" }
+              },
+              "text/plain": { "schema": { "type": "string" } }
+            }
+          },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "500": { "$ref": "#/components/responses/Errors" },
+          "503": { "$ref": "#/components/responses/Errors" }
+        }
+      }
+    },
+    "/views/{name}": {
+      "get": {
+        "summary": "The rows PostgreSQL would give for the view, as a table",
+        "parameters": [
+          { "$ref": "#/components/parameters/View" },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "The first row, from 0; a negative one counts back from the end.",
+            "schema": { "type": "integer", "default": 0 }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rows as a table.",
+            "headers": {
+              "Straum-LSN": { "$ref": "#/components/headers/StraumLsn" },
+              "Server-Timing": { "$ref": "#/components/headers/ServerTiming" }
+            },
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          },
+          "400": { "$ref": "#/components/responses/Text" },
+          "404": { "$ref": "#/components/responses/Text" },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "500": { "$ref": "#/components/responses/Text" },
+          "503": { "$ref": "#/components/responses/Text" }
+        }
+      }
+    },
+    "/views/{name}/spec": {
+      "get": {
+        "summary": "The view's CREATE VIEW as the spec wrote it",
+        "parameters": [{ "$ref": "#/components/parameters/View" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Text" },
+          "404": { "$ref": "#/components/responses/Text" },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "responses": {
+          "200": {
+            "description": "This document.",
+            "content": {
+              "application/json": { "schema": { "type": "object" } }
+            }
+          },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "View": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      }
+    },
+    "headers": {
+      "StraumLsn": {
+        "description": "The LSN the answer reflects, for debugging.",
+        "schema": { "type": "string" }
+      },
+      "ServerTiming": {
+        "description": "Where the time went in Straum, in milliseconds.",
+        "schema": { "type": "string" }
+      }
+    },
+    "responses": {
+      "Text": {
+        "description": "A line or more of plain text.",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      },
+      "Errors": {
+        "description": "Every error, as JSON or as lines of plain text, as the request's Accept asks.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Errors" }
+          },
+          "text/plain": { "schema": { "type": "string" } }
+        }
+      },
+      "Misdirected": {
+        "description": "On loopback, the Host header names another machine or port.",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      }
+    },
+    "schemas": {
+      "Ask": {
+        "type": "object",
+        "required": ["query"],
+        "additionalProperties": false,
+        "properties": {
+          "query": { "type": "string" },
+          "parameters": {
+            "type": "array",
+            "description": "The values of $1, $2 and on. A number stays exactly as written.",
+            "items": { "type": ["number", "string", "boolean"] }
+          }
+        }
+      },
+      "Answer": {
+        "type": "object",
+        "required": ["as_of", "rows"],
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Every commit made before it, by Straum's clock, is in the answer."
+          },
+          "rows": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Row" }
+          }
+        }
+      },
+      "Row": {
+        "type": "object",
+        "description": "One group, keyed by the names the ask selected. Numbers are exact decimals in their column's scale; read them as decimals, not floats, to keep every digit.",
+        "additionalProperties": {
+          "type": ["string", "number", "boolean", "null"]
+        }
+      },
+      "Errors": {
+        "type": "object",
+        "required": ["errors"],
+        "additionalProperties": false,
+        "properties": {
+          "errors": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "description": "What is unknown until every table is loaded is null.",
+        "required": [
+          "ready",
+          "why_not",
+          "applied",
+          "committed",
+          "as_of",
+          "lag_ms",
+          "max_lag_ms",
+          "wal_written",
+          "wal_retained_bytes",
+          "max_retained_wal_bytes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ready": { "type": "boolean" },
+          "why_not": { "type": ["string", "null"] },
+          "applied": {
+            "type": ["string", "null"],
+            "description": "The LSN up to which every commit is applied."
+          },
+          "committed": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "When the commit at applied committed; null when applied is where the stream started."
+          },
+          "as_of": { "type": ["string", "null"], "format": "date-time" },
+          "lag_ms": { "type": ["integer", "null"], "minimum": 0 },
+          "max_lag_ms": { "type": "integer", "minimum": 0 },
+          "wal_written": {
+            "type": ["string", "null"],
+            "description": "The LSN PostgreSQL has written to."
+          },
+          "wal_retained_bytes": { "type": ["integer", "null"], "minimum": 0 },
+          "max_retained_wal_bytes": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "Views": {
+        "type": "object",
+        "required": ["views"],
+        "additionalProperties": false,
+        "properties": {
+          "views": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/View" }
+          }
+        }
+      },
+      "View": {
+        "type": "object",
+        "required": ["name", "time", "from", "to", "kept", "keys", "measures"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "time": {
+            "type": "string",
+            "description": "The name asks group and bound the view's time by."
+          },
+          "from": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "The first bucket held; null for a view with no bucket."
+          },
+          "to": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "The end of the last bucket held; null for a view with no bucket."
+          },
+          "kept": {
+            "type": "array",
+            "description": "Each width kept only for a time, narrowest first.",
+            "items": { "$ref": "#/components/schemas/Kept" }
+          },
+          "keys": {
+            "type": "array",
+            "description": "The time, then every name an ask may group or filter by.",
+            "items": { "$ref": "#/components/schemas/Key" }
+          },
+          "measures": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "Kept": {
+        "type": "object",
+        "required": ["width", "for", "from"],
+        "additionalProperties": false,
+        "properties": {
+          "width": { "type": "string" },
+          "for": { "type": "string" },
+          "from": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "The first bucket kept; null before the first horizon."
+          }
+        }
+      },
+      "Key": {
+        "type": "object",
+        "required": ["name", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": [
+              "integer",
+              "numeric",
+              "boolean",
+              "text",
+              "timestamptz",
+              "timestamp",
+              "date",
+              "uuid"
+            ]
+          },
+          "scale": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Places past the point, for a numeric key."
+          }
+        }
+      }
+    }
+  }
+}

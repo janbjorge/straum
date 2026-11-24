@@ -44,7 +44,10 @@ the view keys that read it);
 `GET /views/NAME/spec` (the view's `CREATE VIEW` as the spec file
 wrote it, kept from the start); and `POST
 /ask` with `Accept: text/plain`. `/status` and `/views` with `Accept:
-application/json` serve programs. The binary prints those bodies:
+application/json` serve programs. `GET /openapi.json` serves the
+OpenAPI 3.1 document of every route, `crates/straum-http/openapi.json`
+built into the binary; straum-http's tests check each JSON reply
+against it, and `just scripts` checks it is valid OpenAPI. The binary prints those bodies:
 `straum status`, `straum views`, `straum ask QUERY [PARAMETER...]`.
 They find Straum at `--url`, else `STRAUM_URL`, else
 `http://127.0.0.1:8080`, as `STRAUM_DSN` stands in for `--dsn-file`.
@@ -89,7 +92,9 @@ its input and counts the commands that failed.
 - A pod is inspected with `kubectl exec`. The binary reads no spec,
   draws no table and parses no Straum SQL, so completion can offer
   what the walker then refuses.
-- Text layout is for people and may change; JSON is the contract.
+- Text layout is for people and may change; JSON is the contract,
+  written down in `openapi.json`. A change to a JSON reply changes the
+  document in the same commit, or straum-http's tests fail.
 - `/views` is 503 until every table is loaded: only a load knows the
   types. `\rows` reads every cell of the view to print up to 1000.
 - `straum ask` infers types; the HTTP ask infers nothing (ADR-0005).

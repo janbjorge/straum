@@ -43,6 +43,9 @@ docs, ADR-0014 says which pages use the taxi trips and which the
 
 - Change under `deploy/helm/`: run `just chart`. Needs uv, helm, the
   helm-unittest plugin and kubeconform.
+- Change to an HTTP route or a JSON reply: change
+  `crates/straum-http/openapi.json` with it. straum-http's tests check
+  the replies against it; `just scripts` checks it is valid OpenAPI.
 - Change under `docs/`: run `just docs`; `just docs serve --open`
   previews. CI uses mdBook 0.5.4.
 - Change to the Dockerfile or `compose.yaml`: run `just image`.

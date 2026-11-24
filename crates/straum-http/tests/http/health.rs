@@ -44,6 +44,7 @@ fn routes() {
         ("DELETE", "/readyz", "GET"),
         ("POST", "/status", "GET"),
         ("PUT", "/views", "GET"),
+        ("POST", "/openapi.json", "GET"),
     ] {
         let reply = call(server.address, method, path, "");
         assert_eq!(reply.status, 405, "{method} {path}");

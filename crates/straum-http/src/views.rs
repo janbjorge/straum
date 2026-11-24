@@ -20,7 +20,8 @@
 //! width's `from` before its first horizon; `kept` is empty for a view
 //! that keeps every width for good. A type is
 //! `integer`, `numeric` with its `scale`, `boolean`, `text`,
-//! `timestamptz` or `timestamp`.
+//! `timestamptz`, `timestamp`, `date` or `uuid`. `openapi.json` holds
+//! this shape as a schema.
 
 use std::fmt::Write as _;
 

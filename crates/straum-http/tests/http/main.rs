@@ -2,13 +2,14 @@
 //! fills the app, `serve` runs `straum_http::serve` on a thread of its
 //! own, and the tests send raw HTTP/1.1 and read the reply back. This file
 //! holds the server and the request helpers; the tests are split by route:
-//! `asks.rs`, `views.rs` and `health.rs`, and the `Host` a request may
-//! name in `hosts.rs`.
+//! `asks.rs`, `views.rs` and `health.rs`, the `Host` a request may
+//! name in `hosts.rs`, and the OpenAPI document in `openapi.rs`.
 
 mod asks;
 mod fake;
 mod health;
 mod hosts;
+mod openapi;
 mod views;
 
 use std::fmt::Write as _;

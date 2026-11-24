@@ -17,6 +17,8 @@
 //!   table it reads isn't ready or while every core answers another ask. With `Accept: text/plain` the
 //!   answer is a table and the errors are lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
+//! - `GET /openapi.json`: the OpenAPI document of these routes, the
+//!   crate's `openapi.json`; its JSON bodies are the contract.
 //! - `GET /readyz`: 200 when every table is loaded and Straum is within its
 //!   lag bound, else 503 and why. Asks still answer while Straum lags.
 //! - `GET /status`: what Straum has done, in plain text for people; `straum
