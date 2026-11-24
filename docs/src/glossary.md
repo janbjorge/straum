@@ -96,7 +96,7 @@ and this glossary. The clashes at the end are open.
   **duration** (`Retention::kept_for`) ([Keeping a width for a
   time](spec.md#keeping-a-width-for-a-time)). Also "kept width".
 - **Horizon** (`kept_from`): where a retained width's buckets start:
-  Straum's time less the duration, floored to the next wider width
+  PostgreSQL's time less the duration, floored to the next wider width
   (`Store::advance`). Buckets before it are dropped; an ask that would
   read them is refused (`AskError::PastRetention`).
 - **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the bucket

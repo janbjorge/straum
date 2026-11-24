@@ -28,7 +28,8 @@ FROM schema.table AS alias
 GROUP BY position, ...
 
 time       buckets(alias.column, 'width' [, 'width' ...])
-           buckets(alias.column, keep('width', 'duration'), ..., 'width')
+           buckets(alias.column, keep('width', 'duration')
+                   [, keep('width', 'duration') ...], 'width' [, 'width' ...])
 
 key        alias.column
            alias.column::text
@@ -67,6 +68,7 @@ What the synopsis can't show:
 | A spec | One or more views, `;` between them, never empty. `CREATE OR REPLACE VIEW` and view options such as `WITH (...)` are refused. |
 | A view | One time, at least one measure, any number of keys, in any order. |
 | Columns | The time, a measure and a null-ness key read the fact table; a key or a condition may read a dim too. |
+| `keep` | Only in a view's `buckets`, on the narrowest widths and never the widest; its rules are under [Keeping a width for a time](#keeping-a-width-for-a-time). |
 | `IN` | Two values or more; for one, write `=`. |
 | `EXISTS` | In the view's `WHERE` only, not in a `FILTER`. |
 | Parentheses | Only where the synopsis has them: around a null-ness key, never around a condition or a column. |
@@ -236,13 +238,18 @@ horizon makes no bucket of the width kept for a time.
 | The widths kept for a time run on from the narrowest. | `view usage: 1 day is kept for a time but a narrower width is not; keep every narrower width for a time too` |
 | A wider width is kept no shorter than a narrower one. | `view usage: 1 day is kept for 7 days, less than the 14 days a narrower width is kept for; keep each width at least as long as the narrower ones` |
 
-Each width kept for a time has a horizon: Straum's time less the
+Each width kept for a time has a horizon: PostgreSQL's time less the
 duration, floored to the next wider width, so the horizon is always an
-edge of the wider buckets. Straum's time is PostgreSQL's: the
-snapshot's `now()` when the tables load, then each streamed commit's
-time, before its changes apply. With `now()` at 2024-03-15T05:47:13Z,
-the hours above are kept from 2024-03-01T00:00:00Z. The horizon never
-moves back, and a database that commits nothing moves none.
+edge of the wider buckets. PostgreSQL's time is the snapshot's `now()`
+when the tables load, then each streamed commit's time, before its
+changes apply. With `now()` at 2024-03-15T05:47:13Z, the hours above
+are kept from 2024-03-01T00:00:00Z. The horizon never moves back, and
+a database that commits nothing moves none.
+
+The horizon follows the server's clock, not the times in the rows. A
+table of past data, loaded today under `keep('1 hour', '14 days')`,
+holds no hour of it at all: every row is older than 14 days before
+`now()`.
 
 Buckets before the horizon are dropped and never made again. A later
 insert, update or delete of an older row changes the wider widths, and

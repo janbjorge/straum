@@ -17,8 +17,8 @@ sized for the whole range the spec's facts hold, and a restart loads
 from PostgreSQL.
 
 A width written `keep('<width>', '<duration>')` keeps its buckets from
-a horizon on: Straum's time less the duration, floored to the next
-wider width, never moving back. Straum's time is PostgreSQL's, the
+a horizon on: PostgreSQL's time less the duration, floored to the
+next wider width, never moving back. PostgreSQL's time is the
 snapshot's `now()` at the load and each streamed commit's time after,
 so a quiet database moves no horizon and no clock of Straum's own
 decides what it holds. Buckets before the horizon are dropped and
