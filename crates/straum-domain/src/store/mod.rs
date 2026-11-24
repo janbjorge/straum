@@ -174,6 +174,19 @@ impl Store {
         }
     }
 
+    /// Moves the horizon of every width kept for a time to `at`, in Unix
+    /// seconds, dropping the buckets before it. An earlier `at` than
+    /// before moves none back. The keyed and bound cells move together, so
+    /// a dim change finds the same buckets in both.
+    pub fn advance(&mut self, at: i64) {
+        for rollup in &mut self.rollups {
+            rollup.advance(at);
+        }
+        for bound in self.bound.iter_mut().flatten() {
+            bound.rollup.advance(at);
+        }
+    }
+
     /// The spec the store was made for.
     pub fn spec(&self) -> &Spec {
         &self.spec

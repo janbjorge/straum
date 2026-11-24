@@ -44,7 +44,7 @@ fn commits_what_logical_decoding_commits() {
     let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
     let spec = db.spec(SPEC);
     let mut logical = db.pg();
-    let start = logical.open(&spec).unwrap();
+    let start = logical.open(&spec).unwrap().start;
     load_all(&mut logical, &spec).unwrap();
     let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
 
@@ -164,7 +164,7 @@ fn commits_what_logical_decoding_commits_at_random() {
         let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
         let spec = db.spec(SPEC);
         let mut logical = db.pg();
-        let start = logical.open(&spec).unwrap();
+        let start = logical.open(&spec).unwrap().start;
         load_all(&mut logical, &spec).unwrap();
         let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
         let mut workload = Workload::new(&db);

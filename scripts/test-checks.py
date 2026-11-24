@@ -525,6 +525,7 @@ class DomainSyntaxCheck(unittest.TestCase):
         for function in [
             "date_bin",
             "buckets",
+            "keep",
             "count",
             "sum",
             "avg",
@@ -599,6 +600,7 @@ class DomainSyntaxCheck(unittest.TestCase):
             "asks whether it is null",
             "in order",
             "the mode of a column",
+            "keep it for 1 day",
         ]:
             with self.subTest(text=text):
                 self.assert_passes({"lib.rs": f'const S: &str = "{text}";\n'})

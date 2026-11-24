@@ -451,7 +451,7 @@ fn reads_the_servers_wal() {
     let mut db = Db::new(&pg, "wal", TABLES);
     let spec = db.spec(SPEC);
     let mut source = db.pg();
-    let start = source.open(&spec).unwrap();
+    let start = source.open(&spec).unwrap().start;
     // Everything before the start is applied, and idle WAL after it may
     // be since.
     let wal = source.wal().unwrap();

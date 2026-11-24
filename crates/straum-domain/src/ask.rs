@@ -465,6 +465,12 @@ pub enum AskError {
         at: i64,
         width: Width,
     },
+    /// The ask reads buckets of `width` from before `kept_from`, the
+    /// first the view still keeps of that width.
+    PastRetention {
+        width: Width,
+        kept_from: i64,
+    },
 }
 
 /// As an answer names its column.

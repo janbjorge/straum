@@ -233,3 +233,33 @@ fn comparisons_are_written_as_an_ask_writes_them() {
         );
     }
 }
+
+/// A refusal past a retention names the width, the first bucket kept and
+/// how to ask instead, as an ask would write the time.
+#[test]
+fn retention_errors_display() {
+    let cases = [
+        (
+            AskError::PastRetention {
+                width: Width { seconds: 3_600 },
+                kept_from: 1_706_745_600,
+            },
+            "1 hour buckets are kept only from 2024-02-01T00:00:00Z; bound the view's \
+             time from there, or read a wider width",
+        ),
+        (
+            AskError::PastRetention {
+                width: Width { seconds: 900 },
+                kept_from: -DAY_SECONDS,
+            },
+            "15 minutes buckets are kept only from 1969-12-31T00:00:00Z; bound the view's \
+             time from there, or read a wider width",
+        ),
+    ];
+    for (error, shown) in cases {
+        assert_eq!(describe_ask_error(&error), shown);
+    }
+}
+
+/// A day before the epoch, as a time.
+const DAY_SECONDS: i64 = 86_400;

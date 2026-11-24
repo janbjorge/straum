@@ -3,18 +3,20 @@
 //! takes the store's lock only to apply what it has read, never while it
 //! waits on PostgreSQL, so asks never wait on the database. Its readings
 //! of the server's WAL go behind the progress's lock, so they never wait
-//! on an ask.
+//! on an ask. The store is advanced to the snapshot's time before the
+//! load, and to each commit's time before its changes, so a width kept
+//! only for a time drops what falls behind it.
 
 use std::fmt;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use straum_domain::{Identifier, RowError, Spec, Store};
 
 use crate::app::{App, Following, Progress, State};
 use crate::lag::Lag;
 use crate::loading::{Load, Loading, loaded, loads, planned};
-use crate::source::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};
+use crate::source::{Change, Commit, Drift, Lsn, Opened, Source, SourceError, Wal};
 
 const STARTED: &str = "the writer applies commits only to a started stream";
 
@@ -78,7 +80,14 @@ impl State {
     /// Applies the commit to every fact and dim, or names the first table
     /// it no longer fits, and why.
     fn apply(&mut self, commit: &Commit) -> Result<(), Error> {
-        let Commit { lsn, changes, .. } = commit;
+        let Commit {
+            lsn,
+            changes,
+            committed,
+        } = commit;
+        // Before the changes, so a row older than the horizon makes no
+        // narrow cell that the next advance would drop.
+        self.store.advance(unix_seconds(*committed));
         for change in changes {
             let table = change.table();
             let spec = self.store.spec();
@@ -99,6 +108,23 @@ impl State {
         }
         self.applied = Some(*lsn);
         Ok(())
+    }
+}
+
+/// `at` in Unix seconds, rounded down, so a time before 1970 falls in the
+/// second it is in; a time past `i64` stops at its end.
+fn unix_seconds(at: SystemTime) -> i64 {
+    match at.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
+        Err(before) => {
+            let before = before.duration();
+            let whole = i64::try_from(before.as_secs()).unwrap_or(i64::MAX);
+            if before.subsec_nanos() == 0 {
+                -whole
+            } else {
+                -whole - 1
+            }
+        }
     }
 }
 
@@ -176,7 +202,7 @@ impl<S: Source> Writer<S> {
         let spec = Spec::clone(&self.app.spec);
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
-        let start = self.source.open(&spec)?;
+        let Opened { start, at } = self.source.open(&spec)?;
         let loads = loads(&spec);
         let mut estimates = Vec::new();
         for load in &loads {
@@ -185,6 +211,9 @@ impl<S: Source> Writer<S> {
         let plan = planned(&loads, &estimates);
         (self.report)(&format!("opened a stream at {start}; {plan}"));
         let mut store = Store::new(spec.clone());
+        // Before the load, so no row older than the horizon makes a
+        // narrow cell, and the load holds only what the store keeps.
+        store.advance(unix_seconds(at));
         for (index, (load, estimate)) in loads.iter().zip(estimates).enumerate() {
             let loading = Loading {
                 table: load.table.clone(),
@@ -353,10 +382,22 @@ mod tests {
 
     use straum_domain::{Datum, Identifier, Spec, Store, Value};
 
-    use super::{Change, Commit, Drift, Lsn, Step, Wal, Writer};
+    use super::{Change, Commit, Drift, Lsn, Step, Wal, Writer, unix_seconds};
     use crate::app::AnswerError;
     use crate::app::tests::{WAITING, app, count, follow, id};
-    use crate::source::{Estimate, LoadCounts, Source, SourceError};
+    use crate::source::{Estimate, LoadCounts, Opened, Source, SourceError};
+
+    /// A time rounds down to its second on either side of 1970, so a
+    /// horizon worked out from it lands where the server's clock puts it.
+    #[test]
+    fn a_time_is_its_unix_second_rounded_down() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        let half = Duration::from_millis(500);
+        assert_eq!(unix_seconds(epoch), 0);
+        assert_eq!(unix_seconds(epoch + Duration::from_secs(90) + half), 90);
+        assert_eq!(unix_seconds(epoch - Duration::from_secs(90)), -90);
+        assert_eq!(unix_seconds(epoch - Duration::from_secs(90) - half), -91);
+    }
 
     #[test]
     fn a_failed_apply_hides_the_commit_before_the_lock_drops() {
@@ -451,8 +492,11 @@ mod tests {
     struct StandingStill;
 
     impl Source for StandingStill {
-        fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
-            Ok(Lsn(1))
+        fn open(&mut self, _spec: &Spec) -> Result<Opened, SourceError> {
+            Ok(Opened {
+                start: Lsn(1),
+                at: SystemTime::UNIX_EPOCH,
+            })
         }
 
         fn estimate(&mut self, _tables: &[Identifier]) -> Result<Estimate, SourceError> {
@@ -492,7 +536,7 @@ mod tests {
     struct Unreachable;
 
     impl Source for Unreachable {
-        fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
+        fn open(&mut self, _spec: &Spec) -> Result<Opened, SourceError> {
             Err("connection refused".into())
         }
 

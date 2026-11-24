@@ -782,6 +782,106 @@ fn a_bucket_width_has_one_spelling() {
     ]);
 }
 
+/// `keep` is one call, in one place: a width of a view's `buckets`. Each
+/// other spelling or place is refused by name, saying what to write, and
+/// its arguments read as widths do.
+#[test]
+fn keep_is_written_one_way() {
+    let widths = "buckets(orders.placed_at, '1 hour', '1 day')";
+    let mut failed = Vec::new();
+    for (written, error) in keep_cases() {
+        let text = canon(
+            widths,
+            &format!("buckets(orders.placed_at, {written}, '1 day')"),
+        );
+        let errors = error_lines(&text);
+        if errors != [error] {
+            failed.push(format!("{written}: {errors:?}"));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+    let kept = canon(
+        widths,
+        "buckets(orders.placed_at, keep('1 hour', '7 days'), '1 day')",
+    );
+    assert!(parse(&kept).is_ok());
+}
+
+/// A width of `CANON`'s `buckets` as written, and the one error it gives.
+fn keep_cases() -> [(&'static str, &'static str); 10] {
+    [
+        (
+            "KEEP('1 hour', '7 days')",
+            "line 2: KEEP: write names in lowercase, keep",
+        ),
+        (
+            "keep('1 hour', '7 days') FILTER (WHERE orders.status = 'paid')",
+            "line 2: FILTER on keep is not in Straum SQL, the PostgreSQL subset made only \
+             for Straum",
+        ),
+        (
+            "keep(DISTINCT '1 hour', '7 days')",
+            "line 2: DISTINCT on keep is not in Straum SQL, the PostgreSQL subset made only \
+             for Straum",
+        ),
+        (
+            "keep('1 hour')",
+            "line 2: keep('1 hour') has 1 argument; write keep('<width>', '<duration>')",
+        ),
+        (
+            "keep('1 hour', '7 days', '1 day')",
+            "line 2: keep('1 hour', '7 days', '1 day') has 3 arguments; \
+             write keep('<width>', '<duration>')",
+        ),
+        (
+            "keep('1 hour', orders.placed_at)",
+            "line 2: bucket width orders.placed_at: use '<n> seconds|minutes|hours|days'",
+        ),
+        (
+            "keep(keep('1 hour', '1 day'), '7 days')",
+            "line 2: bucket width keep('1 hour', '1 day'): use '<n> seconds|minutes|hours|days'",
+        ),
+        (
+            "keep('1 hour', '2 weeks')",
+            "line 2: bucket width '2 weeks': use '<n> seconds|minutes|hours|days'",
+        ),
+        (
+            "keep('1 hour', '168 hours')",
+            "line 2: bucket width '168 hours': write '7 days'",
+        ),
+        (
+            "keep('60 minutes', '7 days')",
+            "line 2: bucket width '60 minutes': write '1 hour'",
+        ),
+    ]
+}
+
+/// `keep` anywhere but in place of a view's width is refused, naming the
+/// one place it goes.
+#[test]
+fn keep_goes_only_in_a_view_s_buckets() {
+    const ELSEWHERE: &str = "keep goes only in a view's buckets, in place of a width: \
+                             keep('<width>', '<duration>')";
+    for (from, to, line) in [
+        (
+            "buckets(orders.placed_at, '1 hour', '1 day')",
+            "buckets(keep(orders.placed_at, '1 day'), '1 hour', '1 day')",
+            2,
+        ),
+        (
+            "count(*) AS orders",
+            "keep('1 hour', '7 days') AS orders",
+            7,
+        ),
+    ] {
+        assert_eq!(
+            error_lines(&canon(from, to)),
+            [format!("line {line}: {ELSEWHERE}")],
+            "{to}"
+        );
+    }
+}
+
 #[test]
 fn a_cast_is_text_and_only_on_a_label() {
     check(&[

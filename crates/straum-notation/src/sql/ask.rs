@@ -347,6 +347,9 @@ impl Walker {
             );
             return Err(Reported);
         };
+        if self.refused_keep(width) {
+            return Err(Reported);
+        }
         let width = self.bucket_width(width);
         let sql::Expr::Identifier(identifier) = column else {
             let message = format!("buckets in an ask reads the view's time by name, not {column}");

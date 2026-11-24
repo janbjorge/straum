@@ -110,7 +110,7 @@ fn no_load_once_the_stream_runs() {
     let mut db = Db::new(&pg, "streaming", TABLES);
     let spec = db.spec(SPEC);
     let mut source = db.pg();
-    let start = source.open(&spec).unwrap();
+    let start = source.open(&spec).unwrap().start;
     db.run(&Rng::new(1).trip(1));
     let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(commit.lsn > start);

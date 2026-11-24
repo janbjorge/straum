@@ -4,8 +4,9 @@
 //! cell's numbers need and no more, a few bytes a value for a min, max
 //! or count of distinct numbers. A percentile holds nothing beyond its
 //! column's min or max, and its ask holds the values of its range,
-//! however many cells lie outside it. `churn.rs` holds what a store
-//! keeps as rows come and go.
+//! however many cells lie outside it. A store advanced past its retained
+//! buckets gives their heap back. `churn.rs` holds what a store keeps as
+//! rows come and go.
 //!
 //! A counting allocator stands in for the system one: each thread tallies
 //! its own allocations and live bytes, and a test reads the tally before
@@ -18,7 +19,7 @@ use std::time::Instant;
 
 use straum_domain::{
     Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Fact, Literal, Measure,
-    Ref, RefKind, Spec, Start, Store, Time, Via, Width, Window,
+    Ref, RefKind, Retention, Spec, Start, Store, Time, Via, Width, Window,
 };
 
 #[path = "../common/mod.rs"]
@@ -168,6 +169,7 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
             column: id("at"),
             width: Width { seconds: HOUR },
             wider,
+            retained: Vec::new(),
             name: id("bucket"),
         },
         refs,
@@ -838,4 +840,33 @@ fn a_count_distinct_of_numbers_holds_what_a_max_holds() {
     let spec = spec_measuring(&[], Zones::Apart, vec![tip_distinct()]);
     let answer = store_of(spec, 2_000, 40).ask(&ask).unwrap();
     assert_eq!(text_tips_store().ask(&ask).unwrap(), answer);
+}
+
+/// 20,000 cells, 80 an hour over 250 hours, beside 880 day cells. Hours
+/// kept a day, advanced to the end of the last hour, keep the 34 hours
+/// from the day before: about a sixth of the cells. Holding a third of
+/// the heap or more means the dropped buckets kept their memory.
+#[test]
+fn advance_frees_the_buckets_it_drops() {
+    const CELLS: i64 = 20_000;
+    const HOURS: i64 = 250;
+    let plain = spec_of(&[24], Zones::Apart);
+    let mut facts = plain.facts().to_vec();
+    facts[0].time.retained = vec![Retention {
+        width: Width { seconds: HOUR },
+        kept_for: Width { seconds: 24 * HOUR },
+    }];
+    let spec = Spec::new(plain.dims().to_vec(), facts).unwrap();
+    let empty = live();
+    let mut store = store_of(spec, CELLS, 1);
+    let before = live() - empty;
+    store.advance(HOURS * i64::from(HOUR));
+    let after = live() - empty;
+    assert_eq!(
+        store.cells("trips"),
+        Some(34 * 2 * usize::try_from(ZONES).unwrap())
+    );
+    drop(store);
+    eprintln!("{before} bytes before the advance, {after} after");
+    assert!(after * 3 < before, "{after} bytes after against {before}");
 }

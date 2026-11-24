@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use jiff::Timestamp;
 use straum_domain::{
     AskError, ColumnType, Comparison, Identifier, Instead, Literal, MAX_SCALE, Width, decimal,
 };
@@ -97,6 +98,12 @@ impl fmt::Display for Described<'_> {
             }
             AskError::RangeEmpty { from, to } => write!(out, "empty range [{from}, {to})"),
             AskError::RangeUnaligned { at, width } => write_unaligned(out, *at, *width),
+            AskError::PastRetention { width, kept_from } => write!(
+                out,
+                "{width} buckets are kept only from {}; bound the view's time from there, \
+                 or read a wider width",
+                time_text(*kept_from)
+            ),
         }
     }
 }
@@ -166,6 +173,15 @@ fn write_unaligned(formatter: &mut fmt::Formatter<'_>, at: i64, width: Width) ->
     match before.checked_add(seconds) {
         Some(after) => write!(formatter, "; the nearest are {before} and {after}"),
         None => write!(formatter, "; the nearest before it is {before}"),
+    }
+}
+
+/// A Unix second as an ask writes a time, RFC 3339 in UTC; as its Unix
+/// second past the years jiff writes, -9999 to 9999.
+fn time_text(seconds: i64) -> String {
+    match Timestamp::from_second(seconds) {
+        Ok(at) => at.to_string(),
+        Err(_) => format!("Unix second {seconds}"),
     }
 }
 

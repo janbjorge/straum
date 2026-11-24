@@ -3,7 +3,7 @@
 //! spec. Each problem it finds names what is wrong and what to run;
 //! `straum plan` prints the setup that leaves none.
 
-use straum_app::{App, Lsn, Source, SourceError, Writer};
+use straum_app::{App, Opened, Source, SourceError, Writer};
 
 use super::references::*;
 use super::support::*;
@@ -117,7 +117,7 @@ fn a_stored_generated_column_is_followed_once_published() {
 }
 
 /// The setup problems an open stopped at; none when it opened.
-fn setup_problems(name: &str, opened: Result<Lsn, SourceError>) -> Vec<String> {
+fn setup_problems(name: &str, opened: Result<Opened, SourceError>) -> Vec<String> {
     let Err(error) = opened else {
         return Vec::new();
     };

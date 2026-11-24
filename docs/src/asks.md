@@ -105,6 +105,28 @@ PostgreSQL's `date_bin` is refused, naming the `buckets` to write. Days
 are UTC days and `7 days` runs Thursday to Thursday, since every width
 is a grid from the epoch ([Time](spec.md#time)).
 
+## Widths kept for a time
+
+`usage` keeps every bucket. A view whose `buckets` item keeps a width
+for a time ([Keeping a width for a
+time](spec.md#keeping-a-width-for-a-time)) holds that width's buckets
+only from its horizon on. An ask that would read them before it is
+refused, naming the width and the time its buckets are kept from:
+
+```text
+1 hour buckets are kept only from 2024-03-01T00:00:00Z; bound the view's time from there, or read a wider width
+```
+
+An ask reads a width before its horizon when it groups by that width
+over a range that starts before the horizon, or that is open at the
+start, since an open start reads from the first bucket held. It also
+does when a bound before the horizon falls on no edge of a wider width
+still held there, since the ends of a range are read from the narrowest
+buckets that fit them. The same range with its bounds on the edges of a
+width still held answers, read from those wider buckets, as does an ask
+with no time key and both ends open. Each width read too far back is
+named once, the narrowest first.
+
 ## HAVING
 
 ```sql
@@ -275,6 +297,7 @@ sees the connection close.
 {"errors": ["bound 1794558600 is not on a 1 hour bucket edge; the nearest are 1794556800 and 1794560400"]}
 {"errors": ["empty range [1794560400, 1794556800)"]}
 {"errors": ["bucket width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
+{"errors": ["1 hour buckets are kept only from 2024-03-01T00:00:00Z; bound the view's time from there, or read a wider width"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}
 {"errors": ["the answer has 105120 rows, past the 100000 an ask may get; narrow the ask: a shorter range, fewer keys or a filter"]}
 ```

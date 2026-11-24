@@ -91,6 +91,14 @@ and this glossary. The clashes at the end are open.
   writes the item as `date_bin` at it.
 - **Level** (`Level`): the cells of one width
   ([The store](design.md#the-store)).
+- **Retention** (`Retention`): a width kept for a time, written
+  `keep('1 hour', '14 days')` in `buckets`; the second string is its
+  **duration** (`Retention::kept_for`) ([Keeping a width for a
+  time](spec.md#keeping-a-width-for-a-time)). Also "kept width".
+- **Horizon** (`kept_from`): where a retained width's buckets start:
+  Straum's time less the duration, floored to the next wider width
+  (`Store::advance`). Buckets before it are dropped; an ask that would
+  read them is refused (`AskError::PastRetention`).
 - **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the bucket
   width an ask answers by: the narrowest for the time's name, or the
   wider one `buckets(bucket, '1 day')` names ([Rows a day or a week
@@ -327,6 +335,7 @@ and this glossary. The clashes at the end are open.
 | key | view key; dim key; cell key; rollup key; `Condition::key` | bare key is a view key; qualify the rest |
 | attribute / dim column | code, ADRs / guide | dim column in prose; attribute stays in code |
 | level / width | design.md, ADR-0004 / spec.md | level is the cells, width the duration |
+| retained | a width kept for a time (`Retention`); WAL retained (`Wal::retained`) | retention is a width's; the slot's bytes are always "WAL retained" |
 | state | `app::State`; `source::State`; cell state (`State`); running states | qualify in prose |
 | the crate for Straum SQL | `straum-notation` | `straum-sql` needs an `ALLOWED` change in `scripts/check-layers.py`; not done |
 | slot | replication slot; a row's slot on a heap page (`SlotNumber`) | qualify: "replication slot", "slot on a page" |

@@ -51,7 +51,9 @@ cells <= min(rows, distinct key combinations x buckets)
 ```
 
 Keys close to unique per row keep nearly a cell per row; the
-[benchmark](performance.md#memory) has measured numbers.
+[benchmark](performance.md#memory) has measured numbers. A width kept
+for a time holds only its recent buckets
+([Keeping a width for a time](spec.md#keeping-a-width-for-a-time)).
 
 A value keeps its code after its last cell or dim row goes. Once a column
 holds more than 4,096 codes and its dead codes outnumber its live ones,
@@ -92,10 +94,10 @@ a join.
 
 A view that selects `a.region` but not `e.account_id` would make every
 ask by region add up the cells of each account. For such a view, when
-its joins all read fact columns, Straum also keeps bound cells: the
-same cells keyed by the dim columns' values, so an ask reads no
-projection. A dim change then moves cells: it walks the fact's keyed
-cells once under the write lock, and skips keys no fact row names.
+its joins all read fact columns, Straum also keeps bound cells: the same
+cells keyed by the dim columns' values, so an ask reads no projection. A
+dim change then moves cells: it walks the fact's keyed cells of each
+width once under the write lock, and skips keys no fact row names.
 `usage` selects `account_id`, so it has no bound cells.
 
 ## Following

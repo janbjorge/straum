@@ -25,7 +25,7 @@ pub trait Source {
     /// Checks the setup against the spec and starts a new stream, dropping
     /// any stream before it. Returns where it starts: commits up to there
     /// are in the snapshot, later ones are streamed.
-    fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
+    fn open(&mut self, spec: &Spec) -> Result<Opened, SourceError>;
 
     /// Guesses how big the table `tables` read is, as [`Source::load`]
     /// takes them, without reading its rows.
@@ -52,6 +52,16 @@ pub trait Source {
     /// stream's slot holds, and how far Straum has applied, from
     /// [`Source::open`] on.
     fn wal(&mut self) -> Result<Wal, SourceError>;
+}
+
+/// Where a new stream starts, and when its snapshot was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Opened {
+    /// Commits up to here are in the snapshot, later ones are streamed.
+    pub start: Lsn,
+    /// The snapshot's time on the server's clock, which a commit's
+    /// `committed` reads too: the store keeps narrow buckets back from it.
+    pub at: SystemTime,
 }
 
 /// How big a table is before it loads, as the source guesses.

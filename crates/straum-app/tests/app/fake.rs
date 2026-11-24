@@ -11,7 +11,9 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use straum_app::{Change, Commit, Drift, Estimate, LoadCounts, Lsn, Source, SourceError, Wal};
+use straum_app::{
+    Change, Commit, Drift, Estimate, LoadCounts, Lsn, Opened, Source, SourceError, Wal,
+};
 use straum_domain::{ColumnType, Datum, Identifier, RowError, Spec, Store};
 
 /// What the fake says a row of its tables takes.
@@ -123,6 +125,9 @@ pub struct Database {
     pub loads: Vec<String>,
     /// The estimates give no rows, as of a table never analysed.
     pub unanalysed: bool,
+    /// How far the server's clock is past [`time`]'s: added to the time
+    /// of each commit logged from now on and of each snapshot opened.
+    pub clock: Duration,
 }
 
 /// A source over a shared [`Database`], so a test can write while the app
@@ -131,11 +136,15 @@ pub struct Fake {
     database: Rc<RefCell<Database>>,
     stream: Option<Stream>,
     pub on_load: Option<OnLoad>,
+    pub before_load: Option<BeforeLoad>,
 }
 
 /// Called with the fact's name in the middle of each load, half its rows
 /// counted.
 pub type OnLoad = Box<dyn FnMut(&str)>;
+
+/// Called with the store a load is about to fill, before any row of it.
+pub type BeforeLoad = Box<dyn FnMut(&Store)>;
 
 #[derive(Debug)]
 struct Stream {
@@ -174,6 +183,7 @@ impl Database {
             wal: None,
             loads: Vec::new(),
             unanalysed: false,
+            clock: Duration::ZERO,
         }
     }
 
@@ -244,7 +254,7 @@ impl Database {
         let lsn = Lsn(self.lsn().0 + 10);
         self.log.push(Commit {
             lsn,
-            committed: time(lsn),
+            committed: time(lsn) + self.clock,
             changes,
         });
         self.history.insert(lsn, tables);
@@ -323,6 +333,7 @@ impl Fake {
             database: Rc::clone(database),
             stream: None,
             on_load: None,
+            before_load: None,
         }
     }
 
@@ -348,7 +359,8 @@ impl Fake {
 }
 
 impl Source for Fake {
-    fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
+    /// The snapshot's time is its LSN's on the fake's clock.
+    fn open(&mut self, _spec: &Spec) -> Result<Opened, SourceError> {
         let mut database = self.database.borrow_mut();
         database.connect()?;
         let start = database.lsn();
@@ -357,7 +369,10 @@ impl Source for Fake {
             next: database.log.len(),
             applied: start,
         });
-        Ok(start)
+        Ok(Opened {
+            start,
+            at: time(start) + database.clock,
+        })
     }
 
     /// The table's rows now, 64 bytes each.
@@ -384,6 +399,9 @@ impl Source for Fake {
         store: &mut Store,
         counts: &LoadCounts,
     ) -> Result<(), SourceError> {
+        if let Some(before_load) = &mut self.before_load {
+            before_load(store);
+        }
         let uncounted = LoadCounts::default();
         for (index, table) in tables.iter().enumerate() {
             let counting = if index == 0 { counts } else { &uncounted };

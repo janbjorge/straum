@@ -17,6 +17,7 @@ mod physical_setup;
 mod protocol;
 mod records;
 mod references;
+mod retention;
 mod server;
 mod setup;
 mod streams;

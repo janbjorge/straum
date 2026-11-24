@@ -177,7 +177,10 @@ project's range, and refuses one pinned outside it. The pod mounts no
 ServiceAccount token, since Straum never calls the Kubernetes API.
 
 Size `resources` by the cells the spec keeps
-([Memory](performance.md#memory)), request equal to limit. With
+([Memory](performance.md#memory)), request equal to limit. A spec that
+[keeps its narrow widths for a
+time](spec.md#keeping-a-width-for-a-time) holds cells for a recent
+window, not the whole range. With
 `--wal physical`, the page memory comes on top: keep `maxPageMemory`
 well under the memory limit, or the pod is killed before Straum's own
 limit stops it.

@@ -1,6 +1,6 @@
 # ADR-0010: Every bucket stays in memory
 
-Status: Accepted 2026-11-11; revised 2026-11-20
+Status: Accepted 2026-11-11; revised 2026-11-24
 
 ## Context
 
@@ -12,8 +12,27 @@ buckets could stay, be dropped, or move out of memory.
 ## Decision
 
 Every bucket of every width stays in memory for as long as Straum
-runs. Memory is sized for the whole range the spec's facts hold, and a
-restart loads from PostgreSQL.
+runs, unless the spec keeps the width for a time (ADR-0004). Memory is
+sized for the whole range the spec's facts hold, and a restart loads
+from PostgreSQL.
+
+A width written `keep('<width>', '<duration>')` keeps its buckets from
+a horizon on: Straum's time less the duration, floored to the next
+wider width, never moving back. Straum's time is PostgreSQL's, the
+snapshot's `now()` at the load and each streamed commit's time after,
+so a quiet database moves no horizon and no clock of Straum's own
+decides what it holds. Buckets before the horizon are dropped and
+never made again; the wider widths keep every row, and an ask that
+would read a dropped bucket is refused, naming the horizon. The
+narrowest width holds most cells, so keeping it for a recent window
+bounds memory by time, not by the tables' size, and needs no disk.
+A dim change moves bound cells level by level, since the narrowest
+level no longer holds every row's time.
+
+Retention is opt-in and drops data rather than moving it: PostgreSQL
+stays the source of truth, so an old bucket is one restart away and
+nothing need be kept on disk to answer for it. Spill stays out for the
+reasons below, and retention answers the same memory with none of them.
 
 Sealing cold `date_bin` buckets out to a spill, behind a `Spill` port
 with an Arrow IPC adapter, was built in the domain and the app and
@@ -35,9 +54,14 @@ a count of cells bounds bytes only loosely.
 
 - One cell form; an ask, a change and a dim change never wait on disk.
 - Steady memory grows with the range the facts hold. A spec that holds
-  too much range for its pod has no answer short of a narrower spec.
-  With `--max-memory` set, that is a stop with a line naming the
-  limit, not a kill by the kernel.
+  too much range for its pod keeps its narrow widths for a time, or
+  narrows. With `--max-memory` set, that is a stop with a line naming
+  the limit, not a kill by the kernel.
+- A width kept for a time answers only from its horizon on; an ask
+  further back reads a wider width. The widest width always keeps
+  every bucket, so memory still grows with the range, at its rate.
+- Not yet: keeping the widest width for a time, a sliding window, and
+  each width's cells in `/status`.
 - The root filesystem stays read-only and Straum keeps nothing on
   disk (ADR-0012).
 - Bringing spill back starts from `git log -p` on this record and on

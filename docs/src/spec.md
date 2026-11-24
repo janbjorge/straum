@@ -28,6 +28,7 @@ FROM schema.table AS alias
 GROUP BY position, ...
 
 time       buckets(alias.column, 'width' [, 'width' ...])
+           buckets(alias.column, keep('width', 'duration'), ..., 'width')
 
 key        alias.column
            alias.column::text
@@ -52,6 +53,7 @@ condition  alias.column = literal
 
 width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days,
            in the largest unit that divides it, singular for one
+duration   1 day, 14 days: written as a width is
 literal    42, -7, 0, 'text', true, false: an integer with no leading
            zero, and 0 with no sign
 fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point,
@@ -208,6 +210,49 @@ January 2024 in `7 days` buckets:
 PostgreSQL's `date_bin('7 days', e.at, timestamptz 'epoch')` gives the
 same buckets. Weeks from Monday would need another origin, and a month
 or a local day is no fixed number of seconds, so neither is a width.
+
+### Keeping a width for a time
+
+```sql
+buckets(e.at, keep('1 hour', '14 days'), '1 day', '7 days') AS bucket
+```
+
+`keep('width', 'duration')` in place of a width keeps that width's
+buckets only for the duration; every width written bare keeps every
+bucket. Here hours are kept for 14 days, days and weeks for good. Both
+strings are spelled as widths are: `14 days`, never `2 weeks` or
+`336 hours`. `keep` goes nowhere else, and an ask never writes it.
+
+The narrowest width holds most of the cells, and memory follows
+cells, so keeping it for a recent window bounds memory by time rather
+than by the tables' size, with nothing kept on disk. PostgreSQL still
+holds every row: a restart loads them all again, and a row before a
+horizon makes no bucket of the width kept for a time.
+
+| Rule | Error from `straum plan` |
+| --- | --- |
+| The widest width keeps every bucket. | `view usage: 7 days is the widest width and keeps every bucket; only a narrower width can be kept for a time` |
+| The duration is a whole multiple of the next wider width. | `view usage: 1 hour is kept for 36 hours, not a whole multiple of 1 day, the next wider width; keep it for 1 day or a multiple of it` |
+| The widths kept for a time run on from the narrowest. | `view usage: 1 day is kept for a time but a narrower width is not; keep every narrower width for a time too` |
+| A wider width is kept no shorter than a narrower one. | `view usage: 1 day is kept for 7 days, less than the 14 days a narrower width is kept for; keep each width at least as long as the narrower ones` |
+
+Each width kept for a time has a horizon: Straum's time less the
+duration, floored to the next wider width, so the horizon is always an
+edge of the wider buckets. Straum's time is PostgreSQL's: the
+snapshot's `now()` when the tables load, then each streamed commit's
+time, before its changes apply. With `now()` at 2024-03-15T05:47:13Z,
+the hours above are kept from 2024-03-01T00:00:00Z. The horizon never
+moves back, and a database that commits nothing moves none.
+
+Buckets before the horizon are dropped and never made again. A later
+insert, update or delete of an older row changes the wider widths, and
+they stay exact. A row with a null time is never dropped. An ask that
+would read a width's buckets before its horizon is refused, naming the
+width and the time its buckets are kept from ([Widths kept for a
+time](asks.md#widths-kept-for-a-time)).
+
+In PostgreSQL the item is still `date_bin` at the first width, the
+width alone when `keep` wraps it.
 
 ## Joining a dim
 

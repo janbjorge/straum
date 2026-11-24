@@ -475,22 +475,42 @@ pub(super) fn body(spec: &str, view: &str) -> String {
 }
 
 /// The view body as PostgreSQL runs it: `buckets(column, 'width', ...)`
-/// becomes `date_bin('width', column, 'epoch')` at the first width. The
-/// origin is untyped, so PostgreSQL gives it the column's type. Written
-/// over the text, not through Straum's parser, so the oracle shares no
-/// code with what it checks.
+/// becomes `date_bin('width', column, 'epoch')` at the first width, the
+/// width alone when `keep('width', 'duration')` wraps it: what Straum
+/// keeps for a time is all there in the table. The origin is untyped, so
+/// PostgreSQL gives it the column's type. Written over the text, not
+/// through Straum's parser, so the oracle shares no code with what it
+/// checks.
 fn as_date_bin(body: &str) -> String {
     let call = body.find("buckets(").unwrap();
     let arguments_start = call + "buckets(".len();
-    let arguments_end = arguments_start + body[arguments_start..].find(')').unwrap();
+    let arguments_end = arguments_start + closing_parenthesis(&body[arguments_start..]);
     let arguments = &body[arguments_start..arguments_end];
     let (column, widths) = arguments.split_once(", ").unwrap();
-    let width = widths.split(", ").next().unwrap();
+    let mut width = widths.split(", ").next().unwrap();
+    if let Some(kept) = width.strip_prefix("keep(") {
+        width = kept;
+    }
     format!(
         "{}date_bin({width}, {column}, 'epoch'){}",
         &body[..call],
         &body[arguments_end + 1..]
     )
+}
+
+/// Where the parenthesis that closes the one just before `text` is in
+/// it.
+fn closing_parenthesis(text: &str) -> usize {
+    let mut depth = 0;
+    for (position, character) in text.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' if depth == 0 => return position,
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    panic!("no closing parenthesis in {text}")
 }
 
 /// Loads every table and starts the stream; panics on anything else.

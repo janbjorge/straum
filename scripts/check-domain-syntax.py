@@ -42,7 +42,7 @@ PHRASES = "group by|order by|partition by|within group|create view"
 # The functions Straum SQL reads and the ones it names when it refuses
 # them, in any case: the walker reads `COUNT(` as `count(`.
 FUNCTIONS = (
-    "date_bin|buckets|count|sum|avg|min|max|bool_and|bool_or|var_samp"
+    "date_bin|buckets|keep|count|sum|avg|min|max|bool_and|bool_or|var_samp"
     "|var_pop|stddev_samp|stddev_pop|percentile_disc|mode|percentile_cont"
     "|stddev|variance|every|coalesce|nullif"
 )

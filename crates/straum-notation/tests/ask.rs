@@ -604,6 +604,20 @@ fn buckets_in_an_ask_takes_no_filter_or_within_group() {
     assert!(parse_ask(&plain, &[]).is_ok());
 }
 
+/// How long a width is kept is the view's to say: `keep` in an ask's
+/// `buckets` is refused, naming where it goes, and not read as a width.
+#[test]
+fn keep_is_no_part_of_an_ask() {
+    let call = "buckets(bucket, keep('1 day', '7 days'))";
+    let found = errors(&grouped(call, call), &[]);
+    let elsewhere = "line 1: keep goes only in a view's buckets, in place of a width: \
+                     keep('<width>', '<duration>')";
+    assert!(found.contains(&elsewhere.to_owned()), "{found:?}");
+    assert!(!any_contains(&found, "bucket width"), "{found:?}");
+    let plain = grouped("buckets(bucket, '1 day')", "buckets(bucket, '1 day')");
+    assert!(parse_ask(&plain, &[]).is_ok());
+}
+
 #[test]
 fn buckets_in_an_ask_is_written_one_way() {
     assert_each_names_what_is_wrong(&[

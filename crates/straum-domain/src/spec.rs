@@ -132,6 +132,18 @@ pub struct Time {
     /// whole multiple of the width before it, so one of its buckets is made
     /// of whole buckets of every narrower width.
     pub wider: Vec<Width>,
+    /// The widths kept only for a time, narrowest first: each width from
+    /// the narrowest on, up to some width short of the widest.
+    pub retained: Vec<Retention>,
+}
+
+/// A width whose buckets are kept only for `kept_for`, a whole multiple
+/// of the next wider width, back from the latest time the store was
+/// advanced to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    pub width: Width,
+    pub kept_for: Width,
 }
 
 /// A join from the fact, or from a dim already joined, to a dim's key,
@@ -566,6 +578,64 @@ fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
         }
         below = bucket;
     }
+    check_retained(fact, errors);
+}
+
+/// The `n`th retention is for the `n`th width kept, so the retained
+/// widths run on from the narrowest; each is kept for whole buckets of
+/// the next wider width, and no shorter than the one before it.
+fn check_retained(fact: &Fact, errors: &mut Vec<SpecError>) {
+    let time = &fact.time;
+    let mut kept = Vec::with_capacity(1 + time.wider.len());
+    kept.push(time.width);
+    kept.extend_from_slice(&time.wider);
+    let mut narrower: Option<Width> = None;
+    for (place, retention) in time.retained.iter().enumerate() {
+        let fact = fact.name.clone();
+        let width = retention.width;
+        let Some(position) = place_of(&kept, width) else {
+            errors.push(SpecError::RetainedNotKept { fact, width });
+            continue;
+        };
+        let Some(&wider) = kept.get(position + 1) else {
+            errors.push(SpecError::RetainedWidest { fact, width });
+            continue;
+        };
+        if position != place {
+            errors.push(SpecError::RetentionGap { fact, width });
+            continue;
+        }
+        let kept_for = retention.kept_for;
+        if kept_for.seconds < wider.seconds || !kept_for.seconds.is_multiple_of(wider.seconds) {
+            errors.push(SpecError::RetentionNotMultiple {
+                fact: fact.clone(),
+                width,
+                kept_for,
+                wider,
+            });
+        }
+        if let Some(narrower_kept_for) = narrower
+            && kept_for.seconds < narrower_kept_for.seconds
+        {
+            errors.push(SpecError::RetentionShorter {
+                fact,
+                width,
+                kept_for,
+                narrower_kept_for,
+            });
+        }
+        narrower = Some(kept_for);
+    }
+}
+
+/// Where `width` is among the widths `kept`.
+fn place_of(kept: &[Width], width: Width) -> Option<usize> {
+    for (place, candidate) in kept.iter().enumerate() {
+        if *candidate == width {
+            return Some(place);
+        }
+    }
+    None
 }
 
 // `'a`, here and in the checks below: the set of names taken borrows them

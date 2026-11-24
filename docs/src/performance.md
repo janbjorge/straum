@@ -436,7 +436,10 @@ a row of another table allocates nothing.
 ## Memory
 
 Memory follows [cells](how-it-works.md#cells), and the rollup key, the
-columns in `GROUP BY`, decides how many there are.
+columns in `GROUP BY`, decides how many there are. The narrowest width
+holds most of them, so keeping it for a recent window bounds memory by
+time rather than by the tables' size
+([Keeping a width for a time](spec.md#keeping-a-width-for-a-time)).
 
 Two runs on 2026-11-11 measure it: the taxi month under a wide key, and
 a warehouse's tables under a narrow one whose dims carry the ids. The

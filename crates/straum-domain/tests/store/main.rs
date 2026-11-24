@@ -17,6 +17,8 @@ mod measures;
 mod random;
 mod ranges;
 mod reference;
+mod retention;
+mod retention_random;
 mod rows;
 mod views;
 mod workload;

@@ -7,7 +7,8 @@ use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
 use straum_app::{
-    App, Change, Commit, Estimate, Limits, LoadCounts, Lsn, Source, SourceError, Wal, Writer,
+    App, Change, Commit, Estimate, Limits, LoadCounts, Lsn, Opened, Source, SourceError, Wal,
+    Writer,
 };
 use straum_domain::{ColumnType, Datum, Identifier, Spec, Store};
 
@@ -53,8 +54,11 @@ pub(crate) struct Fake {
 }
 
 impl Source for Fake {
-    fn open(&mut self, _: &Spec) -> Result<Lsn, SourceError> {
-        Ok(START)
+    fn open(&mut self, _: &Spec) -> Result<Opened, SourceError> {
+        Ok(Opened {
+            start: START,
+            at: UNIX_EPOCH,
+        })
     }
 
     fn estimate(&mut self, _: &[Identifier]) -> Result<Estimate, SourceError> {

@@ -111,6 +111,7 @@ pub fn spec(kinds: Kinds, filter: Vec<Condition>, shape: Shape) -> Spec {
             wider: vec![Width {
                 seconds: 24 * HOUR_WIDTH.seconds,
             }],
+            retained: Vec::new(),
             name: id("bucket"),
         },
         refs: refs(kinds, shape),

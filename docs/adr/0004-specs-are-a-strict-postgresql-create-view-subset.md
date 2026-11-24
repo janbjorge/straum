@@ -1,6 +1,6 @@
 # ADR-0004: Specs are a strict PostgreSQL CREATE VIEW subset
 
-Status: Accepted 2026-11-10; revised 2026-11-19
+Status: Accepted 2026-11-10; revised 2026-11-24
 
 ## Context
 
@@ -54,6 +54,14 @@ the same commit; an ask reads the widest that fit and the narrowest at
 its ends. Merging up at ask time took 1.4 s on the taxi month by
 borough, against 6.6 to 8.8 ms.
 
+A width may be written `keep('<width>', '<duration>')`: Straum keeps
+its buckets only for the duration, spelled as a width (ADR-0010). The
+widest width keeps every bucket, the duration is a whole multiple of
+the next wider width, the widths kept for a time run on from the
+narrowest, and none is kept shorter than a narrower one. `keep` goes
+only in a view's `buckets`, in place of the width it keeps, so each
+width is still written once.
+
 A `timestamp` is wall clock: read as the Unix seconds its reading would
 be in UTC (`ColumnType::Time { zoned }`). The time column is either
 type; the catalog says which. The oracle's `date_bin` takes an untyped
@@ -93,7 +101,12 @@ PeerDB do, was rejected as inference.
   `buckets` item is written as `date_bin('<first width>', column,
   'epoch')`; as written, PostgreSQL refuses it, having no `buckets`
   function, rather than answering otherwise. The tests make that
-  rewrite on the text, not through Straum's parser.
+  rewrite on the text, not through Straum's parser, and see through
+  `keep(` to the width: what Straum keeps for a time is all in the
+  table.
+- An ask can't say how long a width is kept; `keep` in an ask is
+  refused, naming where it goes. An ask past a horizon is refused,
+  naming the width and the time its buckets are kept from.
 - Refused where PostgreSQL accepts: bare `JOIN`, `LEFT JOIN` without
   `OUTER`, `USING`, `NATURAL`, `IN (SELECT ...)`, `count(1)`, `GROUP
   BY` by name or expression, an item without `AS`, a bare column, a

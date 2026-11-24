@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_app::{Commit, Estimate, LoadCounts, Lsn, Source, SourceError, Wal};
+use straum_app::{Commit, Estimate, LoadCounts, Lsn, Opened, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
 use crate::catalog::{self, Checked, ColumnVersions, Followed, Tables};
@@ -145,6 +145,8 @@ struct Snapshot {
     connection: Connection,
     slot: String,
     at: Lsn,
+    /// The server's clock as the transaction began.
+    taken: SystemTime,
     tables: Tables,
     /// The versions of the columns read, as the snapshot sees them.
     versions: Vec<ColumnVersions>,
@@ -223,6 +225,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     let closers = vec![replication.closer()?, connection.closer()?];
     guard.watch(dsn, &slot, LOGICAL_FROM, closers)?;
     begin_in_snapshot(&mut connection, exported)?;
+    let taken = snapshot_time(&mut connection)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::HoldTables)?;
     let versions = catalog::column_versions(&mut connection, &checked(&tables))?;
     // After the import: the slot's connection keeps its snapshot only
@@ -239,11 +242,29 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
         connection,
         slot,
         at,
+        taken,
         tables,
         versions,
         unloaded,
         stream,
     })
+}
+
+/// The server's clock as the load's transaction on `connection` began:
+/// `now()` holds still through a transaction, and reads the clock each
+/// commit's time is stamped by.
+fn snapshot_time(connection: &mut Connection) -> Result<SystemTime, Error> {
+    let rows = connection.rows("SELECT floor(extract(epoch FROM now()))::int8")?;
+    let Some(Ok(seconds)) = first_row_value(&rows, 0).map(str::parse::<i64>) else {
+        return Err(Error::Protocol(Unexpected::SnapshotShape));
+    };
+    let since = Duration::from_secs(seconds.unsigned_abs());
+    let taken = if seconds < 0 {
+        UNIX_EPOCH.checked_sub(since)
+    } else {
+        UNIX_EPOCH.checked_add(since)
+    };
+    taken.ok_or(Error::Protocol(Unexpected::SnapshotShape))
 }
 
 /// Begins the load's transaction on `connection` in the snapshot a slot
@@ -276,6 +297,7 @@ fn physical_snapshot(
     let _ = connection.execute("SELECT pg_log_standby_snapshot()");
     wait_consistent(&mut stream, wait)?;
     let at = seen_snapshot(&mut connection, &mut stream, wait)?;
+    let taken = snapshot_time(&mut connection)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::HoldTables)?;
     let unloaded = unloaded(&tables);
     // The physical stream reads a rewrite in the WAL and stops.
@@ -283,6 +305,7 @@ fn physical_snapshot(
         connection,
         slot,
         at,
+        taken,
         tables,
         versions: Vec::new(),
         unloaded,
@@ -554,7 +577,7 @@ pub(crate) fn plain<'c>(
 }
 
 impl Source for Postgres {
-    fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
+    fn open(&mut self, spec: &Spec) -> Result<Opened, SourceError> {
         // The old stream goes first, and its slot with it.
         self.guard.stop();
         self.state = State::Closed;
@@ -574,7 +597,8 @@ impl Source for Postgres {
             Ok(snapshot) => snapshot,
             Err(error) => return Err(self.failed(error)),
         };
-        let at = snapshot.at;
+        let start = snapshot.at;
+        let at = snapshot.taken;
         self.slot.clone_from(&snapshot.slot);
         self.followed = Followed {
             tables: checked(&snapshot.tables),
@@ -582,7 +606,7 @@ impl Source for Postgres {
             versions: snapshot.versions.clone(),
         };
         self.state = State::Loading(Box::new(snapshot));
-        Ok(at)
+        Ok(Opened { start, at })
     }
 
     /// Read in the snapshot's transaction, between the copies.

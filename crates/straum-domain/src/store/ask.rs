@@ -72,6 +72,7 @@ impl Store {
         window: Option<Window>,
     ) -> Result<WindowAnswer, Vec<AskError>> {
         let Reading { fact, read } = self.reading(ask)?;
+        check_horizons(read.rollup(), ask, cover_of(fact, ask))?;
         self.check_types(fact, read, ask)?;
         let rollup = read.rollup();
         let mut asked = Vec::with_capacity(ask.measures.len());
@@ -103,7 +104,9 @@ impl Store {
     /// Cells the ask reads.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let Reading { fact, read } = self.reading(ask)?;
-        Ok(cells_in(read.rollup(), ask, cover_of(fact, ask)))
+        let cover = cover_of(fact, ask);
+        check_horizons(read.rollup(), ask, cover)?;
+        Ok(cells_in(read.rollup(), ask, cover))
     }
 
     /// The ask's fact and the cells that answer it: the bound cells when
@@ -380,11 +383,19 @@ fn cells_in(rollup: &Rollup, ask: &Ask, cover: Cover) -> usize {
     cells
 }
 
+/// Refuses an ask that would read buckets a width kept for a time has
+/// dropped, naming each such width once.
+fn check_horizons(rollup: &Rollup, ask: &Ask, cover: Cover) -> Result<(), Vec<AskError>> {
+    let range = read_range(rollup, ask);
+    let past = rollup.past_horizons(range.start, range.end, cover);
+    if past.is_empty() { Ok(()) } else { Err(past) }
+}
+
 /// The range an ask reads: its bounds, an open end at the edge of the
-/// buckets held. With no bucket held there is nothing to read, so an open
-/// end stands at 0.
+/// buckets held, as [`Rollup::open_range`] sets it. With no bucket held
+/// there is nothing to read, so an open end stands at 0.
 fn read_range(rollup: &Rollup, ask: &Ask) -> Range<i64> {
-    let held = rollup.range().unwrap_or(0..0);
+    let held = rollup.open_range().unwrap_or(0..0);
     let start = ask.from.unwrap_or(held.start);
     let end = ask.to.unwrap_or(held.end);
     start..end

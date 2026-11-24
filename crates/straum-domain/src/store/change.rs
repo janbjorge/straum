@@ -4,7 +4,7 @@
 //! whose join columns name the changed dim key move to what it joins now.
 
 use crate::projection::Projection;
-use crate::rollup::{Direction, Rollup, RowError};
+use crate::rollup::{Direction, LevelBucket, LevelIndex, Rollup, RowError};
 use crate::value::{ColumnType, Datum};
 
 use super::bound::{Bound, KeyedCell, Overlay, cell_holds};
@@ -278,12 +278,18 @@ impl Store {
             key,
             rows: old,
         };
-        for (start, cells) in keyed.date_bin_buckets() {
-            let start = *start;
-            for cell in 0..cells.len() {
-                let cell = KeyedCell { cells, cell };
-                if cell_holds(cell, &codes) {
-                    move_cell(bound, keyed, &self.projections, start, cell, overlay)?;
+        for level in 0..keyed.level_count() {
+            let level = LevelIndex(level);
+            for (start, cells) in keyed.buckets(level) {
+                let at = LevelBucket {
+                    level,
+                    start: *start,
+                };
+                for cell in 0..cells.len() {
+                    let cell = KeyedCell { cells, cell };
+                    if cell_holds(cell, &codes) {
+                        move_cell(bound, keyed, &self.projections, at, cell, overlay)?;
+                    }
                 }
             }
         }
@@ -294,7 +300,7 @@ impl Store {
     /// fresh bound rollup.
     fn rebuild_dim(&mut self, dim: DimIndex) {
         for fact in self.facts_reading(dim) {
-            if self.rollups[fact.0].cells() == 0 {
+            if !self.rollups[fact.0].holds_cells() {
                 continue;
             }
             self.rebuild_fact(fact);
@@ -307,9 +313,15 @@ impl Store {
         };
         bound.rollup.clear();
         let keyed = &self.rollups[fact.0];
-        for (start, cells) in keyed.date_bin_buckets() {
-            let start = *start;
-            (bound.pour(keyed, &self.projections, start, cells, Direction::Add)).expect(POURED);
+        for level in 0..keyed.level_count() {
+            let level = LevelIndex(level);
+            for (start, cells) in keyed.buckets(level) {
+                let at = LevelBucket {
+                    level,
+                    start: *start,
+                };
+                (bound.pour(keyed, &self.projections, at, cells, Direction::Add)).expect(POURED);
+            }
         }
     }
 }
@@ -321,7 +333,7 @@ fn move_cell(
     bound: &mut Bound,
     keyed: &Rollup,
     projections: &[Projection],
-    start: Option<i64>,
+    at: LevelBucket,
     cell: KeyedCell<'_>,
     overlay: Overlay<'_>,
 ) -> Result<(), RowError> {
@@ -333,10 +345,10 @@ fn move_cell(
     let KeyedCell { cells, cell } = cell;
     let count = cells.rows().get(cell);
     for key in &old_keys {
-        (bound.rollup).adjust(start, key, count, cells.states(), cell, Direction::Remove)?;
+        (bound.rollup).adjust(at, key, count, cells.states(), cell, Direction::Remove)?;
     }
     for key in &new_keys {
-        (bound.rollup).adjust(start, key, count, cells.states(), cell, Direction::Add)?;
+        (bound.rollup).adjust(at, key, count, cells.states(), cell, Direction::Add)?;
     }
     Ok(())
 }

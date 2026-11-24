@@ -348,6 +348,9 @@ impl Walker {
             if is_call(function, BUCKETS) || is_call(function, DATE_BIN) {
                 continue;
             }
+            if self.refused_keep(item.expression) {
+                continue;
+            }
             if let Ok(measure) = self.measure(scope, function, item.alias) {
                 measures.push(measure);
             }

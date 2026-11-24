@@ -37,6 +37,7 @@ fn fact() -> Fact {
             column: id("at"),
             width: Width { seconds: 3_600 },
             wider: vec![],
+            retained: Vec::new(),
             name: id("bucket"),
         },
         refs: vec![Ref {

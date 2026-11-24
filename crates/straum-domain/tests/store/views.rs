@@ -51,6 +51,7 @@ pub(crate) fn trips_by_pay(measures: Vec<Measure>) -> Fact {
             column: id("at"),
             width: Width { seconds: WIDTH },
             wider: Vec::new(),
+            retained: Vec::new(),
             name: id("bucket"),
         },
         refs: Vec::new(),

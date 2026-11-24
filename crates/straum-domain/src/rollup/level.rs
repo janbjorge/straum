@@ -1,11 +1,17 @@
 //! A level: the cells of one bucket width, bucket by bucket in time
 //! order. A row goes into the cell of its key in the bucket its time
 //! falls in, at every level. An ask reads a range as a cover: the widest
-//! buckets that fit inside it, narrower ones at its ends.
+//! buckets that fit inside it, narrower ones at its ends. A level kept
+//! only for a time has a horizon: `advance` moves it on and drops the
+//! buckets before it, a row before it goes into the wider levels only,
+//! and a cover that would read before it is refused.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::{Entry, OccupiedEntry};
+use std::mem;
+use std::ops::Range;
 
+use crate::ask::AskError;
 use crate::value::Datum;
 use crate::width::Width;
 
@@ -20,6 +26,19 @@ pub(super) struct Level {
     pub(super) width: Width,
     /// Oldest first. `None` holds the rows without a time, which no ask reads.
     pub(super) buckets: BTreeMap<Option<i64>, Cells>,
+    /// Set for a width kept only for a time.
+    pub(super) horizon: Option<Horizon>,
+}
+
+/// How long a level keeps its buckets, and where it keeps them from.
+#[derive(Debug)]
+pub(super) struct Horizon {
+    pub(super) kept_for: Width,
+    /// The next wider width: the horizon lands on its edges, so a wider
+    /// bucket is either wholly kept here or wholly dropped.
+    pub(super) next_wider: Width,
+    /// The start of the first bucket kept; none before any `advance`.
+    pub(super) kept_from: Option<i64>,
 }
 
 /// Rows a load adds at once, each with its key codes beside it.
@@ -75,6 +94,9 @@ impl Level {
 
     /// Adds a checked row under its key codes.
     pub(super) fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> Shift {
+        if self.dropped(&row[TIME]) {
+            return Shift::Same;
+        }
         let cells = self.cells_of(&row[TIME], key.len(), inputs);
         let entry = cells.entry(key);
         let cell = entry.position;
@@ -111,6 +133,9 @@ impl Level {
         key: &[u32],
         inputs: &[Input],
     ) -> Result<Shift, RowError> {
+        if self.dropped(&row[TIME]) {
+            return Ok(Shift::Same);
+        }
         let Entry::Occupied(mut bucket) = self.buckets.entry(self.bucket(&row[TIME])) else {
             return Err(RowError::Missing);
         };
@@ -168,6 +193,69 @@ impl Level {
         Ok(Shift::Removed)
     }
 
+    /// Whether `time` falls before the horizon, in a bucket this level
+    /// dropped or never makes. A null time falls in no bucket an ask reads,
+    /// so its bucket is always kept.
+    fn dropped(&self, time: &Datum) -> bool {
+        let (Some(start), Some(kept_from)) = (self.bucket(time), self.kept_from()) else {
+            return false;
+        };
+        start < kept_from
+    }
+
+    /// The start of the first bucket kept, once a horizon is set.
+    fn kept_from(&self) -> Option<i64> {
+        self.horizon.as_ref()?.kept_from
+    }
+
+    /// Moves the horizon to `at` less the time kept, down to an edge of
+    /// the next wider width, and drops every bucket before it; how many
+    /// cells went. A horizon never moves back.
+    pub(super) fn advance(&mut self, at: i64) -> usize {
+        let Some(horizon) = &mut self.horizon else {
+            return 0;
+        };
+        // Past the start of `i64` there is no bucket to drop.
+        let Some(back) = at.checked_sub(i64::from(horizon.kept_for.seconds)) else {
+            return 0;
+        };
+        let Some(moved) = horizon.next_wider.bucket_start(back) else {
+            return 0;
+        };
+        if let Some(kept_from) = horizon.kept_from
+            && kept_from >= moved
+        {
+            return 0;
+        }
+        horizon.kept_from = Some(moved);
+        // `None` sorts first, so `split_off` would drop the null-time
+        // bucket with the old ones: it is taken out and put back.
+        let untimed = self.buckets.remove(&None);
+        let kept = self.buckets.split_off(&Some(moved));
+        let old = mem::replace(&mut self.buckets, kept);
+        if let Some(cells) = untimed {
+            self.buckets.insert(None, cells);
+        }
+        let mut dropped = 0;
+        for cells in old.values() {
+            dropped += cells.len();
+        }
+        dropped
+    }
+
+    /// From the start of the first bucket to the end of the last; none
+    /// while the level holds no bucket with a time.
+    pub(super) fn span(&self) -> Option<Range<i64>> {
+        // `flatten` passes over the `None` key of the null-time bucket.
+        let mut starts = self.buckets.keys().flatten();
+        let first = *starts.next()?;
+        let last = match starts.next_back() {
+            Some(last) => *last,
+            None => first,
+        };
+        Some(first..last + i64::from(self.width.seconds))
+    }
+
     // An iterator, not a `Vec`: an ask allocates per group, never per
     // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost/main.rs).
     fn buckets_in(&self, from: i64, to: i64) -> impl Iterator<Item = CoveredBucket<'_>> {
@@ -218,14 +306,61 @@ impl Rollup {
         to: i64,
         cover: Cover,
     ) -> impl Iterator<Item = CoveredBucket<'_>> {
+        (self.runs_of(from, to, cover).into_iter())
+            .flat_map(move |run| self.levels[run.level.0].buckets_in(run.from, run.to))
+    }
+
+    /// A refusal for each level kept for a time whose buckets the cover of
+    /// `from..to` would read from before its horizon, narrowest first.
+    /// Asked of the bounds alone, so a range where no row was ever held is
+    /// refused too.
+    pub(crate) fn past_horizons(&self, from: i64, to: i64, cover: Cover) -> Vec<AskError> {
+        let runs = self.runs_of(from, to, cover);
+        let mut past = Vec::new();
+        for (index, level) in self.levels.iter().enumerate() {
+            let Some(kept_from) = level.kept_from() else {
+                continue;
+            };
+            for run in &runs {
+                if run.level == LevelIndex(index) && run.from < kept_from {
+                    past.push(AskError::PastRetention {
+                        width: level.width,
+                        kept_from,
+                    });
+                    break;
+                }
+            }
+        }
+        past
+    }
+
+    /// What an ask with an open end reads: the `date_bin` buckets held,
+    /// while that level keeps every bucket. Once it is kept for a time,
+    /// from the first bucket of the widest level, which keeps every row,
+    /// to the end of the last `date_bin` bucket, or of the last widest
+    /// one while the `date_bin` level holds none. A narrower level may
+    /// have dropped its first buckets, never its last.
+    pub(crate) fn open_range(&self) -> Option<Range<i64>> {
+        if self.levels[DATE_BIN.0].horizon.is_none() {
+            return self.levels[DATE_BIN.0].span();
+        }
+        let widest = self.levels[self.widest().0].span()?;
+        let end = match self.levels[DATE_BIN.0].span() {
+            Some(date_bin) => date_bin.end,
+            None => widest.end,
+        };
+        Some(widest.start..end)
+    }
+
+    /// The runs of whole buckets that cover `from..to` as `cover` says.
+    fn runs_of(&self, from: i64, to: i64, cover: Cover) -> Vec<Run> {
         let widest = match cover {
             Cover::NoWiderThan(width) => self.level_of(width),
-            Cover::WidestFit => LevelIndex(self.levels.len() - 1),
+            Cover::WidestFit => self.widest(),
         };
         let mut runs = Vec::new();
         self.runs(widest, from, to, &mut runs);
-        runs.into_iter()
-            .flat_map(move |run| self.levels[run.level.0].buckets_in(run.from, run.to))
+        runs
     }
 
     /// The level of `width`, which the view keeps.

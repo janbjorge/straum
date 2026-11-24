@@ -16,5 +16,7 @@ mod writer;
 pub use app::{AnswerError, Answered, App, Limits, Status};
 pub use held::{Held, HeldDim, HeldKey, HeldView, ViewKey};
 pub use loading::Loading;
-pub use source::{Change, Commit, Drift, Estimate, LoadCounts, Lsn, Source, SourceError, Wal};
+pub use source::{
+    Change, Commit, Drift, Estimate, LoadCounts, Lsn, Opened, Source, SourceError, Wal,
+};
 pub use writer::{Error, Step, Unfitting, Writer, format_mebibytes};

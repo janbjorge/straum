@@ -4,9 +4,12 @@
 //! call a view and an ask both write: a view's names its time and every
 //! width kept, an ask's a wider width to read it at. Both read the call
 //! and its widths here, so each refuses the same things in the same words.
+//! `keep('<width>', '<duration>')` stands in for a width of a view's
+//! `buckets`, keeping that width only for the duration; anywhere else it
+//! is refused, naming the one place it goes.
 
 use sqlparser::ast as sql;
-use straum_domain::{UNITS, Width};
+use straum_domain::{Retention, UNITS, Width};
 
 use super::{Reported, Walker, all_digits, line};
 
@@ -16,8 +19,20 @@ pub(super) const BUCKETS: &str = "buckets";
 /// PostgreSQL's function for a bucket, refused for `buckets`.
 pub(super) const DATE_BIN: &str = "date_bin";
 
+/// The call that keeps a width of a view's `buckets` only for a time.
+pub(super) const KEEP: &str = "keep";
+
+/// How `keep` is written.
+const KEEP_FORM: &str = "keep('<width>', '<duration>')";
+
 /// What to write for a width that can't be read.
 const WIDTH_FORM: &str = "use '<n> seconds|minutes|hours|days'";
+
+/// A width a view's `buckets` keeps.
+pub(super) enum KeptWidth {
+    ForGood(Width),
+    ForATime(Retention),
+}
 
 /// A call's arguments and how it treats them.
 // Borrows from the tree, which outlives the walk.
@@ -35,16 +50,71 @@ impl Walker {
         &mut self,
         function: &'tree sql::Function,
     ) -> Result<&'tree [sql::FunctionArg], Reported> {
+        self.width_call_arguments(function, BUCKETS)
+    }
+
+    /// The arguments of a call to `name`, `buckets` or `keep`, after
+    /// refusing FILTER, DISTINCT and anything else a plain call refuses.
+    // Borrows the arguments from the tree, which outlives the walk.
+    fn width_call_arguments<'tree>(
+        &mut self,
+        function: &'tree sql::Function,
+        name: &str,
+    ) -> Result<&'tree [sql::FunctionArg], Reported> {
         let at = line(function);
-        self.reject_if_present(at, function.filter.is_some(), "FILTER on buckets");
+        self.reject_if_present(at, function.filter.is_some(), &format!("FILTER on {name}"));
         let Call {
             arguments,
             distinct,
             ..
         } = self.call(function)?;
         self.require_lowercase_name(function);
-        self.reject_if_present(at, distinct, "DISTINCT on buckets");
+        self.reject_if_present(at, distinct, &format!("DISTINCT on {name}"));
         Ok(arguments)
+    }
+
+    /// A width of a view's `buckets`: `'<n> <unit>'`, kept for good, or
+    /// `keep('<width>', '<duration>')`, kept only for the duration.
+    pub(super) fn kept_width(&mut self, width: &sql::Expr) -> Result<KeptWidth, Reported> {
+        let sql::Expr::Function(function) = width else {
+            return Ok(KeptWidth::ForGood(self.bucket_width(width)?));
+        };
+        if !is_call(function, KEEP) {
+            return Ok(KeptWidth::ForGood(self.bucket_width(width)?));
+        }
+        let arguments = self.width_call_arguments(function, KEEP)?;
+        let [
+            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(kept)),
+            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(kept_for)),
+        ] = arguments
+        else {
+            let count = arguments.len();
+            let plural = if count == 1 { "" } else { "s" };
+            let message = format!("{function} has {count} argument{plural}; write {KEEP_FORM}");
+            self.error(line(function), message);
+            return Err(Reported);
+        };
+        let kept = self.bucket_width(kept);
+        let kept_for = self.bucket_width(kept_for);
+        Ok(KeptWidth::ForATime(Retention {
+            width: kept?,
+            kept_for: kept_for?,
+        }))
+    }
+
+    /// Refuses `expression` when it is a `keep` call, which goes only in
+    /// place of a view's width; whether it was one.
+    pub(super) fn refused_keep(&mut self, expression: &sql::Expr) -> bool {
+        let sql::Expr::Function(function) = expression else {
+            return false;
+        };
+        if !is_call(function, KEEP) {
+            return false;
+        }
+        let message =
+            format!("keep goes only in a view's buckets, in place of a width: {KEEP_FORM}");
+        self.error(line(function), message);
+        true
     }
 
     /// A width a `buckets` call writes, `'<n> <unit>'`; one that can't be

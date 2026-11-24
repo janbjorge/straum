@@ -100,6 +100,12 @@ connection, so the plain connection must take it up first. The stream
 thread starts there and reads beside the loads, as the physical one
 does.
 
+`Source::open` returns the start and the snapshot's time, its `now()`
+(`Opened`). The writer advances the new store to that time
+(`Store::advance`) before any table loads, so a row before a horizon
+never makes a bucket of a width kept for a time
+([Keeping a width for a time](spec.md#keeping-a-width-for-a-time)).
+
 Before the first copy the writer asks `Source::estimate` for each
 table's rows and bytes, which PostgreSQL reads in the snapshot's
 transaction from `pg_class.reltuples` (-1, unknown, for a table never
@@ -186,7 +192,9 @@ A `Rollup` is every cell of one fact. It keeps one `Level` per width,
 the narrowest first, and one `Codes` per rollup-key column. A level
 maps each bucket start to that bucket's `Cells`, every bucket in memory
 (ADR-0010), with the rows that have no time under `None`
-(`Level::bucket`).
+(`Level::bucket`). A level whose width is kept for a time holds only
+the buckets from its horizon on: `Store::advance` drops the ones
+before it, and a row before it adds to no cell of that level.
 
 `Cells` are columnar. The key codes, the row counts and one `State` per
 input sit in columns side by side, so an ask reads a column of cells in
@@ -221,9 +229,11 @@ are fewer than the fact's, and an ask reads no projection (ADR-0006).
 The cost falls on writes: a fact row goes into both rollups, and into
 the bound one once per way its joins resolve now (`Bound::rows`). A dim
 change moves the bound cells whose join columns name the changed key
-(`Store::retarget`); a dim truncate or load makes them again from the
-keyed cells (`Store::rebuild_dim`); a dim update that reads the same
-changes nothing (`Store::update_row`).
+(`Store::retarget`), level by level from each level's own keyed cells,
+since a level kept for a time no longer holds every row's time; a dim
+truncate or load makes them again from the keyed cells
+(`Store::rebuild_dim`); a dim update that reads the same changes nothing
+(`Store::update_row`).
 
 `Rollup::add` puts one row in its cells. Here is the row from
 [Cells](how-it-works.md#cells):
@@ -258,8 +268,10 @@ on a new connection before it gives up. Then it asks
 `Source::next_commit` for a commit, waiting no longer than the next
 reading is due. With one in hand, it takes the write lock and applies
 it whole (`State::apply`): each change to its rollup or projection,
-tables the spec doesn't name skipped. `Following` moves to the commit's
-LSN and time, and the lock is let go.
+tables the spec doesn't name skipped. Before its changes, the store
+advances to the commit's time, which moves each horizon on and drops
+the buckets before it. `Following` moves to the commit's LSN and time,
+and the lock is let go.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The decoder ends the
@@ -441,7 +453,8 @@ a property test.
 | Null joins nothing. | A dim row with a null key is never held, and a lookup with a null finds nothing (`Projection::add`, `Projection::matches`). |
 | A row with no time is kept, never answered. | `Level::bucket` puts it under `None`, which no ask reads. |
 | An ask never reads part of a bucket. | The narrowest width divides a day and every width nests in the next (`SpecError::BadWidth`, `SpecError::BadBucket`); every bound is on an edge of a row width the view keeps (`AskError::RangeUnaligned`, `AskError::WidthNotKept`). |
-| Levels agree. | Every row goes into one cell per width in the same add (`Rollup::add`), and `Rollup::cover` reads each instant of a range from exactly one level. |
+| Levels agree. | Every row goes into one cell per width in the same add (`Rollup::add`), but a level kept for a time skips a row before its horizon, and `Rollup::cover` reads each instant of a range from exactly one level. |
+| A dropped bucket is never read. | A horizon never moves back (`Store::advance`), and an ask that would read a level before its horizon is refused (`AskError::PastRetention`). |
 | Bound cells are the keyed cells, bound as the dims are now. | They exist only for a fact whose joins all read fact columns, one of them no key; any other fact's would be as many as its keyed cells (`Bound::new`). A dim change moves the ones that name its key (`Store::retarget`): one walk for an update that keeps the key, none for a key the join columns never coded. A dim truncate or load makes them again (`Store::rebuild_dim`). An ask reads them whenever the fact keeps them (`Store::reading`). |
 | Lag never understates. | Readings merge only toward older (`Lag::read`); `matches_every_reading_kept` checks it against a reference that keeps every reading. |
 | A process loads once. | The writer loads one new store and swaps it in for the empty one, and a step after a failed one panics (`Writer::step`), so two loaded stores never take memory at once. A start after a failure is a new process. |

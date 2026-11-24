@@ -13,7 +13,7 @@ use std::{mem, panic, thread};
 use crate::aggregate::{Aggregate, Reads};
 use crate::codes::{Codes, worth_recoding};
 use crate::identifier::Identifier;
-use crate::spec::{Fact, KeyPart};
+use crate::spec::{Fact, KeyPart, Retention};
 use crate::value::{ColumnType, Datum};
 use crate::width::Width;
 
@@ -22,10 +22,12 @@ mod distinct;
 mod level;
 mod row_error;
 mod state;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use cells::Cells;
 pub(crate) use distinct::DistinctCells;
-use level::{CodedRows, Level, MoveCell, Shift};
+use level::{CodedRows, Horizon, Level, MoveCell, Shift};
 pub use row_error::RowError;
 pub(crate) use row_error::{arity, split_rows};
 pub(crate) use state::{State, StateKind};
@@ -57,7 +59,15 @@ pub(crate) struct InputIndex(pub(crate) usize);
 /// A level's place in [`Rollup`]'s levels: the `date_bin` width first,
 /// then each wider one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LevelIndex(usize);
+pub(crate) struct LevelIndex(pub(crate) usize);
+
+/// One bucket of one level: the level and the bucket's start, `None`
+/// for the null-time bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LevelBucket {
+    pub(crate) level: LevelIndex,
+    pub(crate) start: Option<i64>,
+}
 
 /// One bucket of a rollup: its width and its start, both in seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,8 +121,8 @@ pub(crate) struct Rollup {
     codes: Vec<Codes>,
     /// The `date_bin` width first, then the wider ones.
     levels: Vec<Level>,
-    /// Cells at the `date_bin` width.
-    cells: usize,
+    /// Cells at each level, in `levels` order.
+    level_cells: Vec<usize>,
     /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
     /// allocation per row.
     key: Vec<u32>,
@@ -270,26 +280,26 @@ impl Rollup {
             }
         }
         let inputs = shared(&inputs);
-        let mut levels = Vec::with_capacity(1 + fact.time.wider.len());
-        levels.push(Level {
-            width: fact.time.width,
-            buckets: BTreeMap::new(),
-        });
-        for width in &fact.time.wider {
+        let mut widths = Vec::with_capacity(1 + fact.time.wider.len());
+        widths.push(fact.time.width);
+        widths.extend_from_slice(&fact.time.wider);
+        let mut levels = Vec::with_capacity(widths.len());
+        for (index, width) in widths.iter().enumerate() {
             levels.push(Level {
                 width: *width,
                 buckets: BTreeMap::new(),
+                horizon: horizon(&fact.time.retained, &widths, index),
             });
         }
         let mut codes = Vec::with_capacity(key_columns.len());
         codes.resize_with(key_columns.len(), Codes::default);
         Rollup {
+            level_cells: vec![0; levels.len()],
             levels,
             codes,
             key_columns,
             inputs,
             column_reads,
-            cells: 0,
             key: Vec::new(),
             types: vec![ColumnType::Int; columns.len()],
             columns,
@@ -304,25 +314,43 @@ impl Rollup {
     /// Cells at the `date_bin` width; a cell goes when its last row is
     /// removed.
     pub(crate) fn cells(&self) -> usize {
-        self.cells
+        self.level_cells[DATE_BIN.0]
+    }
+
+    /// Whether any level holds a cell. The widest level answers for all:
+    /// every row goes into every level, so it holds a cell while any does.
+    pub(crate) fn holds_cells(&self) -> bool {
+        self.level_cells[self.widest().0] != 0
+    }
+
+    /// The widest level: every row goes into it, so it holds every key
+    /// any level holds, in the fewest cells.
+    fn widest(&self) -> LevelIndex {
+        LevelIndex(self.levels.len() - 1)
+    }
+
+    /// How many levels the rollup keeps: the `date_bin` width and each
+    /// wider one.
+    pub(crate) fn level_count(&self) -> usize {
+        self.levels.len()
     }
 
     /// From the start of the first `date_bin` bucket to the end of the
     /// last. Rows without a time are in no bucket
     /// an ask reads, so they count for nothing here.
     pub(crate) fn range(&self) -> Option<Range<i64>> {
-        let level = &self.levels[DATE_BIN.0];
-        // `flatten` passes over the `None` key of the null-time bucket.
-        let mut starts = level.buckets.keys().flatten();
-        let first = *starts.next()?;
-        let last = match starts.next_back() {
-            Some(last) => *last,
-            None => first,
-        };
-        Some(first..last + i64::from(level.width.seconds))
+        self.levels[DATE_BIN.0].span()
     }
 
-    /// Drops every cell and code; the types stay.
+    /// Moves the horizon of every level kept for a time to `at`, in Unix
+    /// seconds, dropping the buckets before it.
+    pub(crate) fn advance(&mut self, at: i64) {
+        for (level, cells) in self.levels.iter_mut().zip(&mut self.level_cells) {
+            *cells -= level.advance(at);
+        }
+    }
+
+    /// Drops every cell and code; the types and horizons stay.
     pub(crate) fn clear(&mut self) {
         for level in &mut self.levels {
             level.buckets.clear();
@@ -330,7 +358,7 @@ impl Rollup {
         for codes in &mut self.codes {
             *codes = Codes::default();
         }
-        self.cells = 0;
+        self.level_cells.fill(0);
     }
 
     /// Only the source knows the row's types, so a load sets them; they are
@@ -372,11 +400,8 @@ impl Rollup {
         let mut key = mem::take(&mut self.key);
         key.clear();
         self.code(row, &mut key);
-        for (position, level) in self.levels.iter_mut().enumerate() {
-            let shift = level.add(row, &key, &self.inputs);
-            if LevelIndex(position) == DATE_BIN {
-                count_shift(&mut self.cells, shift);
-            }
+        for (level, cells) in self.levels.iter_mut().zip(&mut self.level_cells) {
+            count_shift(cells, level.add(row, &key, &self.inputs));
         }
         self.key = key;
         Ok(())
@@ -400,7 +425,7 @@ impl Rollup {
             keys: &keys,
             key_parts: self.key_columns.len(),
         };
-        self.cells += add_on_threads(&mut self.levels, coded, &self.inputs);
+        add_on_threads(&mut self.levels, coded, &self.inputs, &mut self.level_cells);
         self.key = keys;
         Ok(())
     }
@@ -433,29 +458,29 @@ impl Rollup {
     }
 
     fn remove_coded(&mut self, row: &[Datum], key: &[u32]) -> Result<(), RowError> {
-        for (position, level) in self.levels.iter_mut().enumerate() {
-            let shift = level.remove(row, key, &self.inputs)?;
-            if LevelIndex(position) == DATE_BIN {
-                count_shift(&mut self.cells, shift);
-            }
+        for (level, cells) in self.levels.iter_mut().zip(&mut self.level_cells) {
+            count_shift(cells, level.remove(row, key, &self.inputs)?);
         }
         Ok(())
     }
 
     /// Moves one keyed cell's aggregates into or out of the bound cell
-    /// `key` names, at every width: `count` rows and entry `source_cell`
-    /// of `source`, the keyed cell's states.
+    /// `key` names, in `bucket` at its level only: `count` rows and entry `source_cell`
+    /// of `source`, the keyed cell's states at that same level. A keyed
+    /// cell at a wider level already merges its rows over the wider
+    /// bucket, so each level moves its own cells.
     pub(crate) fn adjust(
         &mut self,
-        time: Option<i64>,
+        bucket: LevelBucket,
         key: &[u32],
         count: u64,
         source: &[State],
         source_cell: usize,
         direction: Direction,
     ) -> Result<(), RowError> {
-        let time = match time {
-            Some(time) => Datum::Int(time),
+        let LevelBucket { level, start } = bucket;
+        let time = match start {
+            Some(start) => Datum::Int(start),
             None => Datum::Null,
         };
         let move_cell = MoveCell {
@@ -465,24 +490,21 @@ impl Rollup {
             source_cell,
             direction,
         };
-        for (position, level) in self.levels.iter_mut().enumerate() {
-            let shift = level.adjust(&self.inputs, &time, move_cell)?;
-            if LevelIndex(position) == DATE_BIN {
-                count_shift(&mut self.cells, shift);
-            }
-        }
+        let shift = self.levels[level.0].adjust(&self.inputs, &time, move_cell)?;
+        count_shift(&mut self.level_cells[level.0], shift);
         Ok(())
     }
 
     /// Drops the codes no cell holds any more from each part where they
-    /// may be most of its codes, and gives the cells the new ones. A cell
-    /// at a wider width holds a key some `date_bin` cell holds, so a part
-    /// holds at most as many live codes as there are `date_bin` cells.
+    /// may be most of its codes, and gives the cells the new ones. Every
+    /// key some level holds the widest level holds too, so a part holds at
+    /// most as many live codes as there are cells at the widest level.
     pub(crate) fn reclaim_codes(&mut self) {
+        let widest_cells = self.level_cells[self.widest().0];
         let mut maps = Vec::with_capacity(self.codes.len());
         let mut any = false;
         for part in 0..self.codes.len() {
-            if !worth_recoding(self.codes[part].len(), self.cells) {
+            if !worth_recoding(self.codes[part].len(), widest_cells) {
                 maps.push(None);
                 continue;
             }
@@ -500,11 +522,11 @@ impl Rollup {
         }
     }
 
-    /// Which of a part's codes some cell holds: the `date_bin` cells hold
-    /// every key a wider cell does.
+    /// Which of a part's codes some cell holds: the widest level holds
+    /// every key a narrower one does.
     fn live_codes(&self, part: PartIndex) -> Vec<bool> {
         let mut live = vec![false; self.codes[part.0].len()];
-        for cells in self.levels[DATE_BIN.0].buckets.values() {
+        for cells in self.levels[self.widest().0].buckets.values() {
             for cell in 0..cells.len() {
                 live[cells.code(cell, part) as usize] = true;
             }
@@ -536,11 +558,11 @@ impl Rollup {
         None
     }
 
-    /// The `date_bin` buckets by start, oldest first. `None` is the
+    /// The buckets of `level` by start, oldest first. `None` is the
     /// null-time bucket: no ask reads it, and a dim change still has to
     /// move it.
-    pub(crate) fn date_bin_buckets(&self) -> &BTreeMap<Option<i64>, Cells> {
-        &self.levels[DATE_BIN.0].buckets
+    pub(crate) fn buckets(&self, level: LevelIndex) -> &BTreeMap<Option<i64>, Cells> {
+        &self.levels[level.0].buckets
     }
 
     /// Where among the cells' states an aggregate finds its own; none for
@@ -630,7 +652,22 @@ impl Rollup {
     }
 }
 
-/// Counts the `date_bin` cell a [`Shift`] made or took out into `cells`.
+/// The horizon of the level of `widths[index]`, when the view keeps that
+/// width only for a time; `Spec::new` saw that a wider width follows it.
+fn horizon(retained: &[Retention], widths: &[Width], index: usize) -> Option<Horizon> {
+    for retention in retained {
+        if retention.width == widths[index] {
+            return Some(Horizon {
+                kept_for: retention.kept_for,
+                next_wider: widths[index + 1],
+                kept_from: None,
+            });
+        }
+    }
+    None
+}
+
+/// Counts the cell a [`Shift`] made or took out into `cells`.
 fn count_shift(cells: &mut usize, shift: Shift) {
     match shift {
         Shift::New => *cells += 1,
@@ -640,22 +677,27 @@ fn count_shift(cells: &mut usize, shift: Shift) {
 }
 
 /// Adds a load's rows at every level, each wider level on a thread of
-/// its own; how many `date_bin` cells are new.
-fn add_on_threads(levels: &mut [Level], coded: CodedRows<'_>, inputs: &[Input]) -> usize {
+/// its own, and counts each level's new cells into `level_cells`.
+fn add_on_threads(
+    levels: &mut [Level],
+    coded: CodedRows<'_>,
+    inputs: &[Input],
+    level_cells: &mut [usize],
+) {
     let (date_bin, wider) = levels.split_first_mut().expect("a rollup has its width");
+    let (date_bin_cells, wider_cells) = level_cells.split_first_mut().expect("one count per level");
     // `thread::scope` and `spawn` take closures: a scoped thread may
     // borrow the rows, and the scope waits for every thread it spawned.
     thread::scope(|scope| {
         let mut threads = Vec::with_capacity(wider.len());
-        for level in wider {
-            threads.push(scope.spawn(move || level.add_coded(coded, inputs)));
+        for (level, cells) in wider.iter_mut().zip(wider_cells) {
+            threads.push(scope.spawn(move || *cells += level.add_coded(coded, inputs)));
         }
-        let new_cells = date_bin.add_coded(coded, inputs);
+        *date_bin_cells += date_bin.add_coded(coded, inputs);
         for thread in threads {
             if let Err(payload) = thread.join() {
                 panic::resume_unwind(payload);
             }
         }
-        new_cells
-    })
+    });
 }

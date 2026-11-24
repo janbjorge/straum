@@ -57,6 +57,28 @@ pub enum SpecError {
     },
     /// A view without measures.
     NoMeasures { fact: Identifier },
+    /// The widest width kept for a time: it is the one that keeps every
+    /// row once the narrower widths drop theirs.
+    RetainedWidest { fact: Identifier, width: Width },
+    /// A width kept for a time that the view keeps no buckets of.
+    RetainedNotKept { fact: Identifier, width: Width },
+    /// A width kept for a time that is no whole number of buckets of the
+    /// next wider width, so its horizon would cut one of them.
+    RetentionNotMultiple {
+        fact: Identifier,
+        width: Width,
+        kept_for: Width,
+        wider: Width,
+    },
+    /// A width kept for a time while a narrower one is kept for good.
+    RetentionGap { fact: Identifier, width: Width },
+    /// A width kept for less time than a narrower one.
+    RetentionShorter {
+        fact: Identifier,
+        width: Width,
+        kept_for: Width,
+        narrower_kept_for: Width,
+    },
 }
 
 /// What is wrong with one join of a view.
@@ -192,7 +214,54 @@ impl fmt::Display for SpecError {
                 "view {fact}: the view filters on {key}, which names no key of the view"
             ),
             SpecError::NoMeasures { fact } => write!(f, "view {fact}: no measures"),
+            SpecError::RetainedWidest { .. }
+            | SpecError::RetainedNotKept { .. }
+            | SpecError::RetentionNotMultiple { .. }
+            | SpecError::RetentionGap { .. }
+            | SpecError::RetentionShorter { .. } => write_retention(self, f),
         }
+    }
+}
+
+/// The text of an error about a width kept for a time.
+fn write_retention(error: &SpecError, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match error {
+        SpecError::RetainedWidest { fact, width } => write!(
+            out,
+            "view {fact}: {width} is the widest width and keeps every bucket; \
+             only a narrower width can be kept for a time"
+        ),
+        SpecError::RetainedNotKept { fact, width } => write!(
+            out,
+            "view {fact}: {width} is kept for a time but is no width the view keeps"
+        ),
+        SpecError::RetentionNotMultiple {
+            fact,
+            width,
+            kept_for,
+            wider,
+        } => write!(
+            out,
+            "view {fact}: {width} is kept for {kept_for}, not a whole multiple of \
+             {wider}, the next wider width; keep it for {wider} or a multiple of it"
+        ),
+        SpecError::RetentionGap { fact, width } => write!(
+            out,
+            "view {fact}: {width} is kept for a time but a narrower width is not; \
+             keep every narrower width for a time too"
+        ),
+        SpecError::RetentionShorter {
+            fact,
+            width,
+            kept_for,
+            narrower_kept_for,
+        } => write!(
+            out,
+            "view {fact}: {width} is kept for {kept_for}, less than the \
+             {narrower_kept_for} a narrower width is kept for; keep each width at \
+             least as long as the narrower ones"
+        ),
+        _ => unreachable!("only a retention error is written here"),
     }
 }
 

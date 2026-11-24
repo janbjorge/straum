@@ -7,7 +7,7 @@ use sqlparser::ast as sql;
 use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Time};
 
 use super::Scope;
-use crate::sql::calls::{Call, function_name};
+use crate::sql::calls::{Call, KeptWidth, function_name};
 use crate::sql::{Clause, Reported, Walker, all_digits, line, written_digits};
 
 /// What DISTINCT on any other aggregate is refused as.
@@ -52,9 +52,10 @@ impl Walker {
     }
 
     /// `buckets(f.column, '1 hour', '1 day')`: the column the view's
-    /// time reads, then every width kept, narrowest first. Rows go in
-    /// buckets of the first; `Spec::new` checks each is a whole multiple
-    /// of the one before.
+    /// time reads, then every width kept, narrowest first, any of them
+    /// written `keep('<width>', '<duration>')` to keep it only for a time.
+    /// Rows go in buckets of the first; `Spec::new` checks each is a whole
+    /// multiple of the one before, and the times kept.
     pub(super) fn bucket(
         &mut self,
         scope: &Scope,
@@ -72,15 +73,24 @@ impl Walker {
             self.refuse(at, "buckets arguments", function);
             return Err(Reported);
         };
+        if self.refused_keep(column) {
+            return Err(Reported);
+        }
         let column = self.uncast_fact_column(scope, column, "the buckets column");
         let mut kept = Vec::with_capacity(widths.len());
+        let mut retained = Vec::new();
         for width in widths {
             let sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)) = width else {
                 self.refuse(at, "buckets arguments", function);
                 return Err(Reported);
             };
-            if let Ok(parsed) = self.bucket_width(width) {
-                kept.push(parsed);
+            match self.kept_width(width) {
+                Ok(KeptWidth::ForGood(width)) => kept.push(width),
+                Ok(KeptWidth::ForATime(retention)) => {
+                    kept.push(retention.width);
+                    retained.push(retention);
+                }
+                Err(Reported) => {}
             }
         }
         if widths.is_empty() {
@@ -103,6 +113,7 @@ impl Walker {
             column,
             width: *width,
             wider: wider.to_vec(),
+            retained,
         })
     }
 

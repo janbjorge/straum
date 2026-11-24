@@ -8,10 +8,10 @@ mod common;
 
 use common::{
     BASE, ask_view_t, attribute, base, by_key, condition, described, edit, id, key_text,
-    spec_errors, sql_errors,
+    spec_errors, sql_errors, strings,
 };
 use straum_domain::{
-    Aggregate, ByKey, Fraction, Literal, RefIndex, RefKind, Spec, SpecError, Via, Width,
+    Aggregate, ByKey, Fraction, Literal, RefIndex, RefKind, Retention, Spec, SpecError, Via, Width,
 };
 use straum_notation::{SqlError, parse};
 
@@ -172,6 +172,105 @@ fn buckets_parse() {
             below: 3_600
         }]
     );
+}
+
+/// `keep('<width>', '<duration>')` in place of a width keeps that width
+/// for a time; the width stays one the view keeps, in its place.
+#[test]
+fn keep_retains_a_width_for_a_time() {
+    let text = base(
+        "buckets(f.at, '1 hour')",
+        "buckets(f.at, keep('1 hour', '7 days'), '1 day')",
+    );
+    let spec = parse(&text).unwrap();
+    let time = &spec.fact("t").unwrap().time;
+    assert_eq!(time.width, Width { seconds: 3_600 });
+    assert_eq!(time.wider, [Width { seconds: 86_400 }]);
+    assert_eq!(
+        time.retained,
+        [Retention {
+            width: Width { seconds: 3_600 },
+            kept_for: Width { seconds: 604_800 },
+        }]
+    );
+    let text = base(
+        "buckets(f.at, '1 hour')",
+        "buckets(f.at, keep('15 minutes', '1 day'), keep('1 hour', '14 days'), '1 day', \
+         '7 days')",
+    );
+    let spec = parse(&text).unwrap();
+    let time = &spec.fact("t").unwrap().time;
+    assert_eq!(time.width, Width { seconds: 900 });
+    assert_eq!(
+        time.wider,
+        [
+            Width { seconds: 3_600 },
+            Width { seconds: 86_400 },
+            Width { seconds: 604_800 }
+        ]
+    );
+    assert_eq!(
+        time.retained,
+        [
+            Retention {
+                width: Width { seconds: 900 },
+                kept_for: Width { seconds: 86_400 },
+            },
+            Retention {
+                width: Width { seconds: 3_600 },
+                kept_for: Width { seconds: 1_209_600 },
+            },
+        ]
+    );
+    let plain = parse(BASE).unwrap();
+    assert_eq!(plain.fact("t").unwrap().time.retained, Vec::new());
+}
+
+/// Each rule `Spec::new` holds retentions to, worded with the widths and
+/// what to write instead.
+#[test]
+fn retentions_break_no_rule() {
+    let cases = [
+        (
+            "buckets(f.at, keep('1 hour', '7 days'), keep('1 day', '14 days'))",
+            "view t: 1 day is the widest width and keeps every bucket; only a narrower \
+             width can be kept for a time",
+        ),
+        (
+            "buckets(f.at, keep('1 hour', '7 days'))",
+            "view t: 1 hour is the widest width and keeps every bucket; only a narrower \
+             width can be kept for a time",
+        ),
+        (
+            "buckets(f.at, keep('1 hour', '36 hours'), '1 day')",
+            "view t: 1 hour is kept for 36 hours, not a whole multiple of 1 day, the next \
+             wider width; keep it for 1 day or a multiple of it",
+        ),
+        (
+            "buckets(f.at, keep('1 hour', '12 hours'), '1 day')",
+            "view t: 1 hour is kept for 12 hours, not a whole multiple of 1 day, the next \
+             wider width; keep it for 1 day or a multiple of it",
+        ),
+        (
+            "buckets(f.at, '15 minutes', keep('1 hour', '7 days'), '1 day')",
+            "view t: 1 hour is kept for a time but a narrower width is not; keep every \
+             narrower width for a time too",
+        ),
+        (
+            "buckets(f.at, keep('15 minutes', '2 days'), keep('1 hour', '1 day'), '1 day')",
+            "view t: 1 hour is kept for 1 day, less than the 2 days a narrower width is \
+             kept for; keep each width at least as long as the narrower ones",
+        ),
+    ];
+    for (buckets, shown) in cases {
+        let text = base("buckets(f.at, '1 hour')", buckets);
+        assert_eq!(strings(&spec_errors(&text)), [shown], "{buckets}");
+    }
+    let kept_alike = base(
+        "buckets(f.at, '1 hour')",
+        "buckets(f.at, keep('15 minutes', '1 day'), keep('1 hour', '1 day'), '1 day')",
+    );
+    assert!(parse(&kept_alike).is_ok());
 }
 
 /// The view names its time: the name is the view's own, and asks use it.

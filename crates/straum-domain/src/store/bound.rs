@@ -7,7 +7,7 @@
 
 use crate::identifier::Identifier;
 use crate::projection::{AttributeIndex, Projection};
-use crate::rollup::{Cells, ColumnIndex, Direction, PartIndex, Rollup, RowError};
+use crate::rollup::{Cells, ColumnIndex, Direction, LevelBucket, PartIndex, Rollup, RowError};
 use crate::spec::{Fact, Ref, RefKind, Spec, Via};
 use crate::value::Datum;
 
@@ -272,12 +272,12 @@ impl Bound {
     }
 
     /// Moves every cell of a keyed bucket into the bound cells its
-    /// joins resolve to now, or back out of them.
+    /// joins resolve to now, at the same level, or back out of them.
     pub(super) fn pour(
         &mut self,
         keyed: &Rollup,
         projections: &[Projection],
-        start: Option<i64>,
+        at: LevelBucket,
         cells: &Cells,
         direction: Direction,
     ) -> Result<(), RowError> {
@@ -285,7 +285,7 @@ impl Bound {
             let count = cells.rows().get(cell);
             let keyed_cell = KeyedCell { cells, cell };
             for key in &self.keys(keyed, keyed_cell, projections, None) {
-                (self.rollup).adjust(start, key, count, cells.states(), cell, direction)?;
+                (self.rollup).adjust(at, key, count, cells.states(), cell, direction)?;
             }
         }
         Ok(())
