@@ -7,11 +7,15 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use straum_app::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};
+use straum_app::{Change, Commit, Drift, Estimate, LoadCounts, Lsn, Source, SourceError, Wal};
 use straum_domain::{ColumnType, Datum, Identifier, RowError, Spec, Store};
+
+/// What the fake says a row of its tables takes.
+const ROW_BYTES: u64 = 64;
 
 /// A row as a table holds it.
 pub type Row = Vec<Datum>;
@@ -117,6 +121,8 @@ pub struct Database {
     pub wal: Option<Wal>,
     /// Every load, dims and facts, in order.
     pub loads: Vec<String>,
+    /// The estimates give no rows, as of a table never analysed.
+    pub unanalysed: bool,
 }
 
 /// A source over a shared [`Database`], so a test can write while the app
@@ -127,7 +133,8 @@ pub struct Fake {
     pub on_load: Option<OnLoad>,
 }
 
-/// Called with the fact's name in the middle of each load.
+/// Called with the fact's name in the middle of each load, half its rows
+/// counted.
 pub type OnLoad = Box<dyn FnMut(&str)>;
 
 #[derive(Debug)]
@@ -166,6 +173,7 @@ impl Database {
             waits: 0,
             wal: None,
             loads: Vec::new(),
+            unanalysed: false,
         }
     }
 
@@ -318,17 +326,23 @@ impl Fake {
         }
     }
 
-    /// A table's rows in the snapshot the stream starts from.
-    fn read(&mut self, table: &Identifier) -> Result<Vec<Row>, SourceError> {
+    /// A table's rows in the snapshot the stream starts from, counted
+    /// into `counts` half before the load's middle and half after.
+    fn read(&mut self, table: &Identifier, counts: &LoadCounts) -> Result<Vec<Row>, SourceError> {
         let mut database = self.database.borrow_mut();
         database.connect()?;
         database.loads.push(table.to_string());
         let start = self.stream.as_ref().expect("open first").start;
         let rows = database.rows_at(start, table.as_str());
         drop(database);
+        let half = rows.len() as u64 / 2;
+        counts.rows.fetch_add(half, Ordering::Relaxed);
         if let Some(on_load) = &mut self.on_load {
             on_load(table.as_str());
         }
+        counts
+            .rows
+            .fetch_add(rows.len() as u64 - half, Ordering::Relaxed);
         Ok(rows)
     }
 }
@@ -346,9 +360,34 @@ impl Source for Fake {
         Ok(start)
     }
 
-    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError> {
-        for table in tables {
-            let rows = self.read(table)?;
+    /// The table's rows now, 64 bytes each.
+    fn estimate(&mut self, tables: &[Identifier]) -> Result<Estimate, SourceError> {
+        let mut database = self.database.borrow_mut();
+        database.connect()?;
+        let start = self.stream.as_ref().expect("open first").start;
+        let rows = database.rows_at(start, tables[0].as_str()).len() as u64;
+        let estimated = if database.unanalysed {
+            None
+        } else {
+            Some(rows)
+        };
+        Ok(Estimate {
+            rows: estimated,
+            bytes: rows * ROW_BYTES,
+        })
+    }
+
+    /// Views of one table read it once, as one copy does.
+    fn load(
+        &mut self,
+        tables: &[Identifier],
+        store: &mut Store,
+        counts: &LoadCounts,
+    ) -> Result<(), SourceError> {
+        let uncounted = LoadCounts::default();
+        for (index, table) in tables.iter().enumerate() {
+            let counting = if index == 0 { counts } else { &uncounted };
+            let rows = self.read(table, counting)?;
             fill(table, &rows, store)?;
         }
         Ok(())

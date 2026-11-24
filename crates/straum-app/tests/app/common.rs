@@ -24,6 +24,7 @@ pub const BYTES_PER_GIB: u64 = 1 << 30;
 pub const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 * BYTES_PER_GIB,
+    max_load_memory: 1 << 30,
 };
 
 const SPEC: &str = "

@@ -440,7 +440,6 @@ fn run(
         limits,
         max_transaction_rows,
         max_answer_rows,
-        max_load_memory,
         max_memory,
     }: Run,
 ) -> Result<(), Failure> {
@@ -476,7 +475,7 @@ fn run(
             max_transaction_rows,
             limits.max_retained_wal,
             replication,
-            max_load_memory,
+            limits.max_load_memory,
         ),
     )
     .reporting(log);

@@ -7,6 +7,7 @@
 
 use std::error;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::time::{Duration, SystemTime};
 
 use straum_domain::{Datum, Identifier, Spec, Store};
@@ -26,13 +27,22 @@ pub trait Source {
     /// are in the snapshot, later ones are streamed.
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
 
+    /// Guesses how big the table `tables` read is, as [`Source::load`]
+    /// takes them, without reading its rows.
+    fn estimate(&mut self, tables: &[Identifier]) -> Result<Estimate, SourceError>;
+
     /// Adds the rows of `tables` to the store, which holds none of them
     /// yet: one dim, or the views that read one fact table, which the
     /// source reads once for all of them. The rows are as of the LSN
     /// [`Source::open`] returned: every commit up to it and none after.
     /// They hold [`Fact::columns`] or [`Dim::columns`] and go through
-    /// [`Store::add_rows`].
-    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError>;
+    /// [`Store::add_rows`]. The source counts into `counts` as it reads.
+    fn load(
+        &mut self,
+        tables: &[Identifier],
+        store: &mut Store,
+        counts: &LoadCounts,
+    ) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
     /// last one is applied.
@@ -42,6 +52,25 @@ pub trait Source {
     /// stream's slot holds, and how far Straum has applied, from
     /// [`Source::open`] on.
     fn wal(&mut self) -> Result<Wal, SourceError>;
+}
+
+/// How big a table is before it loads, as the source guesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Estimate {
+    /// `None` when the source can't guess.
+    pub rows: Option<u64>,
+    /// The table's size where the source keeps it.
+    pub bytes: u64,
+}
+
+/// What a load has read so far. The source counts as it reads; the status
+/// reads it from another thread meanwhile.
+#[derive(Debug, Default)]
+pub struct LoadCounts {
+    /// Rows read of the table loading now.
+    pub rows: AtomicU64,
+    /// Bytes of commits the stream holds while the tables load.
+    pub held_bytes: AtomicUsize,
 }
 
 /// The server's WAL and the stream's slot, read at one moment.

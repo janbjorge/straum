@@ -3,14 +3,17 @@
 //! reads sent once, so Straum groups or projects a row as it comes. One
 //! thread reads PostgreSQL's copy messages and decodes them (`value.rs`)
 //! into batches of rows; the caller's thread hands each spec table its own
-//! columns of a batch and adds them to the store, then checks the stream
-//! reading beside it has not failed. A load must not cost Straum the
-//! table's rows in memory.
+//! columns of a batch and adds them to the store, counts the rows and
+//! what the stream holds, then checks the stream reading beside it has
+//! not failed. A load must not cost Straum the table's rows in memory.
+//! Before any copy, the catalog gives each table's estimated size.
 
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
+use straum_app::{Estimate, LoadCounts};
 use straum_domain::{ColumnType, Datum, Identifier, Store};
 
 use crate::catalog::{Checked, escaped};
@@ -18,7 +21,7 @@ use crate::error::Error;
 use crate::stream::Stream;
 use crate::unexpected::Unexpected;
 use crate::value::read_binary;
-use crate::wire::Connection;
+use crate::wire::{Connection, first_row_value};
 
 /// What starts a binary copy, before its flags and header extension.
 const SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
@@ -36,15 +39,38 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
     )
 }
 
+/// The rows `ANALYZE` or `VACUUM` last counted in `table`, and the bytes
+/// of its main fork now. `reltuples` is -1 for a table neither has read
+/// since PostgreSQL 14, which is no estimate.
+pub(crate) fn estimate(connection: &mut Connection, table: &Checked) -> Result<Estimate, Error> {
+    let rows = connection.rows(&format!(
+        "SELECT reltuples::bigint, pg_relation_size(oid) FROM pg_class WHERE oid = {}",
+        table.oid
+    ))?;
+    let shape = Error::Protocol(Unexpected::CatalogShape("estimate"));
+    let (Some(read), Some(bytes)) = (first_row_value(&rows, 0), first_row_value(&rows, 1)) else {
+        return Err(shape);
+    };
+    let (Ok(read), Ok(bytes)) = (read.parse::<i64>(), bytes.parse::<u64>()) else {
+        return Err(shape);
+    };
+    Ok(Estimate {
+        rows: u64::try_from(read).ok(),
+        bytes,
+    })
+}
+
 /// Loads `tables`, spec tables that read one table of PostgreSQL, whole
 /// into the store, in the connection's snapshot: one copy of the table
 /// carries the columns of them all. The stream, which reads on meanwhile,
-/// is checked after each batch.
+/// is checked after each batch, and `counts` takes the batch's rows and
+/// what the stream holds.
 pub(crate) fn tables(
     connection: &mut Connection,
     tables: &[&Checked],
     store: &mut Store,
     stream: &mut Stream,
+    counts: &LoadCounts,
 ) -> Result<(), Error> {
     let Some(copied) = copy_of(tables) else {
         return Ok(());
@@ -57,10 +83,14 @@ pub(crate) fn tables(
     }
     // One more batch beside those in flight, of one reader's columns.
     let mut rows = Vec::new();
+    let width = copied.columns.len();
     copy(connection, &copied, |batch| {
         for reader in &readers {
-            reader.add(batch, copied.columns.len(), &mut rows, store)?;
+            reader.add(batch, width, &mut rows, store)?;
         }
+        let read = u64::try_from(batch.len() / width).unwrap_or(u64::MAX);
+        counts.rows.fetch_add(read, Ordering::Relaxed);
+        (counts.held_bytes).store(stream.held_bytes(), Ordering::Relaxed);
         stream.check()
     })
 }

@@ -6,7 +6,9 @@ use std::collections::VecDeque;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
-use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Wal, Writer};
+use straum_app::{
+    App, Change, Commit, Estimate, Limits, LoadCounts, Lsn, Source, SourceError, Wal, Writer,
+};
 use straum_domain::{ColumnType, Datum, Identifier, Spec, Store};
 
 /// One view over the trips and their zones, with every kind of measure.
@@ -38,6 +40,7 @@ const FOUR_GIBIBYTES: u64 = 4 << 30;
 pub(crate) const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: FOUR_GIBIBYTES,
+    max_load_memory: 1 << 30,
 };
 
 /// Loads fixed zones and trips at [`START`], then streams its commits.
@@ -54,8 +57,20 @@ impl Source for Fake {
         Ok(START)
     }
 
+    fn estimate(&mut self, _: &[Identifier]) -> Result<Estimate, SourceError> {
+        Ok(Estimate {
+            rows: None,
+            bytes: 0,
+        })
+    }
+
     /// Zones 1 and 2; a trip in zone 3 finds no row.
-    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError> {
+    fn load(
+        &mut self,
+        tables: &[Identifier],
+        store: &mut Store,
+        _: &LoadCounts,
+    ) -> Result<(), SourceError> {
         // The spec's one dim and its one view each load alone.
         if tables[0].as_str() == "zones" {
             store.set_types("zones", &[ColumnType::Int, ColumnType::Text])?;

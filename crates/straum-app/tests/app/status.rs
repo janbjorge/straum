@@ -1,7 +1,8 @@
 //! What the app reports about itself: ready or not, how far behind, the
-//! WAL the slot holds; and how its values print.
+//! WAL the slot holds, how far a load is; and how its values print.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -9,7 +10,8 @@ use straum_app::{AnswerError, App, Error, Limits, Lsn, Status, Step, Wal, Writer
 use straum_domain::{AskError, Instead, Value};
 
 use crate::common::{
-    BYTES_PER_GIB, Harness, LIMITS, again, ask, count, setup, spec, trip, wal, watched,
+    BYTES_PER_GIB, Harness, LIMITS, again, ask, count, database, login, setup, spec, trip, wal,
+    watched, watching, zone,
 };
 use crate::fake::{Database, Fake, id, time};
 
@@ -82,6 +84,7 @@ fn status_before_the_first_step(app: &App) {
             as_of: None,
             lag: None,
             wal: None,
+            loading: None,
             limits: LIMITS,
         }
     );
@@ -195,4 +198,63 @@ fn answer_error_display() {
     ]);
     // Each error's words name Straum SQL, so straum-notation says them.
     assert_eq!(invalid.to_string(), "errors in the ask: 2");
+}
+
+/// The reason each table gives in the middle of its load, as `/readyz`
+/// says it, over `database`.
+fn reasons_while_loading(database: &Rc<RefCell<Database>>) -> Vec<String> {
+    let reasons = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&reasons);
+    let mut writer = watching(App::new(spec(), LIMITS), database, move |app, _| {
+        let loading = app.status().loading.expect("a table loads");
+        seen.borrow_mut().push(loading.to_string());
+    });
+    assert_eq!(writer.app().status().loading, None);
+    writer.step().unwrap();
+    assert_eq!(writer.app().status().loading, None);
+    reasons.take()
+}
+
+/// Two zones, three trips and a login, which the fake estimates exactly.
+fn some_of_each(database: &Rc<RefCell<Database>>) {
+    database.borrow_mut().commit(vec![
+        zone(1, "Bronx"),
+        zone(2, "Queens"),
+        trip(1, 1, 1, 10),
+        trip(2, 1, 1, 10),
+        trip(3, 1, 2, 10),
+        login(1, 1),
+    ]);
+}
+
+/// While a table loads, the status says which, its place among the
+/// tables, how much of it is read and what the stream holds meanwhile.
+/// Before the load and after it, it says none of that.
+#[test]
+fn a_load_says_how_far_it_is() {
+    let database = database();
+    some_of_each(&database);
+    let held = "commits held 0.0 MiB of 1024.0 MiB";
+    assert_eq!(
+        reasons_while_loading(&database),
+        [
+            format!("loading public.zones, table 1 of 3, 50% of rows; {held}"),
+            format!("loading public.trips, table 2 of 3, 33% of rows; {held}"),
+            format!("loading public.logins, table 3 of 3, 0% of rows; {held}"),
+        ]
+    );
+}
+
+/// A table of unknown size gives no percent, never one of 0 or -1 rows.
+#[test]
+fn a_load_of_unknown_size_gives_no_percent() {
+    let database = database();
+    some_of_each(&database);
+    database.borrow_mut().unanalysed = true;
+    let reasons = reasons_while_loading(&database);
+    assert_eq!(reasons.len(), 3);
+    for reason in reasons {
+        assert!(!reason.contains('%'), "{reason}");
+        assert!(reason.contains(", table "), "{reason}");
+    }
 }

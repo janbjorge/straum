@@ -64,7 +64,6 @@ fn reads_run_and_plan() {
             limits: LIMITS,
             max_transaction_rows: MAX_TRANSACTION_ROWS,
             max_answer_rows: MAX_ANSWER_ROWS,
-            max_load_memory: MAX_LOAD_MEMORY,
             max_memory: None,
         }))
     );
@@ -87,10 +86,10 @@ fn reads_run_and_plan() {
             limits: Limits {
                 max_lag: Duration::from_secs(5),
                 max_retained_wal: 536_870_912,
+                max_load_memory: 512 << 20,
             },
             max_transaction_rows: 2500,
             max_answer_rows: 50,
-            max_load_memory: 512 << 20,
             max_memory: Some(2 << 30),
         }))
     );
@@ -132,7 +131,7 @@ fn max_load_memory_defaults_to_a_gibibyte() {
         let Ok(Command::Run(run)) = command_of(&args(line)) else {
             panic!("{line}");
         };
-        assert_eq!(run.max_load_memory, expected, "{line}");
+        assert_eq!(run.limits.max_load_memory, expected, "{line}");
     }
     for value in ["0", "-1", "1Pi", "1G", "lots"] {
         assert_eq!(

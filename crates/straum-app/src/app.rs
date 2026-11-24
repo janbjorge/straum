@@ -5,13 +5,15 @@
 //! so they never wait on an ask.
 
 use std::fmt;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{Answer, Ask, AskError, Cut, Spec, Store, Window, WindowAnswer};
 
 use crate::lag::Lag;
-use crate::source::{Lsn, Wal};
+use crate::loading::Loading;
+use crate::source::{LoadCounts, Lsn, Wal};
 
 /// The store may be half updated, so nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
@@ -32,6 +34,9 @@ pub struct Limits {
     /// Straum stops, so a Straum that can't keep up doesn't fill the
     /// server's disk.
     pub max_retained_wal: u64,
+    /// Bytes of commits the stream may hold while the tables load. The
+    /// source stops past it; the status shows how close it is.
+    pub max_load_memory: usize,
 }
 
 /// The store as the writer last left it, for asks. Clones share it.
@@ -42,6 +47,9 @@ pub struct App {
     /// of the WAL never wait on the store's: a long ask holds it for
     /// reading, and a writer waiting for it holds back every new reader.
     progress: Arc<Mutex<Progress>>,
+    /// What the table loading now has read, counted by the source while
+    /// the writer waits on it, so read without a lock.
+    pub(crate) counts: Arc<LoadCounts>,
     /// The store's spec, which never changes, read without its lock.
     pub(crate) spec: Arc<Spec>,
     pub(crate) limits: Limits,
@@ -59,6 +67,9 @@ pub(crate) struct State {
 pub(crate) struct Progress {
     /// `None` until every table is loaded, and again after a failure.
     pub(crate) following: Option<Following>,
+    /// The table loading now. `None` before the first and once every
+    /// table is loaded or the load failed.
+    pub(crate) loading: Option<Loading>,
 }
 
 /// Where a stream with every table loaded stands.
@@ -110,6 +121,8 @@ pub struct Status {
     pub lag: Option<Duration>,
     /// The last reading of the server's WAL, while a stream runs.
     pub wal: Option<Wal>,
+    /// How far the load is, while a table loads.
+    pub loading: Option<Loading>,
     pub limits: Limits,
 }
 
@@ -123,7 +136,11 @@ impl App {
                 store: Store::new(spec),
                 applied: None,
             })),
-            progress: Arc::new(Mutex::new(Progress { following: None })),
+            progress: Arc::new(Mutex::new(Progress {
+                following: None,
+                loading: None,
+            })),
+            counts: Arc::new(LoadCounts::default()),
             limits,
         }
     }
@@ -168,6 +185,7 @@ impl App {
                 as_of: None,
                 lag: None,
                 wal: None,
+                loading: self.loading(progress.loading.as_ref()),
                 limits: self.limits,
             };
         };
@@ -179,8 +197,20 @@ impl App {
             as_of: Some(following.as_of()),
             lag: Some(lag),
             wal: Some(following.wal),
+            loading: None,
             limits: self.limits,
         }
+    }
+
+    /// `loading` with what the source has counted of it so far.
+    fn loading(&self, loading: Option<&Loading>) -> Option<Loading> {
+        let loading = loading?;
+        Some(Loading {
+            rows_read: self.counts.rows.load(Ordering::Relaxed),
+            held_bytes: self.counts.held_bytes.load(Ordering::Relaxed),
+            max_load_memory: self.limits.max_load_memory,
+            ..loading.clone()
+        })
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {
@@ -263,6 +293,7 @@ pub(crate) mod tests {
             Limits {
                 max_lag: std::time::Duration::from_secs(30),
                 max_retained_wal: 4 * BYTES_PER_GIB,
+                max_load_memory: 1 << 30,
             },
         )
     }

@@ -15,7 +15,7 @@ use std::slice;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::{App, Limits, Lsn, Source, SourceError, Step, Writer};
+use straum_app::{App, Limits, LoadCounts, Lsn, Source, SourceError, Step, Writer};
 use straum_domain::{
     Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Store,
     Value, decimal, format_date, format_uuid, push_wide_decimal,
@@ -41,6 +41,7 @@ pub(super) const MAX_RETAINED_WAL_BYTES: u64 = 4 << 30;
 pub(super) const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: MAX_RETAINED_WAL_BYTES,
+    max_load_memory: LOAD_MEMORY,
 };
 /// Rows a transaction may change before Straum stops; no test but
 /// the one for it comes near.
@@ -881,10 +882,14 @@ pub(super) fn relation_file(db: &mut Db, table: &str) -> TableFile {
 pub(super) fn load_all(source: &mut Postgres, spec: &Spec) -> Result<Store, SourceError> {
     let mut store = Store::new(spec.clone());
     for dim in spec.dims() {
-        source.load(slice::from_ref(&dim.name), &mut store)?;
+        source.load(
+            slice::from_ref(&dim.name),
+            &mut store,
+            &LoadCounts::default(),
+        )?;
     }
     for views in spec.facts_by_table() {
-        source.load(&views, &mut store)?;
+        source.load(&views, &mut store, &LoadCounts::default())?;
     }
     Ok(store)
 }

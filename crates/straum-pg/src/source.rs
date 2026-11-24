@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_app::{Commit, Lsn, Source, SourceError, Wal};
+use straum_app::{Commit, Estimate, LoadCounts, Lsn, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
 use crate::catalog::{self, Checked, ColumnVersions, Followed, Tables};
@@ -585,11 +585,34 @@ impl Source for Postgres {
         Ok(at)
     }
 
-    fn load(&mut self, tables: &[Identifier], store: &mut Store) -> Result<(), SourceError> {
+    /// Read in the snapshot's transaction, between the copies.
+    fn estimate(&mut self, tables: &[Identifier]) -> Result<Estimate, SourceError> {
         let State::Loading(snapshot) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
-        match load_tables(snapshot, tables, store) {
+        let Some(first) = tables.first() else {
+            return Ok(Estimate {
+                rows: Some(0),
+                bytes: 0,
+            });
+        };
+        let table = snapshot.tables.get(first);
+        match load::estimate(&mut snapshot.connection, table) {
+            Ok(estimate) => Ok(estimate),
+            Err(error) => Err(self.failed(error)),
+        }
+    }
+
+    fn load(
+        &mut self,
+        tables: &[Identifier],
+        store: &mut Store,
+        counts: &LoadCounts,
+    ) -> Result<(), SourceError> {
+        let State::Loading(snapshot) = &mut self.state else {
+            return Err(Error::Stopped.into());
+        };
+        match load_tables(snapshot, tables, store, counts) {
             Ok(()) => Ok(()),
             Err(error) => Err(self.failed(error)),
         }
@@ -675,6 +698,7 @@ fn load_tables(
     snapshot: &mut Snapshot,
     tables: &[Identifier],
     store: &mut Store,
+    counts: &LoadCounts,
 ) -> Result<(), Error> {
     let mut checked = Vec::new();
     for table in tables {
@@ -685,6 +709,7 @@ fn load_tables(
         &checked,
         store,
         &mut snapshot.stream,
+        counts,
     )?;
     loaded(snapshot, tables)
 }

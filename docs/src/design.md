@@ -100,6 +100,15 @@ connection, so the plain connection must take it up first. The stream
 thread starts there and reads beside the loads, as the physical one
 does.
 
+Before the first copy the writer asks `Source::estimate` for each
+table's rows and bytes, which PostgreSQL reads in the snapshot's
+transaction from `pg_class.reltuples` (-1, unknown, for a table never
+analysed) and `pg_relation_size`, and logs them in one line with the
+columns read. While a table loads, `/readyz` says which, its place,
+the share of its estimated rows read and the bytes of commits the
+stream holds: the load counts both after each batch into the
+`LoadCounts` the writer passes, which the status reads without a lock.
+
 `Source::load` reads each dim, then each fact table once for all the
 views that read it (`Spec::facts_by_table`). It sets the column types
 from the catalog and runs one binary `COPY` of every column those views

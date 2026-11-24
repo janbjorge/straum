@@ -192,6 +192,12 @@ impl Stream {
         }
     }
 
+    /// Bytes of the commits queued, which `--max-load-memory` bounds while
+    /// the tables load.
+    pub(crate) fn held_bytes(&self) -> usize {
+        self.shared.queued_bytes.load(Ordering::Acquire)
+    }
+
     /// Takes `commit` off the counts of what is queued.
     fn count_out(&self, commit: &Commit) {
         let size = Size::of(commit);

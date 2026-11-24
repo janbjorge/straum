@@ -5,13 +5,15 @@
 //! of the server's WAL go behind the progress's lock, so they never wait
 //! on an ask.
 
+use std::fmt;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use std::{fmt, slice};
 
 use straum_domain::{Identifier, RowError, Spec, Store};
 
 use crate::app::{App, Following, Progress, State};
 use crate::lag::Lag;
+use crate::loading::{Load, Loading, loaded, loads, planned};
 use crate::source::{Change, Commit, Drift, Lsn, Source, SourceError, Wal};
 
 const STARTED: &str = "the writer applies commits only to a started stream";
@@ -159,7 +161,9 @@ impl<S: Source> Writer<S> {
             self.phase = Phase::Failed;
             // No state of a failed run is answered from.
             self.app.write().applied = None;
-            self.app.progress().following = None;
+            let mut progress = self.app.progress();
+            progress.following = None;
+            progress.loading = None;
         } else {
             self.phase = Phase::Following;
         }
@@ -173,17 +177,25 @@ impl<S: Source> Writer<S> {
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
         let start = self.source.open(&spec)?;
-        let tables = spec.dims().len() + spec.facts().len();
-        (self.report)(&format!(
-            "opened a stream at {start}; loading {tables} tables"
-        ));
-        let mut store = Store::new(spec.clone());
-        // Dims first, so a fact's rows find theirs when asked.
-        for dim in spec.dims() {
-            self.load(slice::from_ref(&dim.name), "dim", &mut store)?;
+        let loads = loads(&spec);
+        let mut estimates = Vec::new();
+        for load in &loads {
+            estimates.push(self.source.estimate(&load.names)?);
         }
-        for views in spec.facts_by_table() {
-            self.load(&views, "view", &mut store)?;
+        let plan = planned(&loads, &estimates);
+        (self.report)(&format!("opened a stream at {start}; {plan}"));
+        let mut store = Store::new(spec.clone());
+        for (index, (load, estimate)) in loads.iter().zip(estimates).enumerate() {
+            let loading = Loading {
+                table: load.table.clone(),
+                position: index + 1,
+                tables: loads.len(),
+                estimate,
+                rows_read: 0,
+                held_bytes: 0,
+                max_load_memory: self.app.limits.max_load_memory,
+            };
+            self.load(load, loading, &mut store)?;
         }
         let wal = self.read_wal()?;
         let mut lag = Lag::new(opened);
@@ -192,6 +204,7 @@ impl<S: Source> Writer<S> {
         state.store = store;
         state.applied = Some(start);
         let mut progress = self.app.progress();
+        progress.loading = None;
         progress.following = Some(Following {
             applied: start,
             committed: None,
@@ -201,13 +214,19 @@ impl<S: Source> Writer<S> {
         Ok(start)
     }
 
-    /// Loads one dim, or the views of one fact table together, saying
-    /// when it is done and how long it took.
-    fn load(&mut self, names: &[Identifier], kind: &str, store: &mut Store) -> Result<(), Error> {
+    /// Loads one dim, or the views of one fact table together, showing
+    /// how far it is in the status meanwhile, then saying how long it took
+    /// and how many rows it read.
+    fn load(&mut self, load: &Load, loading: Loading, store: &mut Store) -> Result<(), Error> {
+        let counts = &self.app.counts;
+        counts.rows.store(0, Ordering::Relaxed);
+        let bytes = loading.estimate.bytes;
+        self.app.progress().loading = Some(loading);
         let clock = Instant::now();
-        self.source.load(names, store)?;
+        self.source.load(&load.names, store, counts)?;
         let seconds = clock.elapsed().as_secs_f64();
-        (self.report)(&format!("loaded {} in {seconds:.1} s", named(kind, names)));
+        let rows = counts.rows.load(Ordering::Relaxed);
+        (self.report)(&loaded(load, rows, bytes, seconds));
         Ok(())
     }
 
@@ -253,16 +272,6 @@ impl<S: Source> Writer<S> {
         }
         Ok(wal)
     }
-}
-
-/// `view trips` for one name, `views trips, dropoffs` for several.
-fn named(kind: &str, names: &[Identifier]) -> String {
-    let mut listed = Vec::new();
-    for name in names {
-        listed.push(name.as_str());
-    }
-    let plural = if names.len() == 1 { "" } else { "s" };
-    format!("{kind}{plural} {}", listed.join(", "))
 }
 
 /// Why a [`Writer::step`] failed; the writer takes no more steps.
@@ -347,7 +356,7 @@ mod tests {
     use super::{Change, Commit, Drift, Lsn, Step, Wal, Writer};
     use crate::app::AnswerError;
     use crate::app::tests::{WAITING, app, count, follow, id};
-    use crate::source::{Source, SourceError};
+    use crate::source::{Estimate, LoadCounts, Source, SourceError};
 
     #[test]
     fn a_failed_apply_hides_the_commit_before_the_lock_drops() {
@@ -446,7 +455,19 @@ mod tests {
             Ok(Lsn(1))
         }
 
-        fn load(&mut self, _tables: &[Identifier], _store: &mut Store) -> Result<(), SourceError> {
+        fn estimate(&mut self, _tables: &[Identifier]) -> Result<Estimate, SourceError> {
+            Ok(Estimate {
+                rows: Some(0),
+                bytes: 0,
+            })
+        }
+
+        fn load(
+            &mut self,
+            _tables: &[Identifier],
+            _store: &mut Store,
+            _counts: &LoadCounts,
+        ) -> Result<(), SourceError> {
             Ok(())
         }
 
@@ -475,7 +496,16 @@ mod tests {
             Err("connection refused".into())
         }
 
-        fn load(&mut self, _tables: &[Identifier], _store: &mut Store) -> Result<(), SourceError> {
+        fn estimate(&mut self, _tables: &[Identifier]) -> Result<Estimate, SourceError> {
+            Err("connection refused".into())
+        }
+
+        fn load(
+            &mut self,
+            _tables: &[Identifier],
+            _store: &mut Store,
+            _counts: &LoadCounts,
+        ) -> Result<(), SourceError> {
             Err("connection refused".into())
         }
 

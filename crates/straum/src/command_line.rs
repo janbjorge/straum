@@ -56,6 +56,7 @@ const FOUR_GIBIBYTES: u64 = 4 << 30;
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: FOUR_GIBIBYTES,
+    max_load_memory: MAX_LOAD_MEMORY,
 };
 /// Rows one transaction may change before Straum stops instead of applying
 /// it, so the next start brings its rows in through the load;
@@ -222,8 +223,6 @@ pub(crate) struct Run {
     pub(crate) max_transaction_rows: usize,
     /// The rows an ask may get before it is refused.
     pub(crate) max_answer_rows: usize,
-    /// Bytes of commits the stream may hold while the tables load.
-    pub(crate) max_load_memory: usize,
     /// Bytes of resident memory before Straum stops; `None`, the default,
     /// sets no limit and never reads it.
     pub(crate) max_memory: Option<u64>,
@@ -616,10 +615,10 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
         limits: Limits {
             max_lag,
             max_retained_wal,
+            max_load_memory,
         },
         max_transaction_rows,
         max_answer_rows,
-        max_load_memory,
         max_memory: flags.parsed_if_given(MAX_MEMORY_FLAG, bytes, BYTE_LIMIT_TAKES)?,
     }))
 }

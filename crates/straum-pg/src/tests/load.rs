@@ -1,8 +1,11 @@
 //! Loads: a table's binary `COPY` reads as its text does, and the copy
 //! reader handles every way a fake server's copy can go wrong. A load
-//! after the stream started is refused.
+//! after the stream started is refused. A table's estimate comes from the
+//! catalog.
 
-use straum_app::Source;
+use std::cell::RefCell;
+
+use straum_app::{Estimate, LoadCounts, Source};
 use straum_domain::{ColumnType, Datum, Store};
 
 use super::references::*;
@@ -112,7 +115,7 @@ fn no_load_once_the_stream_runs() {
     let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(commit.lsn > start);
     let mut store = Store::new(spec.clone());
-    let error = source.load(&[id("trips")], &mut store);
+    let error = source.load(&[id("trips")], &mut store, &LoadCounts::default());
     assert_eq!(
         error.unwrap_err().to_string(),
         "the replication stream stopped"
@@ -134,12 +137,16 @@ fn a_failed_load_closes_the_source() {
           WHERE application_name = 'straum' AND pid <> pg_backend_pid()",
     );
     let mut store = Store::new(spec.clone());
-    assert!(source.load(&[id("zones")], &mut store).is_err());
+    assert!(
+        source
+            .load(&[id("zones")], &mut store, &LoadCounts::default())
+            .is_err()
+    );
     let stopped = "the replication stream stopped";
     assert_eq!(source.wal().unwrap_err().to_string(), stopped);
     assert_eq!(
         source
-            .load(&[id("trips")], &mut store)
+            .load(&[id("trips")], &mut store, &LoadCounts::default())
             .unwrap_err()
             .to_string(),
         stopped
@@ -168,6 +175,59 @@ fn a_table_two_views_read_is_scanned_once() {
     assert_eq!(db.rows(&read), [[Some("200".to_owned())]]);
     compare(&mut db, &app, &task_oracles()).expect("tasks ready");
     compare(&mut db, &app, &picks_oracles()).expect("picks ready");
+}
+
+thread_local! {
+    /// What the writer under test reported, line by line.
+    static REPORTED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn record(line: &str) {
+    REPORTED.with_borrow_mut(|lines| lines.push(line.to_owned()));
+}
+
+/// A table `ANALYZE` has read is estimated at its rows, all of them, as
+/// the sample takes up to 30000, and the size of its main fork; one
+/// never analysed has rows unknown, never 0 or -1. The writer says both
+/// before its first copy, and each table's rows after its copy.
+#[test]
+fn estimates_a_table_by_its_last_analyze() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "estimate", TABLES);
+    db.run(
+        "INSERT INTO $S.trips (id, at) SELECT n, to_timestamp(n) FROM generate_series(1, 1000) n;
+         ANALYZE $S.trips;",
+    );
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    let trips = source.estimate(&[id("trips")]).unwrap();
+    assert_eq!(trips.rows, Some(1000));
+    let size = db.rows("SELECT pg_relation_size('$S.trips')");
+    assert_eq!(size[0][0], Some(trips.bytes.to_string()));
+    assert!(trips.bytes > 0);
+    let zones = source.estimate(&[id("zones")]).unwrap();
+    let unknown = Estimate {
+        rows: None,
+        bytes: 0,
+    };
+    assert_eq!(zones, unknown);
+    drop(source);
+
+    let mut writer = db.writer(SPEC).reporting(record);
+    started(&mut writer);
+    let lines = REPORTED.take();
+    assert!(
+        lines[0].contains("estimated unknown rows and "),
+        "{lines:?}"
+    );
+    assert!(lines[0].contains("estimate.zones (dim zones) unknown rows, 0.0 MiB, columns id, "));
+    assert!(
+        lines[0].contains("estimate.trips (view trips) 1000 rows, "),
+        "{lines:?}"
+    );
+    assert!(lines[2].starts_with("loaded view trips in "), "{lines:?}");
+    assert!(lines[2].contains(" s: 1000 rows, "), "{lines:?}");
 }
 
 /// Timeouts the database sets for every session cancel none of Straum's

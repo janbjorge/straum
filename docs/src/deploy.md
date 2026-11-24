@@ -88,13 +88,19 @@ a new slot. SIGTERM leads to Stopping.*
 
 | State | `/readyz` | Asks |
 | --- | --- | --- |
-| Loading | 503 `not ready: loading` | 503 |
+| Loading | 503 `not ready: loading public.trips, table 2 of 4, 41% of rows; commits held 3.0 MiB of 1024.0 MiB` | 503 |
 | Ready | 200 `ready` | Answered |
 | Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `as_of` |
 | Exited | No answer: the port is closed | Refused |
 | Stopping | No answer: the port is closed | Those in flight finish, for at most 10 s; new ones refused |
 
 Stopping ends with exit 0 ([straum run](cli.md#straum-run)).
+
+While loading, `/readyz` names the table being read, its place among
+the tables, how much of PostgreSQL's estimate of its rows is read, and
+the commits the stream holds against `--max-load-memory`. The percent
+is left out for a table never analysed, which has no estimate. Before
+the first table it says only `not ready: loading`.
 
 Straum reads the server's write-ahead log (WAL) position every second.
 Lag is the time since Straum last caught up with a position the server

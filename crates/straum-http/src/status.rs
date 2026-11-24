@@ -34,9 +34,10 @@ pub(crate) fn why_not(status: &Status) -> Option<String> {
         return None;
     }
     // No lag means no stream yet: a failed one ends the process.
-    let why = match status.lag {
-        Some(lag) => format!("{} s behind PostgreSQL", lag.as_secs()),
-        None => "loading".to_owned(),
+    let why = match (status.lag, &status.loading) {
+        (Some(lag), _) => format!("{} s behind PostgreSQL", lag.as_secs()),
+        (None, Some(loading)) => loading.to_string(),
+        (None, None) => "loading".to_owned(),
     };
     Some(why)
 }
@@ -154,7 +155,7 @@ fn timestamp(time: SystemTime) -> String {
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use straum_app::{Limits, Lsn, Wal};
+    use straum_app::{Estimate, Limits, Loading, Lsn, Wal};
 
     use super::*;
 
@@ -175,9 +176,11 @@ mod tests {
                 applied: Lsn(0x16_B374_D848),
                 restart: Lsn(0x16_B000_0000),
             }),
+            loading: None,
             limits: Limits {
                 max_lag: Duration::from_secs(30),
                 max_retained_wal: FOUR_GIBIBYTES,
+                max_load_memory: 1 << 30,
             },
         }
     }
@@ -271,6 +274,30 @@ lag:          unknown until every table is loaded
 WAL retained: unknown until every table is loaded
 "
         );
+    }
+
+    /// While a table loads, the reason says which and how far.
+    #[test]
+    fn says_how_far_the_load_is() {
+        let table = Status {
+            loading: Some(Loading {
+                table: "public.trips".to_owned(),
+                position: 2,
+                tables: 4,
+                estimate: Estimate {
+                    rows: Some(1000),
+                    bytes: 0,
+                },
+                rows_read: 410,
+                held_bytes: 0,
+                max_load_memory: 1 << 30,
+            }),
+            ..loading()
+        };
+        let why = "loading public.trips, table 2 of 4, 41% of rows; \
+                   commits held 0.0 MiB of 1024.0 MiB";
+        assert_eq!(why_not(&table).as_deref(), Some(why));
+        assert_eq!(json_of(&table)["why_not"], why);
     }
 
     #[test]

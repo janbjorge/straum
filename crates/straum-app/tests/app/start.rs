@@ -292,7 +292,13 @@ fn a_start_reports_each_table_it_loads() {
     assert_eq!(lines.len(), 4, "{lines:?}");
     assert_eq!(
         lines[0],
-        format!("opened a stream at {lsn}; loading 3 tables")
+        format!(
+            "opened a stream at {lsn}; loading 3 tables, estimated 0 rows and 0.0 MiB: \
+             public.zones (dim zones) 0 rows, 0.0 MiB, columns id, borough; \
+             public.trips (view trips) 0 rows, 0.0 MiB, \
+             columns at, kind, zone_id, fare, rider; \
+             public.logins (view logins) 0 rows, 0.0 MiB, columns at, zone_id"
+        )
     );
     let expected = [
         "loaded dim zones in ",
@@ -300,7 +306,8 @@ fn a_start_reports_each_table_it_loads() {
         "loaded view logins in ",
     ];
     for (line, start) in lines[1..].iter().zip(expected) {
-        assert!(line.starts_with(start) && line.ends_with(" s"), "{line}");
+        assert!(line.starts_with(start), "{line}");
+        assert!(line.contains(" s: 0 rows, 0.0 MiB on disk"), "{line}");
     }
 }
 
@@ -338,9 +345,12 @@ fn views_of_one_table_load_together() {
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     let lines = REPORTED.take();
     assert_eq!(lines.len(), 2, "{lines:?}");
+    let plan = "loading 1 table, estimated 0 rows and 0.0 MiB: \
+                public.trips (views trips, fares) 0 rows, 0.0 MiB, columns at, kind, fare";
+    assert_eq!(lines[0], format!("opened a stream at {lsn}; {plan}"));
     let loaded = &lines[1];
     assert!(
-        loaded.starts_with("loaded views trips, fares in ") && loaded.ends_with(" s"),
+        loaded.starts_with("loaded views trips, fares in ") && loaded.contains(" s: 0 rows, "),
         "{loaded}"
     );
     assert_eq!(database.borrow().loads, ["trips", "fares"]);
