@@ -198,6 +198,13 @@ impl Store {
         Some(self.keyed(fact).cells())
     }
 
+    /// Keyed cells at each width, the `date_bin` width first, then the
+    /// wider ones in the spec's order.
+    pub fn width_cells(&self, fact: &str) -> Option<Vec<usize>> {
+        let fact = self.fact_index(fact)?;
+        Some(self.keyed(fact).level_cells().to_vec())
+    }
+
     /// Bound cells at the `date_bin` width, while the fact has them.
     pub fn bound_cells(&self, fact: &str) -> Option<usize> {
         let fact = self.fact_index(fact)?;

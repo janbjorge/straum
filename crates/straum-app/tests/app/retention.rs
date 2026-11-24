@@ -92,9 +92,9 @@ fn rows(app: &App, ask: &Ask) -> Vec<AnswerRow> {
     app.ask(ask).unwrap().answer.rows
 }
 
-/// Hour cells the store holds.
-fn hour_cells(app: &App) -> usize {
-    app.held().unwrap().views[0].cells
+/// Cells the store holds at each width: hours, then days.
+fn width_cells(app: &App) -> Vec<usize> {
+    app.held().unwrap().views[0].cells.clone()
 }
 
 fn writer_of(fake: Fake) -> Writer<Fake> {
@@ -124,7 +124,7 @@ fn the_store_is_advanced_to_the_snapshot_before_the_load() {
     assert_eq!(*seen.borrow(), [Some(past(9 * DAY))]);
     let app = writer.app();
     assert_eq!(refusal(app, &by_hour(2 * DAY, 3 * DAY)), past(9 * DAY));
-    assert_eq!(hour_cells(app), 1);
+    assert_eq!(width_cells(app), [1, 2]);
     assert_eq!(
         rows(app, &by_day(0, 10 * DAY)),
         [row(int(2 * DAY), 1), row(int(9 * DAY), 1)]
@@ -155,7 +155,7 @@ fn the_store_is_advanced_to_each_commit_s_time_before_its_changes() {
     ]);
     assert!(matches!(writer.step(), Ok(Step::Applied(_))));
     assert_eq!(refusal(&app, &by_hour(3 * DAY, 4 * DAY)), past(9 * DAY));
-    assert_eq!(hour_cells(&app), 1);
+    assert_eq!(width_cells(&app), [1, 2]);
     assert_eq!(
         rows(&app, &by_day(0, 10 * DAY)),
         [row(int(3 * DAY), 1), row(int(9 * DAY), 1)]
@@ -166,7 +166,7 @@ fn the_store_is_advanced_to_each_commit_s_time_before_its_changes() {
         .commit(vec![trip_at(3, 8 * DAY + HOUR)]);
     assert!(matches!(writer.step(), Ok(Step::Applied(_))));
     assert_eq!(refusal(&app, &by_hour(8 * DAY, 9 * DAY)), past(9 * DAY));
-    assert_eq!(hour_cells(&app), 1);
+    assert_eq!(width_cells(&app), [1, 3]);
     assert_eq!(
         rows(&app, &by_day(0, 10 * DAY)),
         [

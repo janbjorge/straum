@@ -1,7 +1,7 @@
 //! Ranges and buckets: an ask reads the buckets from its start to its end,
 //! an open end reaching to the buckets held, a time floors to its bucket
-//! at every width even before 1970, and a row without a time
-//! is kept but never answered.
+//! at every width even before 1970, each width counts its own cells,
+//! and a row without a time is kept but never answered.
 
 use crate::common::{Rng, id};
 use crate::random::trip;
@@ -12,6 +12,27 @@ use straum_domain::{AnswerRow, Ask, AskKey, Datum, RowError, Store, Value, Width
 /// A row of the zones view without its join: a time and pay 1.
 fn paid_trip_at(time: Datum) -> [Datum; 2] {
     [time, Datum::Int(1)]
+}
+
+/// Each width counts its own cells: two quarter hours in one hour are
+/// two cells at the narrow width and one at the wide one.
+#[test]
+fn each_width_counts_its_cells() {
+    let mut store = Store::new(zones_spec(None, Widths::QuarterAndHour));
+    assert_eq!(store.width_cells("trips"), Some(vec![0, 0]));
+    assert_eq!(store.width_cells("nope"), None);
+    let width = i64::from(WIDTH);
+    for at in [START + 1, START + width] {
+        store
+            .add_row("trips", &paid_trip_at(Datum::Int(at)))
+            .unwrap();
+    }
+    assert_eq!(store.width_cells("trips"), Some(vec![2, 1]));
+    assert_eq!(store.cells("trips"), Some(2));
+    store
+        .remove_row("trips", &paid_trip_at(Datum::Int(START + 1)))
+        .unwrap();
+    assert_eq!(store.width_cells("trips"), Some(vec![1, 1]));
 }
 
 /// The range runs from the first `date_bin` bucket's start to the last

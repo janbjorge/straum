@@ -60,8 +60,9 @@ a count of cells bounds bytes only loosely.
 - A width kept for a time answers only from its horizon on; an ask
   further back reads a wider width. The widest width always keeps
   every bucket, so memory still grows with the range, at its rate.
-- Not yet: keeping the widest width for a time, a sliding window, and
-  each width's cells in `/status`.
+- `GET /views` and `straum views` show each width's cells, so an
+  operator sees which width costs the memory.
+- Not yet: keeping the widest width for a time, and a sliding window.
 - The root filesystem stays read-only and Straum keeps nothing on
   disk (ADR-0012).
 - Bringing spill back starts from `git log -p` on this record and on

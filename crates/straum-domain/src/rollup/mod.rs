@@ -317,6 +317,11 @@ impl Rollup {
         self.level_cells[DATE_BIN.0]
     }
 
+    /// Cells at each level, the `date_bin` width first.
+    pub(crate) fn level_cells(&self) -> &[usize] {
+        &self.level_cells
+    }
+
     /// Whether any level holds a cell. The widest level answers for all:
     /// every row goes into every level, so it holds a cell while any does.
     pub(crate) fn holds_cells(&self) -> bool {

@@ -318,7 +318,7 @@ class Retention(unittest.TestCase):
 
     def test_cells_sum_each_views_narrowest_width_and_skip_dims(self):
         views = (
-            "view trips\n  buckets:  1 hour\n  holds:    1000 cells and 1 bound cell\n"
+            "view trips\n  buckets:  1 hour (1000 cells)\n  holds:    1000 cells and 1 bound cell\n"
             "\nview dropoffs\n  holds:    1 cell\n\ndim public.zones\n  holds:    265 rows\n"
         )
         self.assertEqual(retention.cells(views), 1001)

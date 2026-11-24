@@ -113,10 +113,11 @@ fn key_json(name: &str, column: ColumnType) -> String {
 
 fn view_text(view: &HeldView) -> String {
     let mut widths = Vec::with_capacity(view.widths.len());
-    for width in &view.widths {
-        widths.push(width_text(*width, &view.kept));
+    for (width, cells) in view.widths.iter().zip(&view.cells) {
+        widths.push(width_text(*width, *cells, &view.kept));
     }
-    let mut holds = counted(view.cells, "cell");
+    let date_bin_cells = view.cells.first().copied().unwrap_or_default();
+    let mut holds = counted(date_bin_cells, "cell");
     if let Some(bound) = view.bound_cells {
         let _ = write!(holds, " and {}", counted(bound, "bound cell"));
     }
@@ -145,10 +146,10 @@ fn view_text(view: &HeldView) -> String {
     )
 }
 
-/// A width, and for one kept only for a time how long and, once the
-/// store is advanced, from when.
-fn width_text(width: Width, kept: &[HeldKept]) -> String {
-    let mut text = width.to_string();
+/// A width with the cells it holds, and for one kept only for a time how
+/// long and, once the store is advanced, from when.
+fn width_text(width: Width, cells: usize, kept: &[HeldKept]) -> String {
+    let mut text = format!("{width} ({})", counted(cells, "cell"));
     for held_kept in kept {
         if held_kept.width != width {
             continue;
@@ -239,7 +240,7 @@ mod tests {
                 key("borough", ColumnType::Text),
             ],
             measures: vec![identifier("trips"), identifier("fare_sum")],
-            cells: 412,
+            cells: vec![412, 20],
             bound_cells: Some(1),
             range: Some(1_704_067_200..1_704_240_000),
             kept: Vec::new(),
@@ -280,7 +281,7 @@ mod tests {
                     time: key("bucket", ColumnType::Time { zoned: false }),
                     keys: Vec::new(),
                     measures: vec![identifier("logins")],
-                    cells: 1,
+                    cells: vec![1],
                     bound_cells: None,
                     range: None,
                     kept: Vec::new(),
@@ -292,13 +293,13 @@ mod tests {
             write(&held),
             "\
 view trips
-  buckets:  15 minutes, 1 day
+  buckets:  15 minutes (412 cells), 1 day (20 cells)
   holds:    412 cells and 1 bound cell, 2024-01-01T00:00:00Z to 2024-01-03T00:00:00Z
   keys:     bucket timestamptz, kind integer, fare numeric scale 2, shared boolean, borough text
   measures: trips, fare_sum
 
 view logins
-  buckets:  90 seconds
+  buckets:  90 seconds (1 cell)
   holds:    1 cell
   keys:     bucket timestamp
   measures: logins
@@ -411,7 +412,7 @@ dim public.zones
     }
 
     /// A width kept for a time says for how long and, once the store is
-    /// advanced, from when; the widths kept for good say only themselves.
+    /// advanced, from when; the widths kept for good say only their cells.
     #[test]
     fn a_kept_width_says_how_long_and_from_when() {
         let advanced = HeldView {
@@ -419,7 +420,8 @@ dim public.zones
             ..trips()
         };
         let text = view_text(&advanced);
-        let buckets = "buckets:  15 minutes kept for 2 days from 2024-01-02T00:00:00Z, 1 day\n";
+        let buckets = "buckets:  15 minutes (412 cells) kept for 2 days \
+                       from 2024-01-02T00:00:00Z, 1 day (20 cells)\n";
         assert!(text.contains(buckets), "{text}");
         let fresh = HeldView {
             kept: kept(None),
@@ -427,10 +429,11 @@ dim public.zones
         };
         let text = view_text(&fresh);
         assert!(
-            text.contains("buckets:  15 minutes kept for 2 days, 1 day\n"),
+            text.contains("buckets:  15 minutes (412 cells) kept for 2 days, 1 day (20 cells)\n"),
             "{text}"
         );
-        assert!(view_text(&trips()).contains("buckets:  15 minutes, 1 day\n"));
+        let kept_for_good = "buckets:  15 minutes (412 cells), 1 day (20 cells)\n";
+        assert!(view_text(&trips()).contains(kept_for_good));
     }
 
     #[test]

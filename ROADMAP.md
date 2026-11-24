@@ -82,5 +82,5 @@ on a server someone runs.
 - A reload of one table, and applying a large commit in pieces
   (ADR-0009).
 - Percentile asks miss the 1 ms target; ADR-0005 lists the steps.
-- Keeping the widest width for a time, a sliding window, and each
-  width's cells in `/status` (ADR-0010).
+- Keeping the widest width for a time, and a sliding window
+  (ADR-0010).

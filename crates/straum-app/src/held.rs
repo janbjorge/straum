@@ -1,7 +1,7 @@
 //! What the store holds, as asks may read it. `App::held` reads every
 //! view and dim under the store's lock into one `Held`: per view its
-//! widths, keys, measures, how many cells it keeps and each width kept
-//! only for a time with its horizon, per dim its rows
+//! widths, keys, measures, how many cells it keeps at each width and
+//! each width kept only for a time with its horizon, per dim its rows
 //! and the view keys that read it. `App::rows_ask` builds, from the spec
 //! alone, the ask for every row a view holds.
 
@@ -31,8 +31,9 @@ pub struct HeldView {
     /// Every name an ask may group or filter by, the time aside.
     pub keys: Vec<HeldKey>,
     pub measures: Vec<Identifier>,
-    /// Keyed cells at the `date_bin` width.
-    pub cells: usize,
+    /// Keyed cells at each width, in `widths` order: the `date_bin`
+    /// width first.
+    pub cells: Vec<usize>,
     /// Bound cells at the `date_bin` width, for a view that keeps them.
     pub bound_cells: Option<usize>,
     /// Every bucket an ask without bounds reads, at any width, in Unix
@@ -158,7 +159,7 @@ fn held_view(store: &Store, fact: &Fact) -> HeldView {
         },
         keys,
         measures: measure_names(fact),
-        cells: store.cells(name).expect(IN_SPEC),
+        cells: store.width_cells(name).expect(IN_SPEC),
         bound_cells: store.bound_cells(name),
         range: store.range(name),
         kept: held_kept(store, fact),

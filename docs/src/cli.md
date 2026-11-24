@@ -226,20 +226,26 @@ holds, from its `GET /views`.
 ```text
 $ straum views
 view trips
-  buckets:  1 hour, 1 day, 7 days
-  holds:    173660 cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
+  buckets:  1 hour (1157581 cells), 1 day (129115 cells), 7 days (25803 cells)
+  holds:    1157581 cells, 2002-12-31T21:00:00Z to 2026-06-27T04:00:00Z
   keys:     bucket timestamptz, payment_type integer, pu_location_id integer, borough text
-  measures: trips, fare, avg_fare
+  measures: trips, fare, avg_fare, fare_variance, fare_deviation, median_fare, p99_fare, common_fare, distinct_fares, distinct_fare_sum, distinct_fare_avg
+
+view dropoffs
+  buckets:  1 hour (713457 cells), 1 day (45626 cells), 7 days (7004 cells)
+  holds:    713457 cells, 2002-12-31T21:00:00Z to 2026-06-27T04:00:00Z
+  keys:     bucket timestamptz, do_location_id integer, borough text
+  measures: trips, tips, avg_distance, fare
 
 dim public.taxi_zones
   holds:    265 rows
-  asked as: trips.borough
+  asked as: trips.borough, dropoffs.borough
 ```
 
 | Line | Shows |
 | --- | --- |
-| `buckets` | The bucket widths the view keeps. A width [kept for a time](spec.md#keeping-a-width-for-a-time) says for how long and where its buckets start, its horizon, as in `1 hour kept for 14 days from 2026-11-10T00:00:00Z, 1 day, 7 days`; before Straum first reads PostgreSQL's time it has no `from`. |
-| `holds` | The [cells](how-it-works.md#cells) at the narrowest width, and the bound cells of a view that keeps them; then the range of every bucket it holds at any width, which an ask without bounds reads. A few trips in the month carry a wrong year, hence 2003. |
+| `buckets` | The bucket widths the view keeps, each with the [cells](how-it-works.md#cells) it holds, so the counts show which width holds the most. A width [kept for a time](spec.md#keeping-a-width-for-a-time) says for how long and where its buckets start, its horizon, as in `1 hour (N cells) kept for 14 days from 2026-11-10T00:00:00Z`; before Straum first reads PostgreSQL's time it has no `from`. |
+| `holds` | The [cells](how-it-works.md#cells) at the narrowest width, and the bound cells of a view that keeps them; then the range of every bucket it holds at any width, which an ask without bounds reads. A few trips carry a wrong year, hence 2002. |
 | `keys` | Every name an ask may group or filter by, with the type a parameter for it must have. |
 | `measures` | The names an ask may select after the keys. |
 | `asked as` | The keys of the views that read a dim's columns. An ask names a view, never a dim, so it reads the dim through these. |
