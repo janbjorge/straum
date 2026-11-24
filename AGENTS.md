@@ -53,7 +53,7 @@ pinned actions and the Cargo dependencies.
 
 `just --list` names every recipe: the checks above, `just correctness`,
 `just heap-fixtures`, `just image`, `just taxi
-[asks|transactions|materialized|load|shell]` (`wal=physical` for the
+[asks|transactions|materialized|load|retention|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`, `just wal-bench`, `just cost-bench`,
 `just demo`, `just outbox`, `just try SPEC --data DIR`. Every setting
 has a default, overridden on the command line (`just postgres=17

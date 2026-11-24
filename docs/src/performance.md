@@ -187,14 +187,18 @@ PostgreSQL's `avg`, variance and standard deviation rounded half to even
 at the places Straum gives them. A run takes about 80 seconds once the
 data is there.
 
-The recipe has four modes, each after the same setup. `just taxi`
+The recipe has six modes, each after the same setup. `just taxi`
 or `just taxi asks` gives the [Results](#results).
 `just taxi materialized` builds and refreshes the materialized
 views, then asks all three sides
 ([Against a materialized view](#against-a-materialized-view)).
 `just taxi transactions` runs one transaction of 1,000 to 1,000,000
 changed rows while a client asks Straum back to back
-([Transactions](#transactions)). `just taxi shell` opens
+([Transactions](#transactions)). `just taxi load` samples the WAL
+PostgreSQL keeps and Straum's memory while Straum loads under writes.
+`just taxi retention` runs Straum three times, with and without widths
+kept for a time ([Keeping widths for a time](#keeping-widths-for-a-time)).
+`just taxi shell` opens
 [`straum shell`](cli.md#straum-shell) at the trips in place of the
 asks; leaving the shell removes PostgreSQL.
 
@@ -453,6 +457,49 @@ bytes a cell, before `trips` kept its fares for the percentiles; with
 them, 113 MiB on 2026-11-15. With the measures the
 [Results](#results) add, they held 305 MiB on 2026-11-19, then 202 MiB
 on 2026-11-20 once the distinct values read the percentiles' counts.
+
+### Keeping widths for a time
+
+```sh
+just taxi retention
+```
+
+It runs Straum three times on the benchmark's
+[views](#the-views): as written, with `1 hour` kept for a time in both,
+and with `1 hour` and `1 day` kept for a time. `bench/retention.py`
+writes the specs and their asks. A duration counts back from
+PostgreSQL's time, and the trips are from 2024, so each duration is
+offset by the gap from the newest trip before July 2024 to the
+server's `now()`: the hours are kept from 14 days before that trip's
+day, the days from 91 days before its 7-day bucket. Each duration is
+rounded up to a whole multiple of the next wider width. A few trips
+carry a wrong year, one in 2026, hence the bound on the newest trip.
+
+Each run asks trips and fare per week over every bucket, per day over
+every bucket (over the last 91 days where days are kept for a time),
+and trips per hour by borough over the last 14 days. Each answer must
+equal PostgreSQL's. The asks per hour, and in the third run per day,
+over every bucket must be refused with `kept only from`, or the run
+stops.
+
+One run on 2026-11-24, on the machine of the [Results](#results), with
+PostgreSQL 18. The newest trip before July 2024 was at
+2024-06-30T23:59:59Z, and `now()` 2026-11-24T13:48:11Z. Held is what
+Straum held once ready, and Against a is that against the first run.
+Cells are those at the narrowest width, both views together. The ask
+times are Straum's.
+
+| Run | Kept for a time | Ready | Held | Against a | Cells | Per week | Per day | Per hour by borough, 14 days |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a | none | 13.1 s | 207 MiB | 100% | 1,871,038 | 233 µs | 631 µs | 1.5 ms |
+| b | 1 hour: 892 days | 12.4 s | 64 MiB | 31% | 172,980 | 241 µs | 614 µs | 1.5 ms |
+| c | 1 hour: 892 days; 1 day: 973 days | 12.4 s | 53 MiB | 26% | 172,980 | 232 µs | 423 µs | 1.5 ms |
+
+The hours hold most of the cells, so keeping two weeks of them leaves
+less than a third of the memory. Keeping the days for 91 days as well
+saves less, since a day width holds far fewer cells. The asks within
+the horizons take as long as before; the ask per day in the third run
+reads 91 days, not six months. Every check passed.
 
 ### The taxi month under a wide key
 

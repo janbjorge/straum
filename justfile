@@ -106,7 +106,7 @@ image:
 docs command="build" *flags:
     mdbook "$@" docs
 
-# Taxi trips in a throwaway PostgreSQL: asks, transactions, materialized or shell
+# Taxi trips in a throwaway PostgreSQL: asks, transactions, materialized, load, retention or shell
 [group('taxi')]
 taxi mode="asks":
     bench/taxi.py {{ mode }} --wal {{ wal }}

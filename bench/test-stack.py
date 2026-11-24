@@ -11,9 +11,10 @@ from a URL alone; every such test runs against both. They read `docker
 compose` output handed to them here. try_your_data.py's Compose file
 names the Host names Straum answers, which a test reads.
 
-bench/answers.py says when Straum and PostgreSQL answer alike, and
+bench/answers.py says when Straum and PostgreSQL answer alike,
 bench/materialized.py writes the materialized views and the asks over them
-that bench/taxi.py's materialized mode times.
+that bench/taxi.py's materialized mode times, and bench/retention.py the
+specs and asks of its retention mode.
 """
 
 import argparse
@@ -48,6 +49,11 @@ COPIES = [load("stack"), TRY]
 sys.path.insert(0, str(BENCH))
 answers = load("answers")
 materialized = load("materialized")
+retention = load("retention")
+SPEC = (BENCH / "trips.sql").read_text()
+# The newest trip, 2024-06-30T23:30:00Z, and a later server clock.
+NEWEST = 1_719_790_200
+NOW = 1_795_000_000
 TRIPS_VIEW = next(
     view for view in materialized.MATERIALIZED_VIEWS if view.straum_view == "trips"
 )
@@ -280,6 +286,42 @@ class MaterializedAsks(unittest.TestCase):
         self.assertEqual(materialized.answer_cell(None), "needs the raw rows")
         self.assertEqual(materialized.answer_cell(0.0005), "500 µs")
         self.assertEqual(materialized.answer_cell(0.0123), "12.3 ms")
+
+
+class Retention(unittest.TestCase):
+    def test_each_horizon_falls_on_its_edge_or_before(self):
+        a, b, c = retention.runs(SPEC, NEWEST, NOW, ("weekly", "", "", []))
+        hours_kept = int(b.kept.split(": ")[1].split()[0]) * retention.DAY_SECONDS
+        days_kept = int(c.kept.split("1 day: ")[1].split()[0]) * retention.DAY_SECONDS
+        self.assertEqual(days_kept % retention.WEEK_SECONDS, 0)
+        self.assertLessEqual(hours_kept, days_kept)
+        hourly = b.asks[2][3]
+        self.assertEqual(hourly, ["2024-06-16T00:00:00Z", "2024-07-01T00:00:00Z"])
+        self.assertEqual(c.asks[1][3][0], "2024-03-28T00:00:00Z")
+        # The load reads now() up to a day later; its horizon never passes
+        # the first bound an ask reads.
+        for late in [0, retention.DAY_SECONDS - 1]:
+            hours_at = retention.floor(NOW + late - hours_kept, retention.DAY_SECONDS)
+            days_at = retention.floor(NOW + late - days_kept, retention.WEEK_SECONDS)
+            self.assertLessEqual(hours_at, NEWEST - 14 * retention.DAY_SECONDS)
+            self.assertLessEqual(retention.stamp(hours_at), hourly[0])
+            self.assertLessEqual(retention.stamp(days_at), c.asks[1][3][0])
+        self.assertEqual(a.spec, SPEC)
+        self.assertEqual(b.spec.count("keep('1 hour'"), 2)
+        self.assertEqual(c.spec.count("keep('1 day'"), 2)
+        self.assertEqual([len(run.refused) for run in [a, b, c]], [0, 1, 2])
+
+    def test_a_spec_without_the_widths_in_both_views_is_refused(self):
+        planted = SPEC.replace(retention.WIDTHS, "'1 hour', '1 day'", 1)
+        with self.assertRaises(ValueError):
+            retention.spec_with(planted, "'1 day'")
+
+    def test_cells_sum_each_views_narrowest_width_and_skip_dims(self):
+        views = (
+            "view trips\n  buckets:  1 hour\n  holds:    1000 cells and 1 bound cell\n"
+            "\nview dropoffs\n  holds:    1 cell\n\ndim public.zones\n  holds:    265 rows\n"
+        )
+        self.assertEqual(retention.cells(views), 1001)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,11 @@ against PostgreSQL. Straum reads the WAL while the tables load and holds
 the commits itself, so the WAL kept should stay small however long the
 load takes. Straum's log goes to stderr.
 
+retention: runs Straum on bench/trips.sql as is, then with widths kept
+for a time (bench/retention.py), and reports the memory each run holds.
+Asks it can answer must equal PostgreSQL's; asks of dropped widths must
+be refused.
+
 shell: leaves you in `straum shell` at the trips.
 
 --wal physical has Straum read the physical WAL instead of logical decoding.
@@ -72,6 +77,7 @@ import aiohttp
 import asyncpg
 import orjson
 import psutil
+import retention
 import tabulate
 from answers import alike, duration
 from materialized import (
@@ -296,12 +302,13 @@ def main() -> int:
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=["asks", "transactions", "materialized", "load", "shell"],
+        choices=["asks", "transactions", "materialized", "load", "retention", "shell"],
         default="asks",
         help="asks: time the asks on both sides (default); "
         "transactions: what one large transaction costs Straum; "
         "materialized: the asks over materialized views too, and their upkeep; "
         "load: the WAL kept and memory held while Straum loads under writes; "
+        "retention: the memory widths kept for a time save; "
         "shell: open straum shell at the trips",
     )
     parser.add_argument(
@@ -383,6 +390,8 @@ async def run(
                 return await materialized(pg, straum, dsn, flags)
             case "load":
                 return await load_under_writes(pg, url, straum, dsn, flags)
+            case "retention":
+                return await retention_runs(pg, straum, dsn, flags)
             case _:
                 return await asks(pg, straum, dsn, flags)
 
@@ -532,6 +541,31 @@ async def materialized(
         "Refresh concurrently",
     ]
     print_table(table, headers, "lrrrrr")
+    return 0
+
+
+async def retention_runs(
+    pg: asyncpg.Connection, straum: str, dsn: str, flags: list[str]
+) -> int:
+    newest, now = await pg.fetchrow(retention.EDGES_SQL)
+    weekly = next(each for each in ASKS if each[0] == "Fares per week")
+    rows = []
+    with tempfile.TemporaryDirectory() as directory:
+        for run in retention.runs(SPEC.read_text(), newest, now, weekly):
+            spec = pathlib.Path(directory) / f"{run.name}.sql"
+            spec.write_text(run.spec)
+            log(f"run {run.name}, kept for a time: {run.kept}")
+            async with serve(straum, dsn, *flags, spec=spec) as (http, loaded, process, _):
+                memory = held(process)
+                async with http.get("/views") as response:
+                    cells = retention.cells(await response.text())
+                times = [(await compare(pg, http, *each))[3] for each in run.asks]
+                for name, query in run.refused:
+                    await retention.refused(http, f"{name}, run {run.name}", query)
+            rows.append(retention.Measured(run, loaded, memory, cells, times))
+    print(retention.note(newest, now))
+    print()
+    print_table(retention.table(rows), retention.HEADERS, "llrrrrrrr")
     return 0
 
 
@@ -777,9 +811,9 @@ def build() -> str:
 
 
 @contextlib.asynccontextmanager
-async def serve(straum: str, dsn: str, *flags: str):
-    """`straum run` with `flags`, once ready: a session to ask it, how long
-    it took to load, its process, and its URL."""
+async def serve(straum: str, dsn: str, *flags: str, spec: pathlib.Path = SPEC):
+    """`straum run` on `spec` with `flags`, once ready: a session to ask
+    it, how long it took to load, its process, and its URL."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -787,7 +821,7 @@ async def serve(straum: str, dsn: str, *flags: str):
     server = await asyncio.create_subprocess_exec(
         straum,
         "run",
-        SPEC,
+        spec,
         "--listen",
         f"127.0.0.1:{port}",
         *flags,
