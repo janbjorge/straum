@@ -77,6 +77,18 @@ needs. `ring` and `aws-lc-rs` need a C compiler on Linux.
 Back when: one of them builds without one, or graviola stops a start
 on a server someone runs.
 
+### An ask that pins each part of the rollup key
+
+An ask can give each part of the rollup key with `=`. Then it reads at
+most one cell in each bucket. The cell loop reads every cell of each
+bucket that the ask covers, but each bucket has an index from cell key
+to cell (`Cells::find`). The cell loop could find that one cell in the
+index.
+
+Back when: the cost benchmark (`just cost-bench`) shows that such an
+ask spends its time on the cells of a bucket. Measure it first, then
+find the cell in the index.
+
 ## Open in the records
 
 - A reload of one table, and applying a large commit in pieces
