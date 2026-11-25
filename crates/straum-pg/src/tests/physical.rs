@@ -3,6 +3,7 @@
 //! to) at `wal_level = replica`, starts from a snapshot, and follows on.
 //! Also what holds a start back.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -550,7 +551,8 @@ fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
 /// While Straum waits for a snapshot that sees DDL, the stream thread
 /// reads nothing, so it answers the server there too. A wait past a
 /// `wal_sender_timeout` of 4 s keeps the stream, and the commits after
-/// the DDL apply.
+/// the DDL apply. The thread answers about once a second, not at each
+/// look for the snapshot.
 #[test]
 fn the_ddl_wait_outlasts_wal_sender_timeout() {
     let pg = replica_with_short_sender_timeout();
@@ -572,17 +574,34 @@ fn the_ddl_wait_outlasts_wal_sender_timeout() {
         while watch.rows(snapshot_query).unwrap().is_empty() {
             wait.poll();
         }
-        thread::sleep(Duration::from_secs(6));
+        // Each status update has its own send time, so the distinct reply
+        // times count the updates that the walsender read.
+        let mut replies = BTreeSet::new();
+        let window = Instant::now();
+        while window.elapsed() < Duration::from_secs(6) {
+            replies.extend(
+                watch
+                    .rows("SELECT reply_time::text FROM pg_stat_replication")
+                    .unwrap(),
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
         let senders = watch.rows("SELECT count(*)::text FROM pg_stat_replication");
         release_the_standby(&mut watch);
-        senders.unwrap()
+        (senders.unwrap(), replies.len())
     });
     let written = db.run_committed(&format!(
         "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
     ));
     let wait = Wait::within(Duration::from_secs(30), &format!("{written} applied"));
     apply_through(&mut writer, written, &wait);
-    assert_eq!(release.join().unwrap(), vec![vec![Some("1".to_owned())]]);
+    let (senders, replies) = release.join().unwrap();
+    assert_eq!(senders, vec![vec![Some("1".to_owned())]]);
+    // About one update each second of the 6 s: some, but not a tight loop.
+    assert!(
+        (3..=10).contains(&replies),
+        "{replies} status updates in 6 s"
+    );
     alter.join().unwrap();
 }
 
