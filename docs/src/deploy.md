@@ -156,6 +156,9 @@ A transaction that changes more rows of the spec's tables than
 `--max-stream-memory` ([straum run](cli.md#straum-run)), stops Straum.
 The next start loads those rows through the bulk `COPY`. A transaction
 of wide text rows can pass the bytes limit far under the rows limit.
+The commits queued and the transaction the stream reads can each hold
+`--max-stream-memory`, so Straum can hold up to twice that ahead of the
+writer.
 Every replica reads the same transaction, so every one stops and loads
 again at once. Batch a backfill or bulk update into transactions under
 the limit, or raise the limit and pay what

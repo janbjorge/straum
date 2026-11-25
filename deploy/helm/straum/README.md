@@ -37,14 +37,17 @@ cells, and at the defaults, both `1Gi`, the pod is killed for its
 memory before straum's own limit can stop it with exit 1.
 
 `maxStreamMemory`, `1Gi` by default, bounds the commits straum holds
-while its tables load, read ahead of the writer. They too come on top
-of the cells, so keep it under `resources.limits.memory`.
+ahead of the writer, and the rows of one transaction. Past it while the
+tables load, or in one transaction, straum exits 1; after the load, a
+full queue waits for the writer. The queue and a transaction can each
+hold this much, so up to twice `maxStreamMemory` comes on top of the
+cells: keep that under `resources.limits.memory`.
 
 `maxMemory`, unset by default, bounds straum's resident memory: past
 it straum exits 1 with a line naming the limit, rather than the kernel
 killing the pod without one. Set it a little under
-`resources.limits.memory`, and above `maxStreamMemory` plus the cells,
-and `maxPageMemory` too with `wal: physical`.
+`resources.limits.memory`, and above twice `maxStreamMemory` plus the
+cells, and `maxPageMemory` too with `wal: physical`.
 
 ## Checks
 

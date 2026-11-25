@@ -144,12 +144,12 @@ queued waits and no transaction is open, the WAL it has read. During a
 load that is the start. While the tables
 load its queue has no bound in commits, only `--max-stream-memory` in
 bytes; the writer's first `Stream::next` ends that, and from then 64
-commits or 200,000 changes bound it, so the thread reads nothing more
-until the writer has taken a backlog below them. While the queue is
-full, and while a physical stream waits after data definition language
-(DDL), the thread still
-confirms every second, so the server does not end the stream at its
-`wal_sender_timeout`. Each load checks
+commits, 200,000 changes or `--max-stream-memory` bytes bound it, so
+the thread reads nothing more until the writer has taken a backlog
+below them. An empty queue takes one commit of any size. While the
+queue is full, and while a physical stream waits after data definition
+language (DDL), the thread still confirms every second, so the server
+does not end the stream at its `wal_sender_timeout`. Each load checks
 after every batch that the stream has not failed. Any error on the way
 is a `Failure`, and Straum exits. A writer starts once; a failed one
 takes no more steps.

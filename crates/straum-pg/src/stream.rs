@@ -8,7 +8,8 @@
 //! writer has applied goes to the lag instead (`report.rs`).
 //! While the tables load the thread reads on and queues every commit, up
 //! to `--max-stream-memory` bytes of them; once the writer takes the first,
-//! the queue holds a few commits ahead of it and the thread waits for room.
+//! the queue holds a few commits ahead of it, at most
+//! `--max-stream-memory` bytes, and the thread waits for room.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -37,8 +38,9 @@ pub(crate) const POLL: Duration = Duration::from_secs(1);
 /// a full queue or the wait after DDL, which stop the thread reading,
 /// can't outlast a `wal_sender_timeout` of a few seconds.
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
-/// Commits read ahead of the writer once it takes them. While the tables
-/// load the bound is `--max-stream-memory` instead.
+/// Commits read ahead of the writer once it takes them, beside
+/// `--max-stream-memory` in bytes. While the tables load the bound is
+/// `--max-stream-memory` alone.
 const QUEUE: usize = 64;
 /// Changes read ahead of the writer, beside [`QUEUE`]: 64 commits at the
 /// row limit would hold gigabytes. A commit bigger than this still goes
@@ -453,7 +455,7 @@ impl StreamThread {
 
     /// Whether an item of `size` may be queued now. While the tables load
     /// it may, unless it takes the queue past `--max-stream-memory`; after,
-    /// only within the queue's bounds in commits and changes.
+    /// only within the queue's bounds in commits, changes and bytes.
     fn room(&self, size: Size) -> Result<Room, Error> {
         let shared = &self.shared;
         if shared.loading.load(Ordering::Acquire) {
@@ -467,7 +469,11 @@ impl StreamThread {
         }
         let commits = shared.queued_commits.load(Ordering::Acquire);
         let changes = shared.queued_changes.load(Ordering::Acquire);
-        if commits < QUEUE && has_room(changes, size.changes) {
+        let bytes = shared.queued_bytes.load(Ordering::Acquire);
+        if commits < QUEUE
+            && has_room(changes, size.changes, QUEUED_CHANGES)
+            && has_room(bytes, size.bytes, self.max_stream_memory)
+        {
             return Ok(Room::Fits);
         }
         Ok(Room::Full)
@@ -539,10 +545,10 @@ fn footprint(commit: &Commit) -> usize {
     bytes
 }
 
-/// Whether a commit of `changes` fits beside the `queued` changes: always
-/// into an empty queue.
-fn has_room(queued: usize, changes: usize) -> bool {
-    queued == 0 || queued.saturating_add(changes) <= QUEUED_CHANGES
+/// Whether a commit that adds `added` changes or bytes fits beside the
+/// `queued` ones under `bound`: always into an empty queue.
+fn has_room(queued: usize, added: usize, bound: usize) -> bool {
+    queued == 0 || queued.saturating_add(added) <= bound
 }
 
 /// A standby status update saying the server may recycle the WAL before
@@ -667,12 +673,45 @@ mod tests {
     /// transaction still streams.
     #[test]
     fn the_queue_is_bounded_in_changes() {
-        assert!(has_room(0, 1));
-        assert!(has_room(0, QUEUED_CHANGES * 3));
-        assert!(has_room(QUEUED_CHANGES - 10, 10));
-        assert!(!has_room(QUEUED_CHANGES - 10, 11));
-        assert!(!has_room(1, QUEUED_CHANGES));
-        assert!(!has_room(usize::MAX, 1));
+        let bound = QUEUED_CHANGES;
+        assert!(has_room(0, 1, bound));
+        assert!(has_room(0, QUEUED_CHANGES * 3, bound));
+        assert!(has_room(QUEUED_CHANGES - 10, 10, bound));
+        assert!(!has_room(QUEUED_CHANGES - 10, 11, bound));
+        assert!(!has_room(1, QUEUED_CHANGES, bound));
+        assert!(!has_room(usize::MAX, 1, bound));
+    }
+
+    /// After the load a queue that holds `--max-stream-memory` bytes is
+    /// full, under its bounds in commits and changes, until the writer
+    /// takes a commit.
+    #[test]
+    fn after_the_load_the_queue_is_bounded_in_bytes() {
+        let wide = || commit_with_text(&"x".repeat(1_000));
+        let size = Size::of(&wide());
+        let (mut stream, mut thread) = ends(size.bytes * 3);
+        stream.shared.loading.store(false, Ordering::Release);
+        for queued in 0..3 {
+            assert_eq!(thread.room(size).unwrap(), Room::Fits, "{queued} queued");
+            assert!(thread.deliver(Ok(wide())).unwrap());
+        }
+        assert_eq!(thread.room(size).unwrap(), Room::Full);
+        assert_eq!(thread.room(Size::of(&commit_of(1))).unwrap(), Room::Full);
+        stream.next(Duration::ZERO).unwrap().unwrap();
+        assert_eq!(thread.room(size).unwrap(), Room::Fits);
+    }
+
+    /// After the load an empty queue takes a commit of any size, so a
+    /// commit past the bound in bytes still streams, alone.
+    #[test]
+    fn an_empty_queue_takes_a_commit_of_any_size() {
+        let wide = commit_with_text(&"x".repeat(1_000));
+        let size = Size::of(&wide);
+        let (stream, mut thread) = ends(size.bytes / 2);
+        stream.shared.loading.store(false, Ordering::Release);
+        assert_eq!(thread.room(size).unwrap(), Room::Fits);
+        assert!(thread.deliver(Ok(wide)).unwrap());
+        assert_eq!(thread.room(Size::of(&commit_of(1))).unwrap(), Room::Full);
     }
 
     /// While the tables load the thread queues every commit it reads,

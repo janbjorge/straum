@@ -114,8 +114,8 @@ read. The writer takes the write lock per commit; asks take the read
 lock.*
 
 A long ask delays the writer, which shows as lag. The stream reads up to
-64 commits or 200,000 changes ahead of the writer and confirms what it
-has read, so PostgreSQL can recycle write-ahead log (WAL): the commits
+64 commits, 200,000 changes or `--max-stream-memory` bytes of commits
+ahead of the writer and confirms what it has read, so PostgreSQL can recycle write-ahead log (WAL): the commits
 read wait in Straum's memory, and the slot is never streamed again, so
 the server needs none of it back. Lag counts from what the writer has
 applied. While the tables load the stream reads on and holds every
