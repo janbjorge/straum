@@ -4,9 +4,13 @@
 //! What the stream reports is tested apart from any server, in
 //! `stream.rs`.
 
+use std::io::Write;
+use std::net::TcpListener;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{slice, thread};
 
+use postgres_protocol::message::backend::Message;
 use straum_app::{LoadCounts, Lsn, Source};
 use straum_domain::{Spec, Store};
 
@@ -16,8 +20,6 @@ use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::source::{Replication, WAL_READ_TIMEOUT, plain, read_wal};
 use crate::stream::{Reader, Stream};
-use postgres_protocol::message::backend::Message;
-
 use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
 
 #[test]
@@ -332,34 +334,46 @@ fn copy_both_errors() {
 fn a_message_split_across_a_read_timeout_reads_whole() {
     // Its tag and its length.
     const MESSAGE_HEADER_BYTES: usize = 5;
-    let read_timeout = Duration::from_millis(50);
     let whole = keepalive(0x18);
     let (first, rest) = whole.split_at(whole.len() / 2);
-    let mut connection = connect(
-        vec![
-            now([signed_in(), first.to_vec()].concat()),
-            later(read_timeout * 4, rest.to_vec()),
-        ],
-        ConnectionKind::Replication,
-    )
-    .unwrap();
-    connection.set_read_timeout(read_timeout).unwrap();
+    let (send_rest, rest_asked) = mpsc::channel();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let first = [signed_in(), first.to_vec()].concat();
+    let rest = rest.to_vec();
+    // The server holds the rest back until the test asks for it, so the
+    // reads before that see half a message on any machine, however slow.
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.write_all(&first).unwrap();
+        rest_asked.recv().unwrap();
+        socket.write_all(&rest).unwrap();
+        socket
+    });
+    let dsn = format!("postgres://straum@127.0.0.1:{port}/straum?sslmode=disable");
+    let dsn = Dsn::parse(&dsn).unwrap();
+    let mut connection = Connection::connect(&dsn, ConnectionKind::Replication).unwrap();
+    connection
+        .set_read_timeout(Duration::from_millis(50))
+        .unwrap();
+    // Half a message gives nothing: once for the first half, then once
+    // timed out.
+    for _ in 0..2 {
+        assert!(connection.try_read().unwrap().is_none());
+    }
+    send_rest.send(()).unwrap();
     let wait = Wait::new("the rest of the message");
-    let mut empty_reads = 0;
     let message = loop {
         if let Some(message) = connection.try_read().unwrap() {
             break message;
         }
-        empty_reads += 1;
-        wait.poll();
+        wait.check();
     };
-    // Half a message gives nothing: once for the first half, then at
-    // least once timed out.
-    assert!(empty_reads >= 2, "{empty_reads}");
     let Message::CopyData(body) = message else {
         panic!("not CopyData");
     };
     assert_eq!(body.data(), &whole[MESSAGE_HEADER_BYTES..]);
+    drop(server.join().unwrap());
 }
 
 /// A stream from a fake server that sends `parts` once it has started.
