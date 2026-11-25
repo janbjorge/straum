@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = []
+# dependencies = ["numpy", "pyarrow"]
 # ///
 """Tests of the bench scripts' parts that need no Docker.
 
@@ -14,12 +14,15 @@ names the Host names Straum answers, which a test reads.
 bench/answers.py says when Straum and PostgreSQL answer alike,
 bench/materialized.py writes the materialized views and the asks over them
 that bench/taxi.py's materialized mode times, and bench/retention.py the
-specs and asks of its retention mode.
+specs and asks of its retention mode. bench/load_usage_events.py
+compares its sample with the trace; a test moves the sample to see
+the check stop it.
 """
 
 import argparse
 import datetime
 import decimal
+import hashlib
 import importlib.util
 import json
 import os
@@ -28,6 +31,9 @@ import socket
 import subprocess
 import sys
 import unittest
+import uuid
+
+import numpy
 
 BENCH = pathlib.Path(__file__).resolve().parent
 TOOL = "straum-try-usage"
@@ -48,6 +54,7 @@ COPIES = [load("stack"), TRY]
 # bench/materialized.py imports answers as its scripts do, from bench/.
 sys.path.insert(0, str(BENCH))
 answers = load("answers")
+usage_events = load("load_usage_events")
 materialized = load("materialized")
 retention = load("retention")
 SPEC = (BENCH / "trips.sql").read_text()
@@ -349,6 +356,94 @@ class Retention(unittest.TestCase):
             "\nview dropoffs\n  holds:    1 cell\n\ndim public.zones\n  holds:    265 rows\n"
         )
         self.assertEqual(retention.cells(views), 1001)
+
+
+def usage_trace() -> object:
+    """A trace day of three functions with every call in the first or the
+    last six hours, so a sample that moves the calls fails the check."""
+    trace = usage_events.TraceDay.__new__(usage_events.TraceDay)
+    trace.owners = numpy.array(["a" * 64, "a" * 64, "b" * 64])
+    trace.functions = numpy.array(["1" * 64, "2" * 64, "3" * 64])
+    trace.triggers = numpy.array(["http", "queue", "timer"])
+    counts = numpy.zeros((3, usage_events.MINUTES_PER_DAY), dtype=numpy.int64)
+    counts[0, :360] = 20
+    counts[1, -360:] = 10
+    counts[2, :] = 1
+    trace.counts = counts
+    # Percentiles 0, 1, 25, 50, 75, 99 and 100, then the mean. The second
+    # function has one call of 10 seconds in each 100.
+    trace.percentiles = numpy.array(
+        [
+            [1, 2, 3, 4, 5, 6, 7, 4],
+            [10, 20, 30, 40, 50, 60, 10_000, 140],
+            [numpy.nan] * 8,
+        ]
+    )
+    return trace
+
+
+def every_call(trace) -> tuple:
+    """The function and minute of each call of `trace`: a sample that
+    keeps all of them."""
+    functions, minutes = numpy.nonzero(trace.counts)
+    repeats = trace.counts[functions, minutes]
+    return numpy.repeat(functions, repeats), numpy.repeat(minutes, repeats)
+
+
+class UsageEvents(unittest.TestCase):
+    def test_a_sample_with_the_shape_of_the_trace_passes(self):
+        trace = usage_trace()
+        functions, minutes = every_call(trace)
+        usage_events.compare(trace, functions, minutes, 1)
+
+    def test_a_sample_with_its_calls_moved_in_time_is_refused(self):
+        trace = usage_trace()
+        functions, minutes = every_call(trace)
+        moved = (minutes + 360) % usage_events.MINUTES_PER_DAY
+        with self.assertRaisesRegex(SystemExit, "hour"):
+            usage_events.compare(trace, functions, moved, 1)
+
+    def test_a_sample_with_another_mix_of_kinds_is_refused(self):
+        trace = usage_trace()
+        functions, minutes = every_call(trace)
+        only_http = numpy.zeros_like(functions)
+        with self.assertRaisesRegex(SystemExit, "kind|accounts"):
+            usage_events.compare(trace, only_http, minutes, 1)
+
+    def test_an_owner_hash_becomes_a_valid_uuid(self):
+        owner = hashlib.sha256(b"owner").hexdigest()
+        account = usage_events.account_id(owner)
+        self.assertEqual(str(uuid.UUID(account)), account)
+        self.assertEqual(account.replace("-", ""), owner[:32])
+
+    def test_a_duration_lies_between_the_percentiles_of_its_function(self):
+        trace = usage_trace()
+        rows = numpy.array([0, 1] * 500)
+        got = usage_events.durations(trace, rows, numpy.random.default_rng(0))
+        for row, amount in zip(rows, got, strict=True):
+            low, high = trace.percentiles[row, 0], trace.percentiles[row, 6]
+            self.assertTrue(low <= amount <= high, f"{amount} of function {row}")
+
+    def test_the_mean_duration_of_a_function_is_its_mean_in_the_trace(self):
+        trace = usage_trace()
+        rows = numpy.ones(200_000, dtype=numpy.int64)
+        got = usage_events.durations(trace, rows, numpy.random.default_rng(0))
+        self.assertAlmostEqual(got.mean() / 140, 1, delta=0.05)
+
+    def test_a_sample_with_another_mean_duration_is_refused(self):
+        trace = usage_trace()
+        # Twenty times every call, so that its few slow calls give a steady mean.
+        functions = numpy.tile(every_call(trace)[0], 20)
+        got = usage_events.durations(trace, functions, numpy.random.default_rng(0))
+        usage_events.compare_means(trace, got, functions, 1)
+        with self.assertRaisesRegex(SystemExit, "mean duration"):
+            usage_events.compare_means(trace, got * 2, functions, 1)
+
+    def test_a_function_without_durations_has_no_amount(self):
+        trace = usage_trace()
+        rows = numpy.array([2, 2])
+        got = usage_events.durations(trace, rows, numpy.random.default_rng(0))
+        self.assertEqual(usage_events.amounts(got).to_pylist(), [None, None])
 
 
 if __name__ == "__main__":

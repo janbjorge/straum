@@ -28,8 +28,11 @@ Run these recipes for these changes:
   Add a planted break for each new rule, and a correct form that
   passes.
 
-For demo and try-out data, always use the taxi trips. Never write a
-dataset by hand. ADR-0014 tells which doc pages use the taxi trips.
+For demo and try-out data, use the taxi trips or the usage events of
+`bench/load_usage_events.py`. Never write a dataset by hand. A new
+dataset comes from public data. Its script compares the time axis and
+the other important columns with that data, and stops if they do not
+agree. ADR-0014 tells which doc pages use which dataset.
 
 Rules for the justfile:
 

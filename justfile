@@ -127,6 +127,13 @@ outbox:
 try *args:
     {{ quote(justfile_directory() / "bench/try_your_data.py") }} "$@"
 
+# Make the usage events from the Azure Functions trace and run Straum on them; --days 1 is quicker
+[group('try')]
+usage-events *args:
+    bench/load_usage_events.py --out bench/data/usage-events "$@"
+    cargo run --quiet --package straum -- plan bench/usage.sql --copy bench/data/usage-events
+    bench/try_your_data.py bench/usage.sql --data bench/data/usage-events
+
 # Run the published image on January's trips; --tag X.Y.Z picks a release
 [group('try')]
 demo *args:

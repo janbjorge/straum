@@ -12,18 +12,15 @@ into their own tables. Straum can keep the sums of these rows and give
 them to the billing service. The binary needs no change for this. An
 ask with the bounds of a month reads the day buckets of the view.
 
-1. Write a guide that shows the steps on the `usage` view. Edit
-   ADR-0014 first, because the guide changes the page set.
+1. Write a guide that shows the steps on the `usage` view, in a new
+   "Use cases" section of the guide. Edit ADR-0014 first, because the
+   guide changes the page set.
 2. Write a Python script, run with uv. The script asks Straum for the
    sum of each account in the last hour and sends it to Stripe Meters.
+   It uses the usage events that `just usage-events` makes from the
+   Azure Functions trace.
 3. Find out if users want this. Show it in a Show HN post and in a
    Railway template.
-
-Still to decide:
-
-- The home of the guide: a new page, or a section of `asks.md`.
-- The data that the script uses. The `usage` tables have no data, and
-  the taxi trips have no accounts.
 
 ## Parked
 

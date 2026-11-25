@@ -1,6 +1,6 @@
 # ADR-0014: The guide is one path of fixed pages
 
-Status: Accepted 2026-11-16; revised 2026-11-20
+Status: Accepted 2026-11-16; revised 2026-11-25
 
 ## Context
 
@@ -66,6 +66,12 @@ Rules for every page:
 - Outside the taxi pages (quick start, CLI, performance) every example
   is the `usage` view over `public.events AS e` and
   `public.accounts AS a`, never a new one.
+- The rows of `usage` are the usage events that
+  `bench/load_usage_events.py` makes from the Azure Functions trace of
+  2019. `bench/usage.sql` holds the view. A new answer of `usage` on a
+  page comes from these rows. The answers that pages showed before
+  2026-11-25 were written by hand, and the `purchase` kind is not in
+  these rows.
 - A how-to page gives steps and at most a sentence of why, linking the
   rest. A reference page is tables and short examples.
 
