@@ -725,7 +725,7 @@ class OpenApiCheck(unittest.TestCase):
         optional_path = self.document()
         optional_path["components"]["parameters"]["View"]["required"] = False
         undeclared = self.document()
-        del undeclared["paths"]["/views/{name}/spec"]["get"]["parameters"]
+        del undeclared["paths"]["/views/{name}/spec"]["parameters"]
         no_description = self.document()
         no_description["paths"]["/livez"]["get"]["responses"]["200"] = {}
         dangling = self.document()

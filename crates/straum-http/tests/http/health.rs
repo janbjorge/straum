@@ -1,6 +1,6 @@
 //! The routes besides asks and views, end to end: `/livez`, `/readyz`,
-//! `/status`, the replies to a wrong method or path, caching, and a
-//! shutdown with requests still in flight.
+//! `/status`, HEAD on each GET route, the replies to a wrong method or
+//! path, caching, and a shutdown with requests still in flight.
 
 use std::io::Write;
 use std::net::TcpStream;
@@ -10,7 +10,7 @@ use std::time::Duration;
 use straum_app::{Limits, Lsn, Memory};
 
 use crate::fake::{LIMITS, START, fake, writer, writer_with};
-use crate::{call, first_hour, read_reply, serve, started};
+use crate::{call, first_hour, header, read_reply, serve, started};
 
 #[test]
 fn no_reply_may_be_cached() {
@@ -40,11 +40,13 @@ fn routes() {
     );
     for (method, path, allow) in [
         ("GET", "/ask", "POST"),
-        ("POST", "/livez", "GET"),
-        ("DELETE", "/readyz", "GET"),
-        ("POST", "/status", "GET"),
-        ("PUT", "/views", "GET"),
-        ("POST", "/openapi.json", "GET"),
+        ("HEAD", "/ask", "POST"),
+        ("POST", "/livez", "GET, HEAD"),
+        ("DELETE", "/readyz", "GET, HEAD"),
+        ("POST", "/status", "GET, HEAD"),
+        ("PUT", "/views", "GET, HEAD"),
+        ("POST", "/views/trips", "GET, HEAD"),
+        ("POST", "/openapi.json", "GET, HEAD"),
     ] {
         let reply = call(server.address, method, path, "");
         assert_eq!(reply.status, 405, "{method} {path}");
@@ -53,7 +55,38 @@ fn routes() {
             "{}",
             reply.head
         );
-        assert_eq!(reply.body, format!("use {allow}\n"));
+        let body = if method == "HEAD" {
+            String::new()
+        } else {
+            format!("use {allow}\n")
+        };
+        assert_eq!(reply.body, body);
+    }
+    server.stop();
+}
+
+/// HEAD on a GET route gets the head GET gets, and no body. The server
+/// has not loaded, so each reply stays the same between the two.
+#[test]
+fn head_gets_the_head_of_get() {
+    let server = serve(writer().app().clone());
+    for path in [
+        "/livez",
+        "/readyz",
+        "/status",
+        "/openapi.json",
+        "/views",
+        "/views/trips/spec",
+    ] {
+        let get = call(server.address, "GET", path, "");
+        let head = call(server.address, "HEAD", path, "");
+        assert_eq!(head.status, get.status, "{path}");
+        for name in ["content-type", "content-length"] {
+            let value = header(&get.head, name);
+            assert!(value.is_some(), "{path}: {}", get.head);
+            assert_eq!(header(&head.head, name), value, "{path} {name}");
+        }
+        assert_eq!(head.body, "", "{path}");
     }
     server.stop();
 }

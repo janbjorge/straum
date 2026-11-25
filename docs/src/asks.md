@@ -321,6 +321,8 @@ sees the connection close.
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has, 503 while Straum is [loading](deploy.md#states). |
 
-Every reply carries `Cache-Control: no-store`. A path not listed here
-is 404, and a listed path asked with another method is 405, its `Allow`
-header naming the method to use.
+Every reply carries `Cache-Control: no-store`. Each `GET` endpoint
+also answers `HEAD`, with the status and headers of `GET` and no body.
+A path not listed here is 404, and a listed path asked with another
+method is 405, its `Allow` header naming the methods to use, as in
+`Allow: GET, HEAD`.

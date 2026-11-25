@@ -3,7 +3,7 @@
   "info": {
     "title": "Straum",
     "version": "1",
-    "description": "Straum's HTTP routes. The JSON bodies are the contract; plain-text bodies are for people and may change. Every reply carries Cache-Control: no-store. A path not listed is 404 and a listed path asked with another method is 405, both in plain text, the 405 with an Allow header naming the method to use."
+    "description": "Straum's HTTP routes. The JSON bodies are the contract; plain-text bodies are for people and may change. Every reply carries Cache-Control: no-store. A path not listed is 404 and a listed path asked with another method is 405, both in plain text, the 405 with an Allow header naming the methods to use. Each path that answers GET also answers HEAD."
   },
   "paths": {
     "/ask": {
@@ -48,6 +48,13 @@
           "200": { "$ref": "#/components/responses/Text" },
           "421": { "$ref": "#/components/responses/Misdirected" }
         }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
       }
     },
     "/readyz": {
@@ -57,6 +64,14 @@
           "200": { "$ref": "#/components/responses/Text" },
           "421": { "$ref": "#/components/responses/Misdirected" },
           "503": { "$ref": "#/components/responses/Text" }
+        }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "503": { "$ref": "#/components/responses/Head" }
         }
       }
     },
@@ -74,6 +89,13 @@
               "text/plain": { "schema": { "type": "string" } }
             }
           },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
           "421": { "$ref": "#/components/responses/Misdirected" }
         }
       }
@@ -95,30 +117,38 @@
           "421": { "$ref": "#/components/responses/Misdirected" },
           "503": { "$ref": "#/components/responses/Errors" }
         }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "503": { "$ref": "#/components/responses/Head" }
+        }
       }
     },
     "/views/{name}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/View" },
+        {
+          "name": "start",
+          "in": "query",
+          "description": "The first row, from 0; a negative one counts back from the end.",
+          "schema": { "type": "integer", "default": 0 }
+        },
+        {
+          "name": "count",
+          "in": "query",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "default": 1000
+          }
+        }
+      ],
       "get": {
         "summary": "The rows PostgreSQL would give for the view, as a table",
-        "parameters": [
-          { "$ref": "#/components/parameters/View" },
-          {
-            "name": "start",
-            "in": "query",
-            "description": "The first row, from 0; a negative one counts back from the end.",
-            "schema": { "type": "integer", "default": 0 }
-          },
-          {
-            "name": "count",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1000,
-              "default": 1000
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "The rows as a table.",
@@ -133,15 +163,33 @@
           "421": { "$ref": "#/components/responses/Misdirected" },
           "503": { "$ref": "#/components/responses/Text" }
         }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
+          "400": { "$ref": "#/components/responses/Head" },
+          "404": { "$ref": "#/components/responses/Head" },
+          "421": { "$ref": "#/components/responses/Misdirected" },
+          "503": { "$ref": "#/components/responses/Head" }
+        }
       }
     },
     "/views/{name}/spec": {
+      "parameters": [{ "$ref": "#/components/parameters/View" }],
       "get": {
         "summary": "The view's CREATE VIEW as the spec wrote it",
-        "parameters": [{ "$ref": "#/components/parameters/View" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Text" },
           "404": { "$ref": "#/components/responses/Text" },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
+          "404": { "$ref": "#/components/responses/Head" },
           "421": { "$ref": "#/components/responses/Misdirected" }
         }
       }
@@ -156,6 +204,13 @@
               "application/json": { "schema": { "type": "object" } }
             }
           },
+          "421": { "$ref": "#/components/responses/Misdirected" }
+        }
+      },
+      "head": {
+        "summary": "The head that GET gets, with no body",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Head" },
           "421": { "$ref": "#/components/responses/Misdirected" }
         }
       }
@@ -181,6 +236,9 @@
       }
     },
     "responses": {
+      "Head": {
+        "description": "The status and headers that GET gets for the same path, with no body."
+      },
       "Text": {
         "description": "A line or more of plain text.",
         "content": { "text/plain": { "schema": { "type": "string" } } }

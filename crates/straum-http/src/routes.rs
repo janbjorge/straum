@@ -133,7 +133,14 @@ pub(crate) async fn handle(
         return Ok(text(StatusCode::MISDIRECTED_REQUEST, refusal));
     }
     let accept = parts.headers.get(ACCEPT);
-    let reply = match (&parts.method, parts.uri.path()) {
+    // hyper sends no body in reply to HEAD, so each GET route answers it
+    // as it answers GET.
+    let method = if parts.method == Method::HEAD {
+        &Method::GET
+    } else {
+        &parts.method
+    };
+    let reply = match (method, parts.uri.path()) {
         (&Method::POST, "/ask") => {
             let format = Format::of(accept, Format::Json);
             if is_json(parts.headers.get(CONTENT_TYPE)) {
@@ -156,7 +163,9 @@ pub(crate) async fn handle(
             views_off_async(app, turns, format).await
         }
         (_, "/ask") => not_allowed("POST"),
-        (_, "/livez" | "/openapi.json" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
+        (_, "/livez" | "/openapi.json" | "/readyz" | "/status" | "/views") => {
+            not_allowed("GET, HEAD")
+        }
         (&Method::GET, path) if path.starts_with(ROWS_PREFIX) => {
             let named = &path[ROWS_PREFIX.len()..];
             match named.strip_suffix(SPEC_SUFFIX) {
@@ -164,7 +173,7 @@ pub(crate) async fn handle(
                 None => get_rows(app, turns, syntax.describe, named, parts.uri.query()).await,
             }
         }
-        (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET"),
+        (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET, HEAD"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
     };
     Ok(reply)
