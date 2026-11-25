@@ -161,10 +161,10 @@ parameters, counted at each use, come to at most 1 MiB, what one ask's
 body holds.
 
 A number with a fraction or exponent is read exactly as written, never
-as a float: `44.27` is 4427 hundredths, and a whole one, `1.0` or
-`1e3`, is an integer. At most 38 digits may follow the point, and the
-number's digits, read as one integer, must fit a signed 128-bit
-integer; a longer number is an error.
+as a float: `44.27` is 4427 hundredths, and a whole one, `1.0`,
+`10e-1` or `1e3`, is an integer. At most 38 digits may follow the
+point, and the number's digits, read as one integer, must fit a signed
+128-bit integer; a longer number is an error.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean

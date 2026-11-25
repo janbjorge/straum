@@ -167,8 +167,14 @@ fn exact(number: &str) -> Option<Literal> {
     };
     let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     let fraction = fraction.trim_end_matches('0');
-    let units: i128 = format!("{whole}{fraction}").parse().ok()?;
-    let scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
+    let mut units: i128 = format!("{whole}{fraction}").parse().ok()?;
+    let mut scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
+    // `10e-1` is 1, as `1.0` is. Zero keeps its scale, so that
+    // `0e-100000000` is still past MAX_SCALE.
+    while scale > 0 && units != 0 && units % 10 == 0 {
+        units /= 10;
+        scale -= 1;
+    }
     if scale >= 0 {
         let scale = u32::try_from(scale).ok()?;
         // Printing a scale past it, as an error does, wrote every zero of
@@ -249,6 +255,9 @@ mod tests {
             ("1e38", 10_i128.pow(38), 0),
             ("1e-38", 1, 38),
             ("0.00000000000000000000000000000000000001", 1, 38),
+            ("15e-1", 15, 1),
+            ("1.50e-1", 15, 2),
+            ("92233720368547758080e-1", 9_223_372_036_854_775_808, 0),
         ];
         for (number, units, scale) in cases {
             let body = format!(r#"{{"query": "SELECT", "parameters": [{number}]}}"#);
@@ -271,6 +280,9 @@ mod tests {
             ("0e5", 0),
             ("-3.00", -3),
             ("9.223372036854775807e18", i64::MAX),
+            ("10e-1", 1),
+            ("100e-2", 1),
+            ("1704067200000e-3", 1_704_067_200),
         ] {
             let body = format!(r#"{{"query": "SELECT", "parameters": [{number}]}}"#);
             assert_eq!(

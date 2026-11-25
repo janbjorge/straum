@@ -77,6 +77,25 @@ fn a_range_in_unix_seconds_answers_as_one_in_rfc_3339() {
     server.stop();
 }
 
+/// A whole number with an exponent is an integer, so it can fill an
+/// integer key; a number with a fraction can't.
+#[test]
+fn a_whole_number_with_an_exponent_is_an_integer() {
+    let (_writer, server) = started(writer());
+    let query = "SELECT trips FROM trips WHERE kind = $1 AND bucket >= $2 AND bucket < $3";
+    let plain = ask(query, "[1, 1704067200, 1704153600]");
+    let reply = call(server.address, "POST", "/ask", &plain);
+    assert_eq!(rows_of(&reply.body), r#"[{"trips":2}]"#);
+    let written = ask(query, "[10e-1, 1704067200000e-3, 1704153600]");
+    let again = call(server.address, "POST", "/ask", &written);
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(rows_of(&again.body), rows_of(&reply.body));
+    let fraction = ask(query, "[15e-1, 1704067200, 1704153600]");
+    let refused = call(server.address, "POST", "/ask", &fraction);
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    server.stop();
+}
+
 #[test]
 fn answers_after_a_commit_carry_its_lsn() {
     let (mut writer, server) = started(writer());
