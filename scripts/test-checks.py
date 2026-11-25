@@ -252,6 +252,7 @@ class LayerCheck(unittest.TestCase):
             'fn f() { std::process::Command::new("sh"); }',
             'fn f() { let _ = std :: env :: var("X"); }',
             "extern crate std as s;",
+            "use std::{collections::{HashMap, HashSet}, fs};",
         ]:
             with self.subTest(text=text):
                 self.write("crates/straum-domain/src/lib.rs", text)
@@ -260,7 +261,8 @@ class LayerCheck(unittest.TestCase):
     def test_the_domain_may_use_threads_and_other_crates_io(self):
         self.write(
             "crates/straum-domain/src/lib.rs",
-            "use std::{mem, panic, thread};\n// std::fs\n",
+            "use std::{mem, panic, thread};\n// std::fs\n"
+            "use std::{collections::{HashMap, HashSet}, sync::mpsc};\n",
         )
         self.write("crates/straum-pg/src/lib.rs", "use std::net::TcpStream;\n")
         self.assert_passes()

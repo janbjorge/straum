@@ -79,8 +79,9 @@ PATH_VALUE = re.compile(r"\bpath\s*=\s*(\S)")
 INCLUDE = re.compile(r"\binclude(_str|_bytes)?\s*!\s*[\(\[\{]\s*(\S)")
 TRAIT = re.compile(r"\btrait\s+(?:r#)?(\w+)")
 INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*\{")
+# A use group runs to its ";", so a nested group cannot hide a module.
 IO_PATH = re.compile(
-    rf"\bstd\s*::\s*(?:(?:{IO_MODULES})\b|\{{[^}}]*\b(?:{IO_MODULES})\b)"
+    rf"\bstd\s*::\s*(?:(?:{IO_MODULES})\b|\{{[^;]*?\b(?:{IO_MODULES})\b)"
     r"|\bextern\s+crate\b|\bstd\s+as\b"
 )
 
