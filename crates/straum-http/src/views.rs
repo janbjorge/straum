@@ -7,8 +7,8 @@
 //! names:
 //!
 //! ```json
-//! {"views": [{"name": "trips", "from": "2024-01-01T00:00:00Z",
-//!             "to": "2024-01-03T00:00:00Z",
+//! {"views": [{"name": "trips", "time": "bucket",
+//!             "from": "2024-01-01T00:00:00Z", "to": "2024-01-03T00:00:00Z",
 //!             "kept": [{"width": "15 minutes", "for": "2 days",
 //!                       "from": "2024-01-02T00:00:00Z"}],
 //!             "keys": [{"name": "bucket", "type": "timestamptz"},
