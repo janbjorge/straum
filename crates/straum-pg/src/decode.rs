@@ -173,6 +173,10 @@ impl Decoder {
                 positions.push(position);
                 types.push(column_type);
             }
+            // shortcut: an `ALTER COLUMN .. TYPE` to the same type keeps the
+            // types equal, so changes after it apply until the next reading
+            // of the WAL, 1 s at most. ADR-0004 accepts this window for an
+            // enum rename. Stop here when an answer must never show it.
             if table.types != types {
                 self.transaction.changes.push(unfit(table, Drift::Altered));
                 table.types = types;
