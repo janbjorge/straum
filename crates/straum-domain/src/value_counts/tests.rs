@@ -400,3 +400,49 @@ fn a_run_widens_for_a_value_or_a_count_it_cannot_hold() {
         check(&counts, &held, &format!("{count} of {value} taken"));
     }
 }
+
+/// The number of bytes that the runs of a cell have room for.
+fn run_capacity(counts: &ValueCounts) -> usize {
+    let ValueCounts::Runs(runs) = counts else {
+        panic!("a cell of runs, not {}", form(counts));
+    };
+    let mut capacity = 0;
+    for run in runs.values() {
+        capacity += run.capacity();
+    }
+    capacity
+}
+
+fn all_but_one_in_100(value: i64) -> bool {
+    value % 100 != 0
+}
+
+fn one_in_100(value: i64) -> bool {
+    value % 100 == 0
+}
+
+/// Makes a cell of many runs, then takes out the values that `taken`
+/// selects. Gives the room of the runs before, and the cell after.
+fn runs_thinned(taken: fn(i64) -> bool) -> (usize, ValueCounts) {
+    const VALUES: i64 = 100_000;
+    let mut counts = ValueCounts::from_ascending(&once(VALUES, 0, 1));
+    let grown = run_capacity(&counts);
+    for value in 0..VALUES {
+        if taken(value) {
+            assert!(counts.sub(value, 1), "{value} is held");
+        }
+    }
+    (grown, counts)
+}
+
+/// Runs that lose most of their values give their room back, as one run
+/// does. Runs that lose few values keep their room, so that a change at
+/// the edge moves no bytes.
+#[test]
+fn runs_give_back_the_room_of_values_taken() {
+    let (grown, thinned) = runs_thinned(all_but_one_in_100);
+    let held = run_capacity(&thinned);
+    assert!(held * 10 <= grown, "{held} of {grown} bytes held");
+    let (grown, kept) = runs_thinned(one_in_100);
+    assert_eq!(run_capacity(&kept), grown);
+}

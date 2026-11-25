@@ -158,6 +158,10 @@ impl ValueCounts {
                 if taken == Taken::TooFew {
                     return false;
                 }
+                // As `settled` does for one run.
+                if taken == Taken::Last && run.len() <= run.capacity() / 2 {
+                    run.shrink_to_fit();
+                }
                 if run.len() == RUN_HEADER {
                     runs.remove(&key);
                 }
