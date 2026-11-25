@@ -150,8 +150,13 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
         );
         straum.wait_for("ready", &Until::Ready);
         let mut held = TcpStream::connect(straum.address).unwrap();
-        // A head never ended: hyper waits 30 s for the rest.
-        let unended = format!("POST /ask HTTP/1.1\r\nhost: {}\r\n", straum.address);
+        // A body never ended: Straum waits 10 s for the rest. A head
+        // never ended is cut after 5 s, before the stop's 10 s end.
+        let unended = format!(
+            "POST /ask HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\n\
+             content-length: 100\r\n\r\n{{",
+            straum.address
+        );
         held.write_all(unended.as_bytes()).unwrap();
         thread::sleep(Duration::from_millis(200));
         let clock = Instant::now();
