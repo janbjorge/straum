@@ -6,9 +6,9 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use straum_http::ServeLimits;
+use straum_http::{HEADER_TIMEOUT, ServeLimits};
 
 use crate::fake::{loaded, writer};
 use crate::{SERVE_LIMITS, STATUS_CODE, first_hour, read_reply, serve_limited};
@@ -125,7 +125,7 @@ fn a_connection_past_its_deadline_is_closed() {
     let server = serve_limited(writer().app().clone(), limits);
     let mut stalled = TcpStream::connect(server.address).unwrap();
     // A head never finished, so the request outlives the deadline and
-    // its grace: hyper alone would wait 30 s for the rest.
+    // its grace: the header timeout alone would wait 5 s for the rest.
     stalled.write_all(b"GET /livez HTTP/1.1\r\n").unwrap();
     stalled.set_read_timeout(Some(HANG_GUARD)).unwrap();
     let mut reply = Vec::new();
@@ -180,5 +180,68 @@ fn a_request_in_flight_at_the_deadline_is_answered_whole() {
     assert!(reply.body.starts_with(r#"{"as_of":"#), "{}", reply.body);
     // hyper says it closes only when the deadline came before the reply.
     assert!(reply.head.contains("connection: close"), "{}", reply.head);
+    server.stop();
+}
+
+/// Two connections fill the server.
+const TWO_CONNECTIONS: ServeLimits = ServeLimits {
+    max_connections: 2,
+    ..SERVE_LIMITS
+};
+
+/// How long after the header timeout a cut may come.
+const CUT_MARGIN: Duration = Duration::from_secs(1);
+
+/// Reads until the server closes `stream`, and says when that was.
+fn closed_after(stream: &mut TcpStream, opened: Instant) -> Duration {
+    stream.set_read_timeout(Some(HANG_GUARD)).unwrap();
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty(), "{}", String::from_utf8_lossy(&rest));
+    opened.elapsed()
+}
+
+/// One connection has sent nothing, and one has had a reply and sent
+/// nothing since. Both are cut, and the connection that waits in the
+/// backlog is served.
+#[test]
+fn a_connection_that_sends_no_head_is_cut() {
+    let server = serve_limited(writer().app().clone(), TWO_CONNECTIONS);
+    let opened = Instant::now();
+    let mut silent = TcpStream::connect(server.address).unwrap();
+    let mut kept_open = TcpStream::connect(server.address).unwrap();
+    assert_eq!(livez_kept_open(&mut kept_open, server.address), 200);
+    let mut third = TcpStream::connect(server.address).unwrap();
+    third
+        .write_all(livez(server.address, "close").as_bytes())
+        .unwrap();
+    third.set_read_timeout(Some(HANG_GUARD)).unwrap();
+    assert_eq!(read_reply(&mut third).status, 200);
+    let answered = opened.elapsed();
+    let cut = [
+        closed_after(&mut silent, opened),
+        closed_after(&mut kept_open, opened),
+    ];
+    let limit = HEADER_TIMEOUT + CUT_MARGIN;
+    assert!(
+        answered >= HEADER_TIMEOUT && answered < limit,
+        "{answered:?}"
+    );
+    assert!(cut[0] < limit && cut[1] < limit, "{cut:?}");
+    server.stop();
+}
+
+/// How long a slow client waits to send its head: 1 s short of
+/// [`HEADER_TIMEOUT`].
+const IN_TIME: Duration = Duration::from_secs(4);
+
+/// A connection that sends its head before the header timeout is served.
+#[test]
+fn a_connection_that_sends_a_head_in_time_is_served() {
+    let server = serve_limited(writer().app().clone(), TWO_CONNECTIONS);
+    let mut slow = TcpStream::connect(server.address).unwrap();
+    slow.set_read_timeout(Some(HANG_GUARD)).unwrap();
+    thread::sleep(IN_TIME);
+    assert_eq!(livez_kept_open(&mut slow, server.address), 200);
     server.stop();
 }

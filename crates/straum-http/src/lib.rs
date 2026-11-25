@@ -94,6 +94,10 @@ pub const CONNECTION_DEADLINE: Duration = Duration::from_secs(300);
 /// How long `serve_until_signal` lets a connection past its deadline
 /// finish the request in flight: far past any answer a client reads.
 pub const CONNECTION_GRACE: Duration = Duration::from_secs(60);
+/// How long a connection may take to send a request head, at its start
+/// and after each reply. hyper's own 30 s let idle connections fill
+/// [`MAX_CONNECTIONS`] and hold `/livez` past a health check's timeout.
+pub const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What one client may hold of the server, and for how long.
 #[derive(Debug, Clone, Copy)]
@@ -374,6 +378,7 @@ fn spawn_connection(connection: Connection, served: &Arc<Served>) {
     let service = service_fn(move |request| routes::handle(request, Arc::clone(&served)));
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_TIMEOUT)
         .serve_connection(TokioIo::new(stream), service);
     // A client that hangs up mid-request is its own problem. A client
     // that never reads its reply is cut at the deadline and its grace,
