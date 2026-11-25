@@ -541,6 +541,29 @@ fn reads_the_servers_wal() {
     assert_eq!(error, "PostgreSQL sent no WAL position for slot nope");
 }
 
+/// A publication whose name holds a backslash and a quote streams: the
+/// grammar of a replication command does not accept an `E'...'` string.
+#[test]
+fn a_publication_named_with_a_backslash_streams() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "backslash", TABLES);
+    db.run(r#"CREATE PUBLICATION "a\b'c" FOR TABLE $S.zones, $S.trips, $S.logins"#);
+    let spec = db.spec(SPEC);
+    let mut source = source_over(db.dsn.clone(), r"a\b'c", Replication::Logical);
+    source.open(&spec).unwrap();
+    let before_commit = db.run_committed(&Rng::new(1).trip(1));
+    let commit = source.next_commit(LONG).unwrap().unwrap();
+    assert!(commit.lsn > before_commit, "{commit:?}");
+
+    // A name one character off is not that publication.
+    let mut other = source_over(db.dsn.clone(), r"a\b'd", Replication::Logical);
+    let error = other.open(&spec).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        r"publication a\b'd does not exist; run the SQL straum plan prints"
+    );
+}
+
 /// The reply to the reading of the WAL: the insert position, the slot's
 /// restart position, and the segment size.
 fn wal_reply() -> Vec<u8> {

@@ -235,7 +235,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     let versions = catalog::column_versions(&mut connection, &checked(&tables))?;
     // After the import: the slot's connection keeps its snapshot only
     // until its next command.
-    let names = escape_literal(&escape_identifier(&settings.publication));
+    let names = replication_literal(&escape_identifier(&settings.publication));
     replication.copy_both(&format!(
         "START_REPLICATION SLOT {slot} LOGICAL {at} (proto_version '1', publication_names {names})"
     ))?;
@@ -817,6 +817,13 @@ pub(crate) fn read_wal(
         // which the server recycles at its next checkpoint anyway.
         restart: restart.max(from),
     })
+}
+
+/// `text` as a string in a replication command: in quotes, each quote
+/// doubled. The grammar of a replication command does not accept the
+/// `E'...'` form that `escape_literal` gives for a backslash.
+fn replication_literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
 }
 
 fn no_wal_position(slot: &str) -> Error {
