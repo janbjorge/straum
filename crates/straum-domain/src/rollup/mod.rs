@@ -226,12 +226,19 @@ fn serving(input: Input) -> Input {
 }
 
 fn position_of(columns: &[Identifier], name: &Identifier) -> ColumnIndex {
+    find_column(columns, name).expect(COLUMNS)
+}
+
+/// The first column of `columns` with the name `name`. A bound rollup
+/// keeps a fact column before a ref column of the same name, so the first
+/// is the fact column.
+fn find_column(columns: &[Identifier], name: &Identifier) -> Option<ColumnIndex> {
     for (position, column) in columns.iter().enumerate() {
         if column == name {
-            return ColumnIndex(position);
+            return Some(ColumnIndex(position));
         }
     }
-    panic!("{COLUMNS}")
+    None
 }
 
 impl Rollup {
@@ -578,12 +585,7 @@ impl Rollup {
     }
 
     fn column(&self, name: &Identifier) -> Option<ColumnIndex> {
-        for (position, column) in self.columns.iter().enumerate() {
-            if column == name {
-                return Some(ColumnIndex(position));
-            }
-        }
-        None
+        find_column(&self.columns, name)
     }
 
     /// How many codes a rollup-key part has given.
