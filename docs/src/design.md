@@ -145,7 +145,11 @@ load that is the start. While the tables
 load its queue has no bound in commits, only `--max-load-memory` in
 bytes; the writer's first `Stream::next` ends that, and from then 64
 commits or 200,000 changes bound it, so the thread reads nothing more
-until the writer has taken a backlog below them. Each load checks
+until the writer has taken a backlog below them. While the queue is
+full, and while a physical stream waits after data definition language
+(DDL), the thread still
+confirms every second, so the server does not end the stream at its
+`wal_sender_timeout`. Each load checks
 after every batch that the stream has not failed. Any error on the way
 is a `Failure`, and Straum exits. A writer starts once; a failed one
 takes no more steps.
@@ -167,7 +171,7 @@ records and passes by those of other tables' pages, `Heap` keeps the
 pages, `Transactions` holds changes by transaction id (xid), and
 `Publisher` turns each commit into the pgoutput messages the logical
 stream gets, for the same `Decoder`. The pipeline reads no socket. When
-data definition language (DDL) changes a table, its layout comes in
+DDL changes a table, its layout comes in
 again through a closure given the DDL's xid, and
 `physical::read_layouts_seeing` reads it in a snapshot that sees that
 xid.

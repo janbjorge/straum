@@ -210,7 +210,8 @@ went with the old file. It stops on a changed row whose read value is
 stored out of line, since the page holds only a pointer to it, and
 says so ([Physical WAL](postgresql.md#physical-wal)). After DDL on a
 spec table it reads the columns again in a snapshot that sees the
-change, and stops if none does within 10 s.
+change, and stops if none does within 10 s. The stream stays open
+during that wait.
 
 ## Answering an ask
 

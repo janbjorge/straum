@@ -209,13 +209,19 @@ fn wait_for_flush(connection: &mut Connection, start: Lsn) -> Result<(), Error> 
 }
 
 impl Replay {
-    /// Reads `bytes` of WAL from `start`: the commits they finish.
-    pub(crate) fn feed(&mut self, start: u64, bytes: &[u8]) -> Result<Vec<Commit>, Error> {
+    /// Reads `bytes` of WAL from `start`: the commits they finish. `beat`
+    /// runs at each look of the wait after DDL.
+    pub(crate) fn feed(
+        &mut self,
+        start: u64,
+        bytes: &[u8],
+        beat: &mut dyn FnMut() -> Result<(), Error>,
+    ) -> Result<Vec<Commit>, Error> {
         self.records.feed(start, bytes)?;
         let mut commits = Vec::new();
         while let Some(record) = self.records.next_record()? {
             commits.extend(self.pipeline.record(record, |xid| {
-                read_layouts_seeing(&mut self.catalog, &self.checked, xid, DDL_WAIT)
+                read_layouts_seeing(&mut self.catalog, &self.checked, xid, DDL_WAIT, beat)
             })?);
         }
         Ok(commits)
@@ -269,15 +275,18 @@ pub(crate) fn next_chunk(connection: &mut Connection, start: u64) -> Result<Opti
 /// PostgreSQL logs a commit before snapshots see it, and waits for
 /// synchronous standbys in between, so the stream may read DDL's commit
 /// while the catalog shows the columns from before it, and the rows
-/// after it have more.
+/// after it have more. `beat` runs at each look, so the stream thread
+/// can answer the server while it waits.
 pub(crate) fn read_layouts_seeing(
     connection: &mut Connection,
     checked: &[Checked],
     xid: TransactionId,
     wait: Duration,
+    beat: &mut dyn FnMut() -> Result<(), Error>,
 ) -> Result<Layouts, Error> {
     let deadline = Instant::now() + wait;
     loop {
+        beat()?;
         connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
         let taken = connection.rows("SELECT pg_current_snapshot()")?;
         let snapshot = (first_row_value(&taken, 0).and_then(TransactionSnapshot::parse))

@@ -35,8 +35,8 @@ use crate::wire::{Closer, Connection, server_error};
 /// is due or it should stop.
 pub(crate) const POLL: Duration = Duration::from_secs(1);
 /// How often the thread reports, whether or not the server asks. Short, so
-/// a full queue, which stops the thread reading, can't outlast a
-/// `wal_sender_timeout` of a few seconds.
+/// a full queue or the wait after DDL, which stop the thread reading,
+/// can't outlast a `wal_sender_timeout` of a few seconds.
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// Commits read ahead of the writer once it takes them. While the tables
 /// load the bound is `--max-load-memory` instead.
@@ -387,7 +387,16 @@ impl StreamThread {
                         .feed(&pgoutput::decode(bytes)?)?
                         .into_iter()
                         .collect(),
-                    Reader::Physical(replay) => replay.feed(start, bytes)?,
+                    // The wait after DDL holds this thread, so it answers
+                    // the server there too.
+                    Reader::Physical(replay) => replay.feed(start, bytes, &mut || {
+                        if self.last_report.elapsed() >= REPORT_INTERVAL {
+                            let position = self.reported.position.0;
+                            self.connection.send_copy_data(&status_update(position))?;
+                            self.last_report = Instant::now();
+                        }
+                        Ok(())
+                    })?,
                 };
                 return self.deliver_commits(commits);
             }

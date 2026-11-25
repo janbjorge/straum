@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use straum_app::{App, Source, Writer};
@@ -535,13 +535,105 @@ fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
     }];
     let mut connection = Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap();
     let wait = Duration::from_secs(1);
-    let error = read_layouts_seeing(&mut connection, &checked, xid, wait).unwrap_err();
+    let error =
+        read_layouts_seeing(&mut connection, &checked, xid, wait, &mut || Ok(())).unwrap_err();
     let expected = format!("waited 1 s for transactions it read the commits of to end: xid {xid}");
     assert!(error.to_string().contains(&expected), "{error}");
     open.run("COMMIT");
-    let layouts = read_layouts_seeing(&mut connection, &checked, xid, wait).unwrap();
+    let layouts =
+        read_layouts_seeing(&mut connection, &checked, xid, wait, &mut || Ok(())).unwrap();
     let columns = &layouts.tables[0].relation.columns;
     assert_eq!(columns.last().unwrap().name, "later");
+}
+
+/// While Straum waits for a snapshot that sees DDL, the stream thread
+/// reads nothing, so it answers the server there too. A wait past a
+/// `wal_sender_timeout` of 4 s keeps the stream, and the commits after
+/// the DDL apply.
+#[test]
+fn the_ddl_wait_outlasts_wal_sender_timeout() {
+    let pg = replica_with_short_sender_timeout();
+    let mut db = Db::new(&pg, "outlasts", TABLES);
+    let mut rng = Rng::new(7);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    db.run(&rng.trip(1));
+    let mut writer = db.physical_writer(SPEC);
+    started(&mut writer);
+    let mut next = 1;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    let alter = hold_ddl(&mut db);
+    let dsn = db.dsn.clone();
+    let release = thread::spawn(move || {
+        let mut watch = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
+        let snapshot_query =
+            "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_current_snapshot()'";
+        let wait = Wait::new("Straum to wait for a snapshot");
+        while watch.rows(snapshot_query).unwrap().is_empty() {
+            wait.poll();
+        }
+        thread::sleep(Duration::from_secs(6));
+        let senders = watch.rows("SELECT count(*)::text FROM pg_stat_replication");
+        release_the_standby(&mut watch);
+        senders.unwrap()
+    });
+    let written = db.run_committed(&format!(
+        "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
+    ));
+    let wait = Wait::within(Duration::from_secs(30), &format!("{written} applied"));
+    apply_through(&mut writer, written, &wait);
+    assert_eq!(release.join().unwrap(), vec![vec![Some("1".to_owned())]]);
+    alter.join().unwrap();
+}
+
+/// The replies keep the stream, not the wait: past 10 s without a
+/// snapshot that sees the DDL, the stream still stops and names it.
+#[test]
+fn the_ddl_wait_still_ends_after_ten_seconds() {
+    let pg = replica_with_short_sender_timeout();
+    let mut db = Db::new(&pg, "still_ends", TABLES);
+    let spec = db.spec(SPEC);
+    let mut source = source_over(db.dsn.clone(), &db.name, PHYSICAL);
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    let alter = hold_ddl(&mut db);
+    // The source, not a writer: a writer also reads the WAL position, and
+    // that reading waits for the lock that the ALTER TABLE holds.
+    let wait = Wait::within(Duration::from_secs(30), "the wait after DDL to end");
+    let mut next = source.next_commit(Duration::from_secs(1));
+    while let Ok(None) = next {
+        wait.check();
+        next = source.next_commit(Duration::from_secs(1));
+    }
+    let error = next.unwrap_err().to_string();
+    let expected = "waited 10 s for transactions it read the commits of to end";
+    assert!(error.contains(expected), "{error}");
+    release_the_standby(&mut db.connection);
+    alter.join().unwrap();
+}
+
+/// PostgreSQL at `wal_level = replica` that ends a stream with no reply
+/// for 4 s.
+fn replica_with_short_sender_timeout() -> PostgresContainer {
+    plain(image(&tag()).with_cmd(&["-c", "wal_level=replica", "-c", "wal_sender_timeout=4s"]))
+}
+
+/// Commits an `ALTER TABLE` that a synchronous standby that doesn't
+/// answer holds where snapshots don't see it. The thread of the `ALTER
+/// TABLE` ends once the standby is released.
+fn hold_ddl(db: &mut Db) -> JoinHandle<()> {
+    let mut altering = db.another_connection();
+    db.run("SET synchronous_commit = local");
+    ask_for_a_standby(db);
+    session_reads_the_standby(&mut altering.connection, &Wait::new("the setting"));
+    checkpointer_reads_the_setting(db);
+    let alter = thread::spawn(move || {
+        altering.run("ALTER TABLE $S.trips ADD late text DEFAULT 'late'");
+    });
+    wait_for(
+        &mut db.connection,
+        "SELECT 1 FROM pg_stat_activity WHERE wait_event = 'SyncRep'",
+    );
+    alter
 }
 
 /// Makes every commit wait for a synchronous standby named `nobody`,
