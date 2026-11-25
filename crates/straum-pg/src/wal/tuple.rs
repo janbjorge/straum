@@ -16,6 +16,7 @@ use straum_domain::{ColumnType, Datum};
 use super::compress;
 use super::heap::HeapTuple;
 use super::{Oid, Problem, u32_at};
+use crate::pgoutput::zero_at;
 use crate::value::{scaled, time};
 
 /// `HEAP_HASNULL` in `t_infomask`: the row has a null bitmap.
@@ -172,7 +173,8 @@ pub(crate) fn values_into(
         let rest = data.get(at..).ok_or(short)?;
         let size = match attribute.length {
             VARLENA_LENGTH => varlena_size(rest).ok_or(short)?,
-            C_STRING_LENGTH => c_string_size(rest).ok_or(short)?,
+            // A C string's size with its closing zero byte.
+            C_STRING_LENGTH => zero_at(rest).ok_or(short)? + 1,
             length => match usize::try_from(length) {
                 Ok(length) => length,
                 Err(_) => return Err(Problem::UnknownLength),
@@ -190,16 +192,6 @@ pub(crate) fn values_into(
 fn align_up(at: usize, align: usize) -> usize {
     let mask = align.max(1) - 1;
     (at + mask) & !mask
-}
-
-/// A C string's size with its closing zero byte.
-fn c_string_size(bytes: &[u8]) -> Option<usize> {
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte == 0 {
-            return Some(index + 1);
-        }
-    }
-    None
 }
 
 /// A varlena's size with its header: 1 + 16 bytes for a TOAST pointer,

@@ -329,7 +329,7 @@ impl<'a> Reader<'a> {
 }
 
 /// Where the first zero byte is, if there is one.
-fn zero_at(bytes: &[u8]) -> Option<usize> {
+pub(crate) fn zero_at(bytes: &[u8]) -> Option<usize> {
     for (position, byte) in bytes.iter().enumerate() {
         if *byte == 0 {
             return Some(position);
