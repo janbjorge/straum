@@ -8,6 +8,7 @@
 
 use std::convert::Infallible;
 use std::fmt::{self, Display};
+use std::panic;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -195,7 +196,8 @@ async fn views_off_async(app: &App, turns: &Arc<Semaphore>, format: Format) -> R
     });
     match read.await {
         Ok(reply) => reply,
-        Err(_) => failed(format),
+        // A panic is not the ask's error: pass it on, and send no reply.
+        Err(error) => panic::resume_unwind(error.into_panic()),
     }
 }
 
@@ -254,7 +256,8 @@ async fn post_ask(
     let (asked, turn) = match read {
         Ok((Ok(asked), turn)) => (asked, turn),
         Ok((Err(errors), _)) => return format.errors(StatusCode::BAD_REQUEST, &errors),
-        Err(_) => return failed(format),
+        // A panic is not the ask's error: pass it on, and send no reply.
+        Err(error) => panic::resume_unwind(error.into_panic()),
     };
     let parse_time = parsing.elapsed();
     answer(
@@ -289,12 +292,6 @@ fn lines<E: Display>(errors: &[E]) -> Vec<String> {
         lines.push(error.to_string());
     }
     lines
-}
-
-/// The reply when a task off the async threads panicked.
-fn failed(format: Format) -> Reply {
-    let error = "Straum failed while answering; its log says why";
-    format.errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
 }
 
 /// The view's `CREATE VIEW` statement. The spec is fixed at start, so it
@@ -485,7 +482,8 @@ async fn answer(
     match answered {
         Ok(Ok(timed)) => answered_reply(timed, format, parse_time, start),
         Ok(Err(error)) => answer_error(&error, describe, format),
-        Err(_) => failed(format),
+        // A panic is not the ask's error: pass it on, and send no reply.
+        Err(error) => panic::resume_unwind(error.into_panic()),
     }
 }
 

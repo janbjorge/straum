@@ -37,7 +37,6 @@
           "413": { "$ref": "#/components/responses/Errors" },
           "415": { "$ref": "#/components/responses/Errors" },
           "421": { "$ref": "#/components/responses/Misdirected" },
-          "500": { "$ref": "#/components/responses/Errors" },
           "503": { "$ref": "#/components/responses/Errors" }
         }
       }
@@ -94,7 +93,6 @@
             }
           },
           "421": { "$ref": "#/components/responses/Misdirected" },
-          "500": { "$ref": "#/components/responses/Errors" },
           "503": { "$ref": "#/components/responses/Errors" }
         }
       }
@@ -133,7 +131,6 @@
           "400": { "$ref": "#/components/responses/Text" },
           "404": { "$ref": "#/components/responses/Text" },
           "421": { "$ref": "#/components/responses/Misdirected" },
-          "500": { "$ref": "#/components/responses/Text" },
           "503": { "$ref": "#/components/responses/Text" }
         }
       }
