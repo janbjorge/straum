@@ -1,8 +1,9 @@
 //! A spec table that stops being the one Straum loaded, with no change
 //! the stream reads to say so: left out of the publication, its rows or
 //! an action filtered out by the publication, renamed away
-//! with another table made under its name, a label of an enum it reads
-//! renamed, a column it reads rewritten to its own type. Each reading of
+//! with another table made under its name, a parent of a table that
+//! inherits from it, a label of an enum it reads renamed, a column it
+//! reads rewritten to its own type. Each reading of
 //! the WAL checks the tables, so Straum stops, and the setup check of the
 //! next start names the problem. The physical stream reads the catalog's
 //! own changes and stops on the DDL itself.
@@ -105,6 +106,84 @@ fn a_table_renamed_away_and_made_again_stops_the_stream() {
         error,
         db.sql("trips: $S.trips is another table than the one Straum loaded")
     );
+}
+
+/// The error of a spec table that another table inherits from.
+const CHILDREN: &str = "trips: tables inherit from $S.trips; Straum reads a table without children";
+
+/// A child made after the load: a query of `trips` counts the child's
+/// rows, but their changes come under the child's name. The reading of
+/// the WAL finds the child.
+#[test]
+fn a_child_made_after_the_load_stops_the_logical_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "child_logical", TABLES);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    assert!(source.wal().is_ok());
+    db.run("CREATE TABLE $S.trips_child () INHERITS ($S.trips)");
+    db.run(&Rng::new(7).trip(100).replace("$S.trips", "$S.trips_child"));
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(error, db.sql(CHILDREN));
+}
+
+/// The physical stream reads the WAL of the spec table's file alone, so
+/// the child's rows never come to it either: the reading of the WAL, once
+/// a second, finds the child.
+#[test]
+fn a_child_made_after_the_load_stops_the_physical_stream() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "child_physical", TABLES);
+    let mut writer = db.physical_writer(SPEC);
+    started(&mut writer);
+    db.run("CREATE TABLE $S.trips_child () INHERITS ($S.trips)");
+    let mut rng = Rng::new(7);
+    db.run(&rng.trip(100).replace("$S.trips", "$S.trips_child"));
+    // A trip of the parent each turn, so each step has a commit to apply.
+    let wait = Wait::new("the writer to stop");
+    let mut trip = 1;
+    let error = loop {
+        wait.check();
+        db.run(&rng.trip(trip));
+        trip += 1;
+        if let Err(error) = writer.step() {
+            break error.to_string();
+        }
+    };
+    assert_eq!(error, db.sql(CHILDREN));
+}
+
+/// A table made a child of a spec table after the load is a child too.
+#[test]
+fn a_table_made_to_inherit_from_a_spec_table_stops_the_logical_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "inherit_logical", TABLES);
+    db.run("CREATE TABLE $S.extra (LIKE $S.trips)");
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    assert!(source.wal().is_ok());
+    db.run("ALTER TABLE $S.extra INHERIT $S.trips");
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(error, db.sql(CHILDREN));
+}
+
+/// A spec table made a child of another table still reads its own rows
+/// alone: the stream keeps on.
+#[test]
+fn a_spec_table_made_a_child_keeps_the_logical_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "inherit_parent", TABLES);
+    db.run("CREATE TABLE $S.base ()");
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    db.run("ALTER TABLE $S.trips INHERIT $S.base");
+    source.wal().unwrap();
 }
 
 /// Tasks in two groups, one of each kind of task, so the view holds both

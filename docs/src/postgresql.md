@@ -165,8 +165,9 @@ Before it loads, Straum compares the server with the spec, logs every
 problem at once with its fix, and [exits with 1](deploy.md#states) so
 whatever runs it starts it again. A spec table must be a plain table
 no table inherits from; a partitioned table, a view or a TimescaleDB
-hypertable is refused. A line starts with the view, or with the dim,
-such as `accounts:`.
+hypertable is refused. A table that inherits from a spec table after
+the start stops Straum too ([Following](how-it-works.md#following)).
+A line starts with the view, or with the dim, such as `accounts:`.
 
 Straum connects with `application_name` `straum` and confirms each
 commit it reads. A `synchronous_standby_names` holding `*` or `straum`

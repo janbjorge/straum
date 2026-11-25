@@ -1,8 +1,9 @@
 //! What a running stream checks of its tables with each reading of the
 //! WAL: changes no message the stream reads says. A table is gone from
-//! under its name, another is there, the publication left it out,
-//! filters its rows or leaves out an action, a label of an enum it reads
-//! was renamed, or a column it reads was altered.
+//! under its name, another is there, a table inherits from it, the
+//! publication left it out, filters its rows or leaves out an action, a
+//! label of an enum it reads was renamed, or a column it reads was
+//! altered.
 
 use std::collections::HashMap;
 
@@ -28,10 +29,11 @@ pub(crate) struct Followed {
 }
 
 /// Fails once a table the stream follows is gone from under its name,
-/// another table is there, the publication left it out, filters its rows
-/// or leaves out an action, or a label of an enum it reads was renamed or
-/// dropped: none of it sends a message the stream reads, and a renamed
-/// label leaves the rows loaded with the old one. The setup check of the
+/// another table is there, a table inherits from it, the publication left
+/// it out, filters its rows or leaves out an action, or a label of an
+/// enum it reads was renamed or dropped: none of it sends a message the
+/// stream reads, and a renamed label leaves the rows loaded with the old
+/// one. The setup check of the
 /// next start says what is wrong.
 pub(crate) fn still_followed(
     connection: &mut Connection,
@@ -50,7 +52,7 @@ pub(crate) fn still_followed(
     let mut problems = Vec::new();
     let mut some_actions = false;
     for (table, row) in followed.tables.iter().zip(rows) {
-        let [oid, published, row_filter, all_actions] =
+        let [oid, published, row_filter, all_actions, children] =
             row.try_into().map_err(|_| shape("followed tables"))?;
         if let Some(all_actions) = &all_actions
             && !is_true(all_actions)
@@ -66,6 +68,9 @@ pub(crate) fn still_followed(
         let publication = publication.to_owned();
         let problem = match oid {
             oid if oid != table.oid => TableProblem::Replaced,
+            // A query of the table counts a child's rows, but their changes
+            // come under the child's name, on both streams.
+            _ if children.as_deref().is_some_and(is_true) => TableProblem::Children,
             _ if !logical => continue,
             _ if !published.as_deref().is_some_and(is_true) => {
                 TableProblem::NotPublished { publication }
@@ -91,8 +96,8 @@ pub(crate) fn still_followed(
 }
 
 /// Per table followed, in order: its oid, whether the publication sends
-/// it, whether it filters its rows, and whether the publication sends all
-/// four actions.
+/// it, whether it filters its rows, whether the publication sends all
+/// four actions, and whether a table inherits from it.
 fn publication_rows(
     connection: &mut Connection,
     followed: &Followed,
@@ -108,7 +113,8 @@ fn publication_rows(
     }
     let rows = connection.rows(&format!(
         "SELECT c.oid, p.tablename IS NOT NULL, p.rowfilter IS NOT NULL,
-                pub.pubinsert AND pub.pubupdate AND pub.pubdelete AND pub.pubtruncate
+                pub.pubinsert AND pub.pubupdate AND pub.pubdelete AND pub.pubtruncate,
+                EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid)
            FROM (VALUES {}) AS t(at, schema, name)
            LEFT JOIN pg_namespace n ON n.nspname = t.schema
            LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.name
