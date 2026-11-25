@@ -3,3 +3,4 @@
 /docs/book
 /exclude/
 __pycache__/
+.DS_Store
