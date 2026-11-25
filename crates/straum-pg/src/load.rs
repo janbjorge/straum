@@ -247,7 +247,8 @@ fn read(
             data = header(data)?;
             started = true;
         }
-        // PostgreSQL sends a row per message, but nothing here needs it to.
+        // PostgreSQL sends each row whole in one message, and the header in
+        // the first. A row split across two messages fails as cut short.
         while !data.is_empty() {
             if ended {
                 return Err(Error::Protocol(Unexpected::DataAfterCopy));
