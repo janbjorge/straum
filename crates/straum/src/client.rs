@@ -2,11 +2,12 @@
 //! running Straum: `straum status`, `views`, `ask` and the shell. Each
 //! public function builds one `Request`, `fetch` writes it as HTTP/1.1 on
 //! a plain socket and reads the reply until Straum closes the connection,
-//! and the body comes back as text. An ask and a view's rows come back
-//! with a `Timing` too: how long the request took at this end, and the
-//! phases the reply's `Server-Timing` header names, which the shell
-//! prints. A plain socket, since Straum's image holds nothing else to ask
-//! with.
+//! and the body comes back as text. The status comes back with whether
+//! Straum is ready, from its `straum-ready` header. An ask and a view's
+//! rows come back with a `Timing` too: how long the request took at this
+//! end, and the phases the reply's `Server-Timing` header names, which
+//! the shell prints. A plain socket, since Straum's image holds nothing
+//! else to ask with.
 
 use std::fmt::{self, Display, Write as _};
 use std::io::{self, Read, Write};
@@ -22,6 +23,10 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The header in which Straum says where an answer's time went.
 const SERVER_TIMING: &str = "server-timing";
+
+/// The header in which Straum says, on a `/status` reply, whether it is
+/// ready: `true` or `false`.
+const READY: &str = "straum-ready";
 
 /// What follows a phase's name in `Server-Timing`, before its milliseconds.
 const PHASE_TOOK: &str = ";dur=";
@@ -82,6 +87,10 @@ pub(crate) enum ClientError {
         url: String,
         expected: usize,
         got: usize,
+    },
+    /// A `/status` reply that does not say whether Straum is ready.
+    NoReadiness {
+        url: String,
     },
 }
 
@@ -145,6 +154,11 @@ impl Display for ClientError {
                 formatter,
                 "{url} sent {got} of the {expected} bytes its reply said it would"
             ),
+            ClientError::NoReadiness { url } => write!(
+                formatter,
+                "{url} sent a status without a {READY} header of true or false; give the \
+                 URL of a Straum of this version"
+            ),
         }
     }
 }
@@ -153,7 +167,6 @@ impl Display for ClientError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wanted {
     Status,
-    Readiness,
     Views,
     Rows,
     Spec,
@@ -164,7 +177,6 @@ impl Wanted {
     fn as_str(self) -> &'static str {
         match self {
             Wanted::Status => "its status",
-            Wanted::Readiness => "whether it is ready",
             Wanted::Views => "its views",
             Wanted::Rows => "its rows",
             Wanted::Spec => "a view's spec",
@@ -228,20 +240,31 @@ impl Request {
     }
 }
 
-/// What a running Straum has done, as `GET /status` says it.
-pub(crate) fn status(server: &Server, output: Output) -> Result<String, ClientError> {
-    let request = Request::get(Wanted::Status, "/status".to_owned(), output);
-    fetch(server, &request)
+/// What a running Straum has done, and whether it is ready, from one
+/// `GET /status`.
+#[derive(Debug)]
+pub(crate) struct Status {
+    pub(crate) text: String,
+    pub(crate) ready: bool,
 }
 
-/// Whether a running Straum is ready, as `GET /readyz` says.
-pub(crate) fn is_ready(server: &Server) -> Result<bool, ClientError> {
-    let request = Request::get(Wanted::Readiness, "/readyz".to_owned(), Output::Text);
-    match fetch(server, &request) {
-        Ok(_) => Ok(true),
-        Err(error) if error.is_not_ready() => Ok(false),
-        Err(error) => Err(error),
-    }
+/// What a running Straum has done, as `GET /status` says it, and whether
+/// it is ready, as the reply's `straum-ready` header says.
+pub(crate) fn status(server: &Server, output: Output) -> Result<Status, ClientError> {
+    let request = Request::get(Wanted::Status, "/status".to_owned(), output);
+    let reply = fetch_reply(server, &request)?;
+    let ready = match header(&reply.head, READY) {
+        Some("true") => true,
+        Some("false") => false,
+        _ => {
+            let url = server.url.clone();
+            return Err(ClientError::NoReadiness { url });
+        }
+    };
+    Ok(Status {
+        text: reply.body,
+        ready,
+    })
 }
 
 /// A reply's body, and how long it took to get.
@@ -449,6 +472,27 @@ fn fetch(server: &Server, request: &Request) -> Result<String, ClientError> {
 
 /// The body of the reply to one request, and how long it took.
 fn fetch_timed(server: &Server, request: &Request) -> Result<Timed, ClientError> {
+    let reply = fetch_reply(server, request)?;
+    let timing = Timing {
+        round_trip: reply.round_trip,
+        phases: phases(&reply.head),
+    };
+    Ok(Timed {
+        text: reply.body,
+        timing,
+    })
+}
+
+/// A whole reply with status 200: its head, its body, and how long it
+/// took.
+struct Reply {
+    head: String,
+    body: String,
+    round_trip: Duration,
+}
+
+/// The reply to one request, or why it is no answer.
+fn fetch_reply(server: &Server, request: &Request) -> Result<Reply, ClientError> {
     let url = server.url.as_str();
     let Some(address) = address_of(url) else {
         return Err(ClientError::NotAnHttpUrl(url.to_owned()));
@@ -475,9 +519,9 @@ fn unanswered_error(unanswered: Exchange, server: &Server, wanted: Wanted) -> Cl
     }
 }
 
-/// The body of a whole reply from `url` and how long it took, or why it
-/// is no answer.
-fn read_reply(url: &str, reply: &str, round_trip: Duration) -> Result<Timed, ClientError> {
+/// A whole reply from `url` and how long it took, or why it is no
+/// answer.
+fn read_reply(url: &str, reply: &str, round_trip: Duration) -> Result<Reply, ClientError> {
     let Some((head, body)) = reply.split_once("\r\n\r\n") else {
         return Err(ClientError::NoReply {
             url: url.to_owned(),
@@ -507,13 +551,10 @@ fn read_reply(url: &str, reply: &str, round_trip: Duration) -> Result<Timed, Cli
             body: body.to_owned(),
         });
     }
-    let timing = Timing {
+    Ok(Reply {
+        head: head.to_owned(),
+        body: body.to_owned(),
         round_trip,
-        phases: phases(head),
-    };
-    Ok(Timed {
-        text: body.to_owned(),
-        timing,
     })
 }
 

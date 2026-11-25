@@ -140,7 +140,7 @@ services:
           create_host_path: false
     ports:
       - 127.0.0.1:8080:8080
-    # The image has no shell. status exits 0 once /readyz says ready.
+    # The image has no shell. status exits 0 once /status says ready.
     # A large copy can take a while to load, so the wait is an hour.
     healthcheck:
       test: ["CMD", "/straum", "status"]

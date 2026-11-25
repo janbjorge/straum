@@ -182,6 +182,8 @@ and this glossary. The clashes at the end are open.
   ([The answer](asks.md#the-answer)).
 - **Straum-LSN** and **Server-Timing**: response headers
   ([The answer](asks.md#the-answer)).
+- **Straum-Ready**: the response header of `GET /status`, `true` or
+  `false`, as `/readyz` says ([Endpoints](asks.md#endpoints)).
 - **Column type** (`ColumnType`): a column's type as the catalog gave it
   at load; a parameter must fit it.
 - **Scale**: the digits past the point of a `numeric(p, s)`

@@ -5,8 +5,7 @@ use std::thread;
 
 use super::*;
 use crate::testing::{
-    GET_READYZ, GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, POST_ASK_JSON, answering, args, server,
-    serving,
+    GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, POST_ASK_JSON, answering, args, server, serving,
 };
 
 /// What the user reads: a reply's body, or an error's words.
@@ -23,6 +22,11 @@ fn said(result: Result<String, ClientError>) -> Said {
     }
 }
 
+/// What the user reads of a status: its body, or an error's words.
+fn said_status(result: Result<Status, ClientError>) -> Said {
+    said(result.map(|status| status.text))
+}
+
 /// The body of a reply that was timed, without its timing.
 fn text(result: Result<Timed, ClientError>) -> Result<String, ClientError> {
     Ok(result?.text)
@@ -37,21 +41,24 @@ fn phase_of(name: &str, took_us: u64) -> Phase {
 
 #[test]
 fn asks_for_the_status() {
-    let reply = "HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nready: yes\n";
+    let reply = "HTTP/1.1 200 OK\r\ncontent-length: 11\r\nstraum-ready: true\r\n\r\nready: yes\n";
     let url = answering(GET_STATUS, reply);
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Body("ready: yes\n".to_owned())
     );
-    let url = answering(GET_STATUS, "HTTP/1.1 200 OK\r\n\r\n");
+    let url = answering(GET_STATUS, "HTTP/1.1 200 OK\r\nstraum-ready: true\r\n\r\n");
     assert_eq!(
-        said(status(&server(&format!("{url}/")), Output::Text)),
+        said_status(status(&server(&format!("{url}/")), Output::Text)),
         Said::Body(String::new())
     );
     // HTTP/1.0 is HTTP/1.1's elder, and its 200 an answer too.
-    let url = answering(GET_STATUS, "HTTP/1.0 200 OK\r\n\r\nready: yes\n");
+    let url = answering(
+        GET_STATUS,
+        "HTTP/1.0 200 OK\r\nstraum-ready: true\r\n\r\nready: yes\n",
+    );
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Body("ready: yes\n".to_owned())
     );
     // Straum never sends chunks: a proxy stands between.
@@ -59,7 +66,7 @@ fn asks_for_the_status() {
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\nb\r\nready: yes\n\r\n0\r\n\r\n";
     let url = answering(GET_STATUS, chunked);
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Error(format!(
             "{url} sent a chunked reply, which Straum never sends; give the URL Straum \
              listens on, not a proxy's"
@@ -69,7 +76,7 @@ fn asks_for_the_status() {
     let short = "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nready: yes\n";
     let url = answering(GET_STATUS, short);
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Error(format!(
             "{url} sent 11 of the 20 bytes its reply said it would"
         ))
@@ -112,7 +119,7 @@ const PAUSE: Duration = Duration::from_millis(200);
 fn pause_mid_reply(mut stream: TcpStream) {
     let mut buf = [0u8; 1024];
     let _ = stream.read(&mut buf);
-    let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nok\n";
+    let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\nstraum-ready: true\r\n\r\nok\n";
     let mid = reply.len() / 2;
     stream.write_all(&reply[..mid]).unwrap();
     thread::sleep(PAUSE);
@@ -165,7 +172,7 @@ fn a_trickling_reply_is_cut_off_at_the_timeout() {
     let (send, recv) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let started = Instant::now();
-        let result = status(&slow, Output::Text).map_err(|error| error.to_string());
+        let result = said_status(status(&slow, Output::Text));
         let _ = send.send((started.elapsed(), result));
     });
     let (elapsed, result) = recv
@@ -178,7 +185,7 @@ fn a_trickling_reply_is_cut_off_at_the_timeout() {
     );
     assert_eq!(
         result,
-        Err(format!(
+        Said::Error(format!(
             "asking {url} for its status: no reply came within 1 s"
         ))
     );
@@ -192,7 +199,7 @@ fn a_slow_reply_within_the_timeout_is_read() {
     let holder = serving(pause_mid_reply);
     let url = holder.url.clone();
     let started = Instant::now();
-    let body = status(&Server { url, timeout }, Output::Text).unwrap();
+    let body = status(&Server { url, timeout }, Output::Text).unwrap().text;
     assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
     assert_eq!(body, "ok\n");
     holder.thread.join().unwrap();
@@ -263,7 +270,7 @@ fn asks_for_the_views() {
     let answered =
         format!("{url} answered \"HTTP/1.1 503 Service Unavailable\"\nnot ready: loading");
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Error(answered)
     );
     // Not ready in either HTTP/1, and nothing else is.
@@ -339,21 +346,41 @@ fn loads_the_views_as_json() {
     assert!(views(&server("http://127.0.0.1:1"), Output::Json).is_err());
 }
 
+/// The fake answers one `GET /status` only, so the client asks once.
 #[test]
 fn says_whether_straum_is_ready() {
-    let url = answering(GET_READYZ, "HTTP/1.1 200 OK\r\n\r\nready\n");
-    assert!(is_ready(&server(&url)).unwrap());
+    let ready = "HTTP/1.1 200 OK\r\nStraum-Ready: true\r\n\r\nready: yes\n";
+    let url = answering(GET_STATUS, ready);
+    let said = status(&server(&url), Output::Text).unwrap();
+    assert_eq!((said.text.as_str(), said.ready), ("ready: yes\n", true));
+    let loading = "HTTP/1.1 200 OK\r\nstraum-ready: false\r\n\r\nready: no\n";
+    let url = answering(GET_STATUS, loading);
+    assert!(!status(&server(&url), Output::Text).unwrap().ready);
+}
+
+/// A status that does not say whether Straum is ready is no answer.
+#[test]
+fn a_status_without_readiness_is_an_error() {
+    for reply in [
+        "HTTP/1.1 200 OK\r\n\r\nready: yes\n",
+        "HTTP/1.1 200 OK\r\nstraum-ready: yes\r\n\r\nready: yes\n",
+    ] {
+        let url = answering(GET_STATUS, reply);
+        let error = status(&server(&url), Output::Text).unwrap_err();
+        assert!(!error.is_not_ready(), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{url} sent a status without a straum-ready header of true or false; give \
+                 the URL of a Straum of this version"
+            )
+        );
+    }
+}
+
+#[test]
+fn only_a_503_says_not_ready() {
     let loading = "HTTP/1.1 503 Service Unavailable\r\n\r\nnot ready: loading\n";
-    let url = answering(GET_READYZ, loading);
-    assert!(!is_ready(&server(&url)).unwrap());
-    let url = answering(GET_READYZ, "HTTP/1.1 404 Not Found\r\n\r\n");
-    let error = is_ready(&server(&url)).unwrap_err();
-    assert!(!error.is_not_ready(), "{error}");
-    let error = is_ready(&server("http://127.0.0.1:1")).unwrap_err();
-    assert!(
-        error.to_string().contains("for whether it is ready: "),
-        "{error}"
-    );
     // Only a 503 says not ready; an ask refused for itself is a 400.
     let url = answering(GET_VIEWS, loading);
     assert!(
@@ -367,9 +394,12 @@ fn says_whether_straum_is_ready() {
 #[test]
 fn json_asks_straum_for_json_and_passes_it_through() {
     let json_status = "GET /status HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: application/json\r\n\r\n";
-    let url = answering(json_status, "HTTP/1.1 200 OK\r\n\r\n{\"ready\":true}\n");
+    let url = answering(
+        json_status,
+        "HTTP/1.1 200 OK\r\nstraum-ready: true\r\n\r\n{\"ready\":true}\n",
+    );
     let body = Said::Body("{\"ready\":true}\n".to_owned());
-    assert_eq!(said(status(&server(&url), Output::Json)), body);
+    assert_eq!(said_status(status(&server(&url), Output::Json)), body);
     let json_views = "GET /views HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: application/json\r\n\r\n";
     let url = answering(json_views, "HTTP/1.1 200 OK\r\n\r\n{\"views\":[]}");
     let body = Said::Body("{\"views\":[]}".to_owned());
@@ -558,18 +588,18 @@ fn status_errors() {
     );
     let answered = format!("{url} answered \"HTTP/1.1 404 Not Found\"\nno /status here");
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Error(answered)
     );
     let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
     let answered = format!("{url} answered \"HTTP/1.1 404 Not Found\"");
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Error(answered)
     );
     let url = answering(GET_STATUS, "garbage");
     assert_eq!(
-        said(status(&server(&url), Output::Text)),
+        said_status(status(&server(&url), Output::Text)),
         Said::Error(format!("{url} sent no HTTP reply"))
     );
     for bad in [
@@ -581,7 +611,7 @@ fn status_errors() {
     ] {
         let error = format!("--url or STRAUM_URL takes http://HOST:PORT, not {bad:?}");
         assert_eq!(
-            said(status(&server(bad), Output::Text)),
+            said_status(status(&server(bad), Output::Text)),
             Said::Error(error),
             "{bad}"
         );

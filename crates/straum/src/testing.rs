@@ -61,10 +61,6 @@ pub(crate) fn serving(handler: fn(TcpStream)) -> Serving {
 pub(crate) const GET_STATUS: &str =
     "GET /status HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: text/plain\r\n\r\n";
 
-/// What `straum status` asks after the status, to know its exit code.
-pub(crate) const GET_READYZ: &str =
-    "GET /readyz HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: text/plain\r\n\r\n";
-
 /// `straum views`'s request, and the shell's `\d`.
 pub(crate) const GET_VIEWS: &str =
     "GET /views HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: text/plain\r\n\r\n";

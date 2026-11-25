@@ -82,6 +82,9 @@
         "responses": {
           "200": {
             "description": "The status.",
+            "headers": {
+              "Straum-Ready": { "$ref": "#/components/headers/StraumReady" }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Status" }
@@ -229,6 +232,10 @@
       "StraumLsn": {
         "description": "The LSN the answer reflects, for debugging.",
         "schema": { "type": "string" }
+      },
+      "StraumReady": {
+        "description": "Whether Straum is ready, as GET /readyz says it: true or false.",
+        "schema": { "type": "string", "enum": ["true", "false"] }
       },
       "ServerTiming": {
         "description": "Where the time went in Straum, in milliseconds.",

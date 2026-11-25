@@ -25,6 +25,10 @@ use crate::{AskSyntax, DescribeAskError, Served, answer, ask, status, views};
 
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
+/// Whether Straum is ready, on a `/status` reply: `straum status` reads
+/// the status and its readiness from one reply, within one timeout.
+const READY: HeaderName = HeaderName::from_static("straum-ready");
+
 /// Where an answer's time went in Straum, so a client can tell it from the
 /// network's.
 const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
@@ -594,10 +598,15 @@ fn timing_entry(phase: &Phase) -> String {
 
 fn get_status(app: &App, format: Format) -> Reply {
     let status = app.status();
-    match format {
+    let mut reply = match format {
         Format::Text => text(StatusCode::OK, status::write(&status)),
         Format::Json => respond(StatusCode::OK, JSON, status::json(&status)),
-    }
+    };
+    let ready = if status.ready { "true" } else { "false" };
+    reply
+        .headers_mut()
+        .insert(READY, HeaderValue::from_static(ready));
+    reply
 }
 
 fn get_readyz(app: &App) -> Reply {

@@ -190,8 +190,9 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::Plan(args) => plan(&args),
         Command::Run(args) => run(args),
         Command::Status { server, output } => {
-            print(&client::status(&server, output)?)?;
-            if !client::is_ready(&server)? {
+            let status = client::status(&server, output)?;
+            print(&status.text)?;
+            if !status.ready {
                 return Err(Failure::NotReady);
             }
             Ok(())

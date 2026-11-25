@@ -3,14 +3,14 @@
 //! path, caching, and a shutdown with requests still in flight.
 
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::thread;
 use std::time::Duration;
 
 use straum_app::{Limits, Lsn, Memory};
 
 use crate::fake::{LIMITS, START, fake, writer, writer_with};
-use crate::{call, first_hour, header, read_reply, serve, started};
+use crate::{JSON, call, first_hour, header, read_reply, request, serve, started};
 
 #[test]
 fn no_reply_may_be_cached() {
@@ -157,6 +157,31 @@ fn status_says_what_the_stream_applied() {
     );
     assert_eq!(lines[7], format!("version:      {}", straum_http::VERSION));
     assert_eq!(lines.len(), 8);
+    server.stop();
+}
+
+/// The `straum-ready` header of `GET /status` as text and as JSON.
+fn ready_headers(address: SocketAddr) -> [Option<String>; 2] {
+    let as_text = call(address, "GET", "/status", "");
+    let as_json = request(address, "GET", "/status", Some(JSON), "");
+    [
+        header(&as_text.head, "straum-ready"),
+        header(&as_json.head, "straum-ready"),
+    ]
+}
+
+#[test]
+fn status_says_whether_ready_in_a_header() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    let not_ready = Some("false".to_owned());
+    assert_eq!(
+        ready_headers(server.address),
+        [not_ready.clone(), not_ready]
+    );
+    writer.step().unwrap();
+    let ready = Some("true".to_owned());
+    assert_eq!(ready_headers(server.address), [ready.clone(), ready]);
     server.stop();
 }
 
