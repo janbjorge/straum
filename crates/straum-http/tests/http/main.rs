@@ -3,9 +3,11 @@
 //! own, and the tests send raw HTTP/1.1 and read the reply back. This file
 //! holds the server and the request helpers; the tests are split by route:
 //! `asks.rs`, `views.rs` and `health.rs`, the `Host` a request may
-//! name in `hosts.rs`, and the OpenAPI document in `openapi.rs`.
+//! name in `hosts.rs`, the OpenAPI document in `openapi.rs`, and the
+//! connections served at once and their deadline in `connections.rs`.
 
 mod asks;
+mod connections;
 mod fake;
 mod health;
 mod hosts;
@@ -21,7 +23,7 @@ use std::thread::{self, JoinHandle};
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Literal};
-use straum_http::{AskSyntax, QueryError, ReadAsk};
+use straum_http::{AskSyntax, QueryError, ReadAsk, ServeLimits};
 use straum_notation::SqlError;
 use tokio::sync::oneshot;
 
@@ -29,6 +31,14 @@ use crate::fake::{Fake, SPEC, START};
 
 /// The most rows an ask may get, as `straum run` has it by default.
 const MAX_ANSWER_ROWS: usize = 100_000;
+
+/// The limits `straum run` serves with.
+const SERVE_LIMITS: ServeLimits = ServeLimits {
+    max_answer_rows: MAX_ANSWER_ROWS,
+    max_connections: straum_http::MAX_CONNECTIONS,
+    connection_deadline: straum_http::CONNECTION_DEADLINE,
+    connection_grace: straum_http::CONNECTION_GRACE,
+};
 
 /// A server on its own thread, and how to stop it.
 struct Server {
@@ -84,15 +94,26 @@ fn serve_in(app: App, syntax: AskSyntax) -> Server {
 /// Serves `app`, refusing an ask whose answer has more than
 /// `max_answer_rows` rows.
 fn serve_at_most(app: App, max_answer_rows: usize) -> Server {
+    serve_limited(
+        app,
+        ServeLimits {
+            max_answer_rows,
+            ..SERVE_LIMITS
+        },
+    )
+}
+
+/// Serves `app` on loopback within `limits`.
+fn serve_limited(app: App, limits: ServeLimits) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    serve_listening(app, notation(), listener, Vec::new(), max_answer_rows)
+    serve_listening(app, notation(), listener, Vec::new(), limits)
 }
 
 /// Serves `app` on `listen`, answering `named_hosts` if any, reached
 /// through loopback whatever address it listens on.
 fn serve_on(app: App, syntax: AskSyntax, listen: &str, named_hosts: Vec<String>) -> Server {
     let listener = TcpListener::bind(listen).unwrap();
-    serve_listening(app, syntax, listener, named_hosts, MAX_ANSWER_ROWS)
+    serve_listening(app, syntax, listener, named_hosts, SERVE_LIMITS)
 }
 
 fn serve_listening(
@@ -100,7 +121,7 @@ fn serve_listening(
     syntax: AskSyntax,
     listener: TcpListener,
     named_hosts: Vec<String>,
-    max_answer_rows: usize,
+    limits: ServeLimits,
 ) -> Server {
     let port = listener.local_addr().unwrap().port();
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -117,7 +138,7 @@ fn serve_listening(
             syntax,
             definitions,
             named_hosts,
-            max_answer_rows,
+            limits,
             async {
                 stopped.await.ok();
             },

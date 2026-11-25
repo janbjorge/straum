@@ -10,8 +10,8 @@ license.workspace = true
 http-body-util = "0.1.5"
 # HTTP/1 server (ADR-0002).
 hyper = { version = "1.12.0", default-features = false, features = ["server", "http1"] }
-# Tokio glue and graceful shutdown for hyper.
-hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "http1", "server-graceful"] }
+# Tokio glue for hyper.
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "http1"] }
 # RFC 3339 formatting of as_of, which std lacks.
 jiff = { version = "1.0.2", default-features = false, features = ["std"] }
 # A Visitor that rejects duplicate keys in an ask.

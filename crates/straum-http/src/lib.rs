@@ -1,6 +1,8 @@
 //! Straum over HTTP, on tokio and hyper. This file holds the server loop:
-//! `serve` accepts connections until told to stop, hands each request to
-//! `routes.rs`, and on shutdown finishes the requests in flight. The other
+//! `serve` accepts connections until told to stop, at most
+//! `max_connections` open at once and each closed after its deadline, hands
+//! each request to `routes.rs`, and on shutdown finishes the requests in
+//! flight. The other
 //! files each write one kind of reply: `answer.rs` an answer, `views.rs`
 //! the views, `status.rs` the status. `ask.rs` reads an ask; `json.rs`
 //! parses JSON for it and writes the strings and nulls of every reply;
@@ -59,7 +61,7 @@ use std::future::{Future, poll_fn};
 use std::io;
 use std::net;
 use std::num::NonZero;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::Arc;
 use std::task::Poll;
 use std::thread;
@@ -68,7 +70,6 @@ use std::time::Duration;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::App;
 use straum_domain::{Ask, AskError, Definition, Literal};
 
@@ -76,7 +77,7 @@ use crate::host::Hosts;
 pub use crate::host::is_host;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 /// How long to wait before accepting again after an accept fails, as when
 /// the process is out of file descriptors.
@@ -84,6 +85,34 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// How long a stop waits for the requests in flight: inside the 30 s a
 /// Kubernetes pod gets before it is killed.
 pub const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+/// The connections `serve_until_signal` serves at once: each can hold an
+/// answer of `max_answer_rows` rows and a file descriptor.
+pub const MAX_CONNECTIONS: usize = 1024;
+/// How long `serve_until_signal` keeps a connection open: far past any
+/// answer a client reads, so only a client that stalls is cut.
+pub const CONNECTION_DEADLINE: Duration = Duration::from_secs(300);
+/// How long `serve_until_signal` lets a connection past its deadline
+/// finish the request in flight: far past any answer a client reads.
+pub const CONNECTION_GRACE: Duration = Duration::from_secs(60);
+
+/// What one client may hold of the server, and for how long.
+#[derive(Debug, Clone, Copy)]
+pub struct ServeLimits {
+    /// An answer is written whole in memory, so one ask over every key of
+    /// a large view could take more than the process may hold; past this
+    /// it is refused.
+    pub max_answer_rows: usize,
+    /// The connections served at once. A connection past them waits in
+    /// the listen backlog until one closes.
+    pub max_connections: usize,
+    /// How long a connection may stay open. hyper has no deadline on a
+    /// reply's write, so a client that never reads would hold its answer
+    /// in memory without end.
+    pub connection_deadline: Duration,
+    /// How long a connection past its deadline has to finish the request
+    /// in flight before it is cut.
+    pub connection_grace: Duration,
+}
 
 /// One thing wrong with an ask's query, as the `ReadAsk` that read it
 /// says it.
@@ -128,9 +157,7 @@ struct Served {
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     hosts: Hosts,
-    /// An answer is written whole in memory, so one ask over every key of
-    /// a large view could take more than the process may hold; past this
-    /// it is refused.
+    /// See [`ServeLimits`].
     max_answer_rows: usize,
     /// One per core: a request that reads the store holds one until it is
     /// done, so asks without end can't keep the writer from the store's
@@ -142,8 +169,9 @@ struct Served {
 /// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
 /// time enabled. With `named_hosts`, each `NAME[:PORT]`, a request whose
-/// `Host` is none of them gets 421; with none, the address decides. An
-/// ask whose answer has more than `max_answer_rows` rows gets 400.
+/// `Host` is none of them gets 421; with none, the address decides.
+/// `limits` caps each answer's rows, the connections served at once and
+/// how long each stays open.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 pub async fn serve(
     listener: net::TcpListener,
@@ -151,7 +179,7 @@ pub async fn serve(
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     named_hosts: Vec<String>,
-    max_answer_rows: usize,
+    limits: ServeLimits,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let hosts = Hosts::of(listener.local_addr()?, named_hosts);
@@ -164,30 +192,42 @@ pub async fn serve(
         syntax,
         definitions,
         hosts,
-        max_answer_rows,
+        max_answer_rows: limits.max_answer_rows,
         turns: Arc::new(Semaphore::new(cores)),
     });
-    let graceful = GracefulShutdown::new();
+    let (stop, stopping) = watch::channel(false);
+    let connections = Arc::new(Semaphore::new(limits.max_connections));
     let mut shutdown = pin!(shutdown);
     loop {
-        // Wait for whichever comes first: the shutdown or a connection.
-        let accepted = poll_fn(|context| match shutdown.as_mut().poll(context) {
-            Poll::Ready(()) => Poll::Ready(None),
-            Poll::Pending => listener.poll_accept(context).map(Some),
-        })
-        .await;
+        // Past the limit nothing is accepted: the listen backlog holds the
+        // next connections until one closes.
+        let free = Arc::clone(&connections).acquire_owned();
+        let Some(Ok(permit)) = before_shutdown(shutdown.as_mut(), free).await else {
+            break;
+        };
+        let Some(accepted) = before_shutdown(shutdown.as_mut(), listener.accept()).await else {
+            break;
+        };
         match accepted {
-            None => break,
-            Some(Ok((stream, _))) => {
-                spawn_connection(stream, &served, &graceful);
+            Ok((stream, _)) => {
+                let connection = Connection {
+                    stream,
+                    permit,
+                    deadline: limits.connection_deadline,
+                    grace: limits.connection_grace,
+                    stopping: stopping.clone(),
+                };
+                spawn_connection(connection, &served);
             }
-            Some(Err(_)) => tokio::time::sleep(ACCEPT_BACKOFF).await,
+            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
     }
     drop(listener);
-    // A client may hold a request open for as long as hyper lets it; a
-    // stop waits for none past the deadline.
-    tokio::time::timeout(DRAIN_DEADLINE, graceful.shutdown())
+    stop.send_replace(true);
+    // Each connection holds a permit until it closes, so all of them free
+    // means none is open. A stop waits for none past the deadline.
+    let every_permit = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
+    tokio::time::timeout(DRAIN_DEADLINE, connections.acquire_many(every_permit))
         .await
         .ok();
     Ok(())
@@ -231,13 +271,19 @@ pub fn serve_until_signal(
         either_signal(&mut terminate_again, &mut interrupt_again).await;
         either_signal(&mut terminate_again, &mut interrupt_again).await;
     };
+    let limits = ServeLimits {
+        max_answer_rows,
+        max_connections: MAX_CONNECTIONS,
+        connection_deadline: CONNECTION_DEADLINE,
+        connection_grace: CONNECTION_GRACE,
+    };
     let served = serve(
         listener,
         app,
         syntax,
         definitions,
         named_hosts,
-        max_answer_rows,
+        limits,
         shutdown,
     );
     let result = runtime.block_on(until_done_or(served, second));
@@ -263,6 +309,20 @@ async fn until_done_or(
     .await
 }
 
+/// What `wanted` gives, or `None` when `shutdown` completes first.
+// Generic: the accept loop waits this way on a permit and on a connection.
+async fn before_shutdown<T>(
+    mut shutdown: Pin<&mut impl Future<Output = ()>>,
+    wanted: impl Future<Output = T>,
+) -> Option<T> {
+    let mut wanted = pin!(wanted);
+    poll_fn(|context| match shutdown.as_mut().poll(context) {
+        Poll::Ready(()) => Poll::Ready(None),
+        Poll::Pending => wanted.as_mut().poll(context).map(Some),
+    })
+    .await
+}
+
 async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {
     poll_fn(|context| {
         // Poll both, so each wakes this task when its signal comes.
@@ -277,7 +337,34 @@ async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {
     .await;
 }
 
-fn spawn_connection(stream: TcpStream, served: &Arc<Served>, graceful: &GracefulShutdown) {
+/// An accepted connection, the permit it holds while it is open, when it
+/// stops taking requests and how long it then has, and whether the server
+/// stops.
+struct Connection {
+    stream: TcpStream,
+    permit: OwnedSemaphorePermit,
+    deadline: Duration,
+    grace: Duration,
+    stopping: watch::Receiver<bool>,
+}
+
+/// Why a connection stopped serving.
+enum Ended {
+    /// The client closed it, or hyper did.
+    Closed,
+    /// Its deadline came, or the server stops: it finishes what is in
+    /// flight and takes no more.
+    Closing,
+}
+
+fn spawn_connection(connection: Connection, served: &Arc<Served>) {
+    let Connection {
+        stream,
+        permit,
+        deadline,
+        grace,
+        mut stopping,
+    } = connection;
     // Nagle would hold an answer's second write until the client acks
     // the first, which a client that delays acks makes 40 ms.
     stream.set_nodelay(true).ok();
@@ -288,9 +375,39 @@ fn spawn_connection(stream: TcpStream, served: &Arc<Served>, graceful: &Graceful
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
         .serve_connection(TokioIo::new(stream), service);
-    let connection = graceful.watch(connection);
-    // A client that hangs up mid-request is its own problem.
-    tokio::spawn(async move { connection.await.ok() });
+    // A client that hangs up mid-request is its own problem. A client
+    // that never reads its reply is cut at the deadline and its grace,
+    // which drops the connection and frees its permit.
+    tokio::spawn(async move {
+        let _permit = permit;
+        let mut connection = pin!(connection);
+        let mut deadline = pin!(tokio::time::sleep(deadline));
+        let mut stop = pin!(stopping.wait_for(is_true));
+        let ended = poll_fn(|context| {
+            if connection.as_mut().poll(context).is_ready() {
+                return Poll::Ready(Ended::Closed);
+            }
+            let late = deadline.as_mut().poll(context).is_ready();
+            if late || stop.as_mut().poll(context).is_ready() {
+                return Poll::Ready(Ended::Closing);
+            }
+            Poll::Pending
+        })
+        .await;
+        let Ended::Closing = ended else {
+            return;
+        };
+        connection.as_mut().graceful_shutdown();
+        tokio::time::timeout(grace, connection).await.ok();
+    });
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "watch::Receiver::wait_for hands the value by reference"
+)]
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[cfg(test)]

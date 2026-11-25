@@ -77,6 +77,17 @@ So give `--allow-hosts` there, as the Compose files do for their
 by whatever name the Service has; while a `kubectl port-forward` to it
 runs, a rebound page in a browser on that machine can read it.
 
+## Connections
+
+Straum serves at most 1024 connections at once. It does not accept a
+connection past that limit. The connection waits in the listen backlog
+until another connection closes. 5 minutes after a connection opens,
+Straum takes no more requests on it. The request in flight gets its
+whole reply, and then Straum closes the connection. A client that keeps
+a connection open for many asks must then open a new connection. If
+the connection is still open 1 minute later, Straum cuts it. Thus a
+client that does not read its answer cannot hold that answer in memory.
+
 ## States
 
 ![The states of a running Straum](diagrams/lifecycle.svg)
