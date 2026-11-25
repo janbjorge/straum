@@ -173,6 +173,7 @@ pub fn ask_view_t(by: &[&str]) -> Ask {
         from: Some(JAN),
         to: Some(FEB),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

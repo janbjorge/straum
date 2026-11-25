@@ -774,6 +774,7 @@ bucket | shared | fare
             from,
             to,
             bounded: None,
+            bound_zone: straum_domain::BoundZone::Utc,
         }
     }
 

@@ -61,6 +61,7 @@ fn by_width(seconds: u32, from: i64, to: i64) -> Ask {
         from: Some(from),
         to: Some(to),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

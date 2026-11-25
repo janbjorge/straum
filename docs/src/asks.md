@@ -181,11 +181,15 @@ The time's bounds are RFC 3339 times, such as
 `"2026-11-13T00:00:00-05:00"`, or Unix seconds. A time is written
 `YYYY-MM-DDTHH:MM:SS`, then `Z` or an offset `+HH:MM`, with no fraction
 and no leap second: `2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are
-refused. A zero offset is `Z`, never `+00:00` or `-00:00`. Each bound
-must fall on an edge of the ask's rows: the view's narrowest buckets,
-or the wider ones a [`buckets` key](#rows-a-day-or-a-week-apart)
-names. Straum never answers for part of a bucket, and the error names
-the edges on either side.
+refused. A zero offset is `Z`, never `+00:00` or `-00:00`. If the
+view's time is a `timestamp`, write each bound as the wall clock time
+with `Z`, or in Unix seconds. PostgreSQL does not use the offset when
+it reads text as a `timestamp`, so Straum refuses a bound with an
+offset. Each bound must fall on an edge of the ask's rows: the view's
+narrowest buckets, or the wider ones a
+[`buckets` key](#rows-a-day-or-a-week-apart) names. Straum never
+answers for part of a bucket, and the error names the edges on either
+side.
 
 ## The answer
 
@@ -297,6 +301,7 @@ sees the connection close.
 {"errors": ["line 1: value, use a parameter such as $1, `'eu'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
 {"errors": ["bound 1794558600 is not on a 1 hour bucket edge; the nearest are 1794556800 and 1794560400"]}
 {"errors": ["empty range [1794560400, 1794556800)"]}
+{"errors": ["the view's time is a timestamp, so PostgreSQL does not use the offset of a bound; write the wall clock time of the bound with Z"]}
 {"errors": ["bucket width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
 {"errors": ["1 hour buckets are kept only from 2024-03-01T00:00:00Z; bound the view's time from there, or read a wider width"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}

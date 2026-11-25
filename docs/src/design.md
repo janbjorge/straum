@@ -408,7 +408,9 @@ It refuses two time keys, a `buckets` row width the view doesn't keep,
 `buckets` or range bounds on a name that is not the time
 (`AskError::NotTime`), the time in `WHERE`, a name asked twice, an
 empty range and a bound off an edge of the row width. The store adds
-the type check once a load has set the types (`AskError::WrongType`).
+the type checks when a load has set the types: a filter value of
+another type (`AskError::WrongType`), and a bound with an offset on a
+wall clock time (`AskError::OffsetOnWallClock`).
 
 An `Answer` is one column per key and measure and one row per group.
 `Answered` wraps it with the applied LSN and `as_of`; the domain knows

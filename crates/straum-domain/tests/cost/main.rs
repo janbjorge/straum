@@ -274,6 +274,7 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
         from: Some(from * i64::from(HOUR)),
         to: Some(to * i64::from(HOUR)),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

@@ -7,7 +7,7 @@
 use std::ops::Range;
 
 use crate::aggregate::Partials;
-use crate::ask::{Ask, AskError, Comparison};
+use crate::ask::{Ask, AskError, BoundZone, Comparison};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
 use crate::rollup::{Cover, CoveredBucket, Rollup};
@@ -169,6 +169,11 @@ impl Store {
     /// [`Spec::check`](crate::spec::Spec::check).
     fn check_types(&self, fact: &Fact, read: Read<'_>, ask: &Ask) -> Result<(), Vec<AskError>> {
         let mut wrong = Vec::new();
+        if ask.bound_zone == BoundZone::Offset
+            && read.rollup().time_type() == (ColumnType::Time { zoned: false })
+        {
+            wrong.push(AskError::OffsetOnWallClock);
+        }
         for condition in &ask.filter {
             let column = self.condition_type(fact, read, &condition.key);
             for value in &condition.values {

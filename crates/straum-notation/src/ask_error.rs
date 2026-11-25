@@ -29,6 +29,10 @@ pub(crate) fn comparison_text(comparison: Comparison) -> &'static str {
     }
 }
 
+/// Why Straum refuses a bound with an offset on a `timestamp` time.
+const OFFSET_ON_WALL_CLOCK: &str = "the view's time is a timestamp, so PostgreSQL does not use \
+     the offset of a bound; write the wall clock time of the bound with Z";
+
 /// An ask error to write.
 // `'error`: borrows the error only while it is written.
 struct Described<'error> {
@@ -96,6 +100,7 @@ impl fmt::Display for Described<'_> {
             AskError::WrongType { key, column, value } => {
                 write_wrong_type(out, key, *column, value)
             }
+            AskError::OffsetOnWallClock => out.write_str(OFFSET_ON_WALL_CLOCK),
             AskError::RangeEmpty { from, to } => write!(out, "empty range [{from}, {to})"),
             AskError::RangeUnaligned { at, width } => write_unaligned(out, *at, *width),
             AskError::PastRetention { width, kept_from } => write!(

@@ -273,6 +273,7 @@ fn null_ness_keys() {
         from: Some(JAN),
         to: Some(FEB),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     };
     assert!(spec.check_ask(&ask).is_ok());
 }

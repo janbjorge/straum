@@ -116,6 +116,7 @@ impl App {
             from: None,
             to: None,
             bounded: None,
+            bound_zone: straum_domain::BoundZone::Utc,
         })
     }
 }

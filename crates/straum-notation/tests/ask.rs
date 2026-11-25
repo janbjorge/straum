@@ -64,6 +64,7 @@ fn reads_every_part() {
             from: Some(JAN),
             to: Some(FEB),
             bounded: Some(id("bucket")),
+            bound_zone: straum_domain::BoundZone::Offset,
         }
     );
 }

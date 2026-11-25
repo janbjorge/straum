@@ -27,7 +27,7 @@ use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 use straum_domain::{
-    Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
+    Ask, AskKey, BoundZone, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
@@ -121,7 +121,7 @@ struct Where {
 enum Bound {
     Open,
     Bad,
-    At { seconds: i64 },
+    At { seconds: i64, zone: BoundZone },
 }
 
 impl Bound {
@@ -129,9 +129,17 @@ impl Bound {
     /// already reported.
     fn seconds(&self) -> Result<Option<i64>, Reported> {
         match self {
-            Bound::At { seconds } => Ok(Some(*seconds)),
+            Bound::At { seconds, .. } => Ok(Some(*seconds)),
             Bound::Open => Ok(None),
             Bound::Bad => Err(Reported),
+        }
+    }
+
+    /// Whether the bound was written with an offset from UTC.
+    fn zone(&self) -> BoundZone {
+        match self {
+            Bound::At { zone, .. } => *zone,
+            Bound::Open | Bound::Bad => BoundZone::Utc,
         }
     }
 }
@@ -226,6 +234,11 @@ impl Walker {
             bounded,
         } = self.ask_where(select.selection.as_ref(), parameters);
         let having = self.ask_having(select.having.as_ref(), text, parameters);
+        let bound_zone = if from.zone() == BoundZone::Offset {
+            BoundZone::Offset
+        } else {
+            to.zone()
+        };
         Ok(Ask {
             view: view?,
             measures,
@@ -235,6 +248,7 @@ impl Walker {
             from: from.seconds()?,
             to: to.seconds()?,
             bounded,
+            bound_zone,
         })
     }
 
@@ -403,10 +417,7 @@ impl Walker {
                 self.error(line(part), format!("{name} {operator} given twice"));
                 continue;
             }
-            *bound = match self.instant(value, parameters) {
-                Ok(seconds) => Bound::At { seconds },
-                Err(Reported) => Bound::Bad,
-            };
+            *bound = self.instant(value, parameters);
         }
         for condition in self.without_repeats(conditions) {
             self.read_conditions(condition, &mut filter, &mut Names::Ask(parameters));
@@ -537,13 +548,19 @@ impl Walker {
         Ok(value.clone())
     }
 
-    /// Unix seconds, from an integer parameter or an RFC 3339 one.
-    fn instant(
-        &mut self,
-        expression: &sql::Expr,
-        parameters: &mut Parameters,
-    ) -> Result<i64, Reported> {
-        let instant = match self.parameter(expression, parameters)? {
+    /// A bound in Unix seconds, from an integer parameter or an RFC 3339
+    /// one; `Bad` once reported.
+    fn instant(&mut self, expression: &sql::Expr, parameters: &mut Parameters) -> Bound {
+        let Ok(value) = self.parameter(expression, parameters) else {
+            return Bound::Bad;
+        };
+        // RFC 3339 here ends in `Z` or an offset; `rfc3339_seconds`
+        // refuses a zero offset, so any other ending is a nonzero one.
+        let zone = match &value {
+            Literal::Text(text) if !text.ends_with('Z') => BoundZone::Offset,
+            _ => BoundZone::Utc,
+        };
+        let instant = match value {
             Literal::Int(seconds) => Ok(seconds),
             Literal::Text(text) => rfc3339_seconds(&text),
             Literal::Bool(_) => Err(InstantError::Boolean),
@@ -552,13 +569,13 @@ impl Walker {
             }),
         };
         match instant {
-            Ok(seconds) => Ok(seconds),
+            Ok(seconds) => Bound::At { seconds, zone },
             Err(why) => {
                 self.error(
                     line(expression),
                     format!("range bound {expression} must be RFC 3339 or Unix seconds: {why}"),
                 );
-                Err(Reported)
+                Bound::Bad
             }
         }
     }

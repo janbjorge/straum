@@ -555,6 +555,7 @@ fn trips_from(from: i64) -> Ask {
         from: Some(from),
         to: Some(JAN_1 + 24 * HOUR),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

@@ -210,6 +210,7 @@ fn a_rewrite_during_the_load_waits_for_it() {
         from: None,
         to: None,
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     };
     let counted = store.ask(&every_trip).unwrap().rows[0].values[0].clone();
     assert_eq!(counted, Value::Int(5), "the load read the table empty");

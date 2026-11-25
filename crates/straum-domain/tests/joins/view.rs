@@ -282,6 +282,7 @@ pub fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
         from: Some(START),
         to: Some(END),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

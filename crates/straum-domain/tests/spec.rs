@@ -560,6 +560,7 @@ fn ask() -> Ask {
         from: Some(0),
         to: Some(86_400),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

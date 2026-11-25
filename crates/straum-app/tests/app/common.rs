@@ -192,6 +192,7 @@ pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         from: Some(0),
         to: Some(RANGE),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

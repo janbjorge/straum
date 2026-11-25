@@ -387,6 +387,7 @@ pub(super) fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         from: Some(0),
         to: Some(END),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

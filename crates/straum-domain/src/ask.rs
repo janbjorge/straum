@@ -34,6 +34,17 @@ pub struct Ask {
     /// The name the range bounds compare, which must be the view's time;
     /// `None` when neither end is written.
     pub bounded: Option<Identifier>,
+    /// How the bounds were written: a wall clock reads only those in UTC.
+    pub bound_zone: BoundZone,
+}
+
+/// Whether an ask wrote a range bound with an offset from UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundZone {
+    /// Every bound written is Unix seconds or a UTC time, or none is.
+    Utc,
+    /// A bound written as a time with an offset other than UTC.
+    Offset,
 }
 
 /// `measure op value` in HAVING: a measure the ask selects, compared with
@@ -455,6 +466,9 @@ pub enum AskError {
         column: ColumnType,
         value: Literal,
     },
+    /// A range bound with an offset on a view whose time is a wall
+    /// clock. PostgreSQL does not use the offset of such a bound.
+    OffsetOnWallClock,
     RangeEmpty {
         from: i64,
         to: i64,

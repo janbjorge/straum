@@ -1,6 +1,6 @@
 # ADR-0005: Asks are Straum SQL with parameters
 
-Status: Accepted 2026-11-10; revised 2026-11-24
+Status: Accepted 2026-11-10; revised 2026-11-25
 
 ## Context
 
@@ -75,6 +75,12 @@ it lands.
 - A time past the year 9999, which PostgreSQL keeps and RFC 3339 can't
   write, is reachable only through an open end. The answer writes it as
   `Unix second` and its number rather than fail.
+- Straum refuses a bound with an offset on a view whose time is a
+  `timestamp` (`AskError::OffsetOnWallClock`). PostgreSQL does not use
+  the offset when it reads such text, so the bound gives a wall clock
+  time. Straum reads an instant, so without this refusal it would
+  answer for other buckets with no error. A bound with `Z`, or in Unix
+  seconds, gives the wall clock time.
 - A `buckets` row reads one stored bucket: 24 times fewer cells than
   hours for a day, 168 for a week, where every hour holds the same
   keys (`rows_at_a_wider_width_read_its_buckets` in

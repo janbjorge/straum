@@ -348,6 +348,7 @@ pub(crate) mod tests {
             from: Some(0),
             to: Some(3_600),
             bounded: None,
+            bound_zone: straum_domain::BoundZone::Utc,
         }
     }
 

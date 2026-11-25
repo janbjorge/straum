@@ -37,7 +37,7 @@ mod wide;
 mod width;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
-pub use ask::{Ask, AskError, AskKey, Comparison, Instead, MeasureCondition};
+pub use ask::{Ask, AskError, AskKey, BoundZone, Comparison, Instead, MeasureCondition};
 pub use closest::closest;
 pub use date::{Era, format_date, parse_calendar_day, parse_date};
 pub use hash::{FastMap, FastSet, Seeded};

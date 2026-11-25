@@ -124,6 +124,7 @@ fn trips_ask(measures: &[&str], keys: Vec<AskKey>) -> Ask {
         from: Some(START),
         to: Some(END),
         bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 
