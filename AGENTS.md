@@ -190,6 +190,19 @@ change.
   on the release page (ADR-0012). Code goes in with the commit that
   first uses it.
 - Use `git --no-pager`. Don't read `bench/data/` or `target/`.
+- Write prose in ASD-STE100 Simplified Technical English: docs,
+  ADRs, comments, error text, log lines and commit messages.
+  - One topic per sentence. An instruction has 20 words at most, a
+    description 25. A paragraph has 6 sentences at most.
+  - Active voice. Instructions in the imperative: "Run `just docs`".
+  - One word, one meaning. Use the STE approved word in its approved
+    sense, or a technical name from `docs/src/glossary.md`. Never a
+    synonym for variety.
+  - Simple tenses only: past, present, future. No "-ing" verb as a
+    noun or adjective where a plain verb does.
+  - Articles and "that" stay; a sentence is not telegraphic.
+  - Code, commands, paths, SQL and quoted PostgreSQL text stay
+    verbatim; STE governs only the words around them.
 - Wrap markdown at about 78 columns. No em dashes.
 - Docs don't explain tools or syntax a developer knows (shell, SQL,
   HTTP, Compose). A domain acronym is spelled out at its first use on
