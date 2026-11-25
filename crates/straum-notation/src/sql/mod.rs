@@ -12,6 +12,7 @@
 //! field added by a `sqlparser` upgrade fails to compile until it is handled
 //! here.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use sqlparser::ast as sql;
@@ -588,7 +589,7 @@ impl Walker {
     ) -> Result<Condition, Reported> {
         let key = self.condition_key(names, key);
         let mut values: Vec<Literal> = Vec::new();
-        let mut seen: Vec<String> = Vec::with_capacity(list.len());
+        let mut seen: HashSet<String> = HashSet::with_capacity(list.len());
         let mut failed = false;
         for item in list {
             let written = item.to_string();
@@ -597,7 +598,7 @@ impl Walker {
                 failed = true;
                 continue;
             }
-            seen.push(written);
+            seen.insert(written);
             match self.condition_value(names, item) {
                 Ok(value) => values.push(value),
                 Err(Reported) => failed = true,
