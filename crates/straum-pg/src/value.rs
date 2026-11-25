@@ -373,7 +373,8 @@ fn number(text: &str) -> Option<i64> {
     text.parse().ok()
 }
 
-fn all_digits(text: &str) -> bool {
+/// Whether `text` is ASCII digits only, with no sign; an empty text is.
+pub(crate) fn all_digits(text: &str) -> bool {
     for byte in text.bytes() {
         if !byte.is_ascii_digit() {
             return false;

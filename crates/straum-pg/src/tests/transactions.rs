@@ -17,7 +17,7 @@ use super::streams::*;
 use super::support::*;
 use crate::physical::Physical;
 use crate::source::parse_lsn;
-use crate::value::{self};
+use crate::value::{self, all_digits};
 use crate::wal::Record;
 use crate::wal::heap::{Heap, HeapChange};
 use crate::wal::transactions::{Committed, Consistency, TransactionSnapshot, Transactions};
@@ -265,16 +265,6 @@ fn described_end(kind: &str, rest: &str, record_xid: &str) -> Option<String> {
         }
     }
     Some(text)
-}
-
-/// Whether `text` is all ASCII digits.
-fn all_digits(text: &str) -> bool {
-    for byte in text.bytes() {
-        if !byte.is_ascii_digit() {
-            return false;
-        }
-    }
-    true
 }
 
 /// The xids a `RUNNING_XACTS` description lists.
