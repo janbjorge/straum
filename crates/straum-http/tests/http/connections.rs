@@ -138,6 +138,9 @@ fn a_connection_past_its_deadline_is_closed() {
 /// wait for.
 const SHORT_DEADLINE: Duration = Duration::from_secs(3);
 
+/// How much later the idle connection's deadline comes than the busy one's.
+const DEADLINE_GAP: Duration = Duration::from_millis(200);
+
 #[test]
 fn a_request_in_flight_at_the_deadline_is_answered_whole() {
     let limits = ServeLimits {
@@ -161,7 +164,9 @@ fn a_request_in_flight_at_the_deadline_is_answered_whole() {
     busy.write_all(sent).unwrap();
 
     // An idle connection opened later closes at its own deadline, so by
-    // then the busy one's deadline has passed too.
+    // then the busy one's deadline has passed too. The gap keeps the two
+    // deadlines apart, so the busy one is closing before the rest comes.
+    thread::sleep(DEADLINE_GAP);
     let mut idle = TcpStream::connect(server.address).unwrap();
     idle.set_read_timeout(Some(HANG_GUARD)).unwrap();
     let mut nothing = Vec::new();
@@ -173,5 +178,7 @@ fn a_request_in_flight_at_the_deadline_is_answered_whole() {
     let reply = read_reply(&mut busy);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(reply.body.starts_with(r#"{"as_of":"#), "{}", reply.body);
+    // hyper says it closes only when the deadline came before the reply.
+    assert!(reply.head.contains("connection: close"), "{}", reply.head);
     server.stop();
 }
