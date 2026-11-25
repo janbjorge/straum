@@ -387,6 +387,43 @@ fn a_zone_change_stays_within_its_time() {
     );
 }
 
+/// A median of the tips over 50,000 groups of 100 rows each, timed. Each
+/// group finds the rank of its median once. Runs on request, as
+/// [`an_ask_stays_within_its_time_per_cell`] does.
+#[test]
+#[ignore = "timing depends on the machine and the build"]
+fn a_median_of_many_groups_takes_its_time() {
+    const GROUPS: i64 = 50_000;
+    const ROWS: i64 = 100;
+    const REPS: u32 = 10;
+    let spec = spec_measuring(&[], Zones::Apart, vec![tip_median()]);
+    let columns = spec.fact("trips").unwrap().columns().clone();
+    let mut store = Store::new(spec);
+    for group in 0..GROUPS {
+        let mut rows = Vec::new();
+        for tip in 0..ROWS {
+            for column in &columns {
+                rows.push(match column.as_str() {
+                    "pu" => Datum::Int(group),
+                    "tip" => Datum::Int(tip),
+                    other => trip_value(other, 0, 0),
+                });
+            }
+        }
+        store.add_rows("trips", &rows).unwrap();
+    }
+    let mut by_pickup = ask(&["pu"], 0, 1);
+    by_pickup.measures = vec![id("tip_median")];
+    let answer = store.ask(&by_pickup).unwrap();
+    assert_eq!(answer.rows.len(), usize::try_from(GROUPS).unwrap());
+    let clock = Instant::now();
+    for _ in 0..REPS {
+        black_box(store.ask(&by_pickup).unwrap());
+    }
+    let per_ask = clock.elapsed() / REPS;
+    eprintln!("{GROUPS} medians of {ROWS} rows each: {per_ask:?} an ask");
+}
+
 /// Hours 5 to 700 over 30 days with day and week buckets: 19 hours, 6 days,
 /// 3 weeks, 1 day and 4 hours, each piece 80 cells. Weeks start at the
 /// epoch, so hour 168 starts one. An ask grouped by the bucket reads the

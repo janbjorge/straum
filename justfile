@@ -112,7 +112,7 @@ taxi-month: (test "straum-pg" "--release" "taxi_month" "--" "--ignored" "--nocap
 [group('bench')]
 wal-bench: (test "straum-pg" "--release" "physical_wal_bench" "--" "--ignored" "--nocapture")
 
-# Time an ask and a zone change on a store the size of the taxi month
+# Time an ask and a zone change on a store the size of the taxi month, and many medians
 [group('bench')]
 cost-bench: (test "straum-domain" "--release" "--test" "cost" "--" "--ignored" "--nocapture")
 

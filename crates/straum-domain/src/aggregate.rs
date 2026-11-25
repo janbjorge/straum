@@ -92,10 +92,67 @@ impl Fraction {
         reason = "PostgreSQL rounds in float8 too, and the product lies in 0..=total"
     )]
     pub(crate) fn rank(self, total: u64) -> u64 {
-        let fraction: f64 = format!("{}e-{}", self.units, self.places)
+        ((self.to_f64() * total as f64).ceil() as u64).clamp(1, total)
+    }
+
+    /// The f64 nearest the fraction, as PostgreSQL reads its text.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap,
+        reason = "the units are below 2^53 and the places at most 22 there"
+    )]
+    fn to_f64(self) -> f64 {
+        // Below 2^53 the units are exact in f64, and so is 10^22 at most.
+        // The quotient then rounds once, as the parse of the text does.
+        if self.units < 1 << 53 && self.places <= 22 {
+            return self.units as f64 / 10f64.powi(self.places as i32);
+        }
+        format!("{}e-{}", self.units, self.places)
             .parse()
-            .expect("digits and an exponent parse as f64");
-        ((fraction * total as f64).ceil() as u64).clamp(1, total)
+            .expect("digits and an exponent parse as f64")
+    }
+}
+
+#[cfg(test)]
+mod fraction_tests {
+    use super::Fraction;
+    use crate::test_rng::Rng;
+
+    fn parsed(units: u64, places: u32) -> f64 {
+        format!("{units}e-{places}").parse().unwrap()
+    }
+
+    /// Each fraction of 22 places at most and units below 2^53 divides to
+    /// the f64 its text parses to, bit for bit.
+    #[test]
+    fn a_fraction_divides_to_the_f64_its_text_parses_to() {
+        let mut rng = Rng::new(3);
+        for places in 0..=22 {
+            let most = 10u64.saturating_pow(places).min((1 << 53) - 1);
+            let mut units: Vec<u64> = (0..=most.min(10_000)).collect();
+            for _ in 0..20_000 {
+                units.push(rng.below(most + 1));
+            }
+            units.push(most);
+            for units in units {
+                let fraction = Fraction { units, places };
+                let (divided, text) = (fraction.to_f64(), parsed(units, places));
+                assert_eq!(divided.to_bits(), text.to_bits(), "{units}e-{places}");
+            }
+        }
+    }
+
+    /// A fraction of 17 digits has units past 2^53, so it reads its text.
+    /// A division would round twice and miss the nearest f64.
+    #[test]
+    fn a_fraction_of_17_digits_reads_its_text() {
+        const UNITS: u64 = 47_389_477_056_079_149;
+        let fraction = Fraction::new(UNITS, 17).unwrap();
+        let text = parsed(UNITS, 17);
+        assert_eq!(fraction.to_f64().to_bits(), text.to_bits());
+        #[expect(clippy::cast_precision_loss, reason = "the loss is the point")]
+        let divided = UNITS as f64 / 1e17;
+        assert_ne!(divided.to_bits(), text.to_bits());
     }
 }
 
