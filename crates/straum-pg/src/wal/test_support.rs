@@ -562,7 +562,6 @@ pub(crate) fn check(record: &Record, spec: &Spec, lsn: u64) {
     assert_eq!(record.xid, spec.xid);
     assert_eq!(record.resource_manager, spec.resource_manager);
     assert_eq!(record.info, spec.info);
-    assert_eq!(record.toplevel_xid, spec.toplevel_xid);
     assert_eq!(record.main_data(), &spec.main[..]);
     assert_eq!(record.blocks.len(), spec.blocks.len());
     for (index, block) in record.blocks.iter().enumerate() {

@@ -98,8 +98,6 @@ pub(crate) struct Record {
     /// `xl_info`: the record kind within its resource manager, with its
     /// flag bits.
     pub(crate) info: u8,
-    /// The top transaction, when `xid` is a subtransaction it names first.
-    pub(crate) toplevel_xid: Option<TransactionId>,
     pub(crate) blocks: Vec<Block>,
     /// Where the main data lies in `bytes`.
     main: Range<usize>,
@@ -174,7 +172,6 @@ impl Record {
             xid: 0,
             resource_manager: 0,
             info: 0,
-            toplevel_xid: None,
             blocks: Vec::new(),
             main: 0..0,
             bytes: Vec::new(),
@@ -232,7 +229,6 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
         bytes,
         at: RECORD_HEADER,
     };
-    let mut toplevel_xid = None;
     let mut main_length = 0usize;
     let mut payload = 0usize;
     while bytes.len() - cursor.at > payload {
@@ -249,7 +245,9 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
             ORIGIN => {
                 cursor.take(ORIGIN_SIZE).ok_or(short)?;
             }
-            TOPLEVEL_XID => toplevel_xid = Some(cursor.u32().ok_or(short)?),
+            TOPLEVEL_XID => {
+                cursor.u32().ok_or(short)?;
+            }
             id if id <= MAX_BLOCK_ID => {
                 let mut previous_file = None;
                 if let Some(previous) = blocks.last() {
@@ -274,7 +272,6 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
     record.resource_manager = bytes[RECORD_RESOURCE_MANAGER];
     record.lsn = lsn;
     record.end = end;
-    record.toplevel_xid = toplevel_xid;
     record.main = main_start..main_start + main_length;
     Ok(())
 }
