@@ -16,6 +16,8 @@ use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::source::{Replication, WAL_READ_TIMEOUT, plain, read_wal};
 use crate::stream::{Reader, Stream};
+use postgres_protocol::message::backend::Message;
+
 use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
 
 #[test]
@@ -322,6 +324,42 @@ fn copy_both_errors() {
         let error = connection.copy_both("START_REPLICATION").unwrap_err();
         assert_eq!(error.to_string(), expected);
     }
+}
+
+/// A message cut by a read timeout reads whole once the rest comes: each
+/// read that times out keeps the bytes before it, and adds none.
+#[test]
+fn a_message_split_across_a_read_timeout_reads_whole() {
+    // Its tag and its length.
+    const MESSAGE_HEADER_BYTES: usize = 5;
+    let read_timeout = Duration::from_millis(50);
+    let whole = keepalive(0x18);
+    let (first, rest) = whole.split_at(whole.len() / 2);
+    let mut connection = connect(
+        vec![
+            now([signed_in(), first.to_vec()].concat()),
+            later(read_timeout * 4, rest.to_vec()),
+        ],
+        ConnectionKind::Replication,
+    )
+    .unwrap();
+    connection.set_read_timeout(read_timeout).unwrap();
+    let wait = Wait::new("the rest of the message");
+    let mut empty_reads = 0;
+    let message = loop {
+        if let Some(message) = connection.try_read().unwrap() {
+            break message;
+        }
+        empty_reads += 1;
+        wait.poll();
+    };
+    // Half a message gives nothing: once for the first half, then at
+    // least once timed out.
+    assert!(empty_reads >= 2, "{empty_reads}");
+    let Message::CopyData(body) = message else {
+        panic!("not CopyData");
+    };
+    assert_eq!(body.data(), &whole[MESSAGE_HEADER_BYTES..]);
 }
 
 /// A stream from a fake server that sends `parts` once it has started.
