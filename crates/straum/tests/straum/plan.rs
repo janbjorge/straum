@@ -12,7 +12,7 @@ fn plan_copy_writes_the_scripts() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let other = scratch.file("other.sql", SPEC);
-    let directory = scratch.path.join("copy/out");
+    let directory = scratch.path.join("copy/my out");
     let directory = directory.to_str().unwrap();
     let mut plan = straum(&["plan", &spec, &other, "--copy", directory]);
     let (code, stdout, stderr) = output(&mut plan);
@@ -30,7 +30,7 @@ fn plan_copy_writes_the_scripts() {
         scripts.load
     );
     assert!(
-        stdout.contains(&format!("psql \"$SOURCE\" -f {full}/export.sql\n")),
+        stdout.contains(&format!("psql \"$SOURCE\" -f '{full}/export.sql'\n")),
         "{stdout}"
     );
 

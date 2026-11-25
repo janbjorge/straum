@@ -361,9 +361,16 @@ fn write_copy_scripts(directory: &str, specs: &[Spec]) -> Result<(), Failure> {
     write_or_print(Some(&load), &scripts.load)?;
     print(&format!(
         "wrote {export} and {load}\n\
-         export: psql \"$SOURCE\" -f {export}\n\
-         load:   psql \"$DESTINATION\" -f {load}\n"
+         export: psql \"$SOURCE\" -f {}\n\
+         load:   psql \"$DESTINATION\" -f {}\n",
+        shell_word(&export),
+        shell_word(&load)
     ))
+}
+
+/// Quotes `text` as one shell word, so a space in a path does not split it.
+fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 fn writing(path: &str, error: io::Error) -> Failure {
@@ -599,6 +606,12 @@ mod tests {
         };
         let first = errors[0].to_string();
         assert!(first.starts_with("line 1: "), "{first}");
+    }
+
+    #[test]
+    fn shell_word_keeps_a_path_whole() {
+        assert_eq!(shell_word("/tmp/my data"), "'/tmp/my data'");
+        assert_eq!(shell_word("it's"), r"'it'\''s'");
     }
 
     #[test]
