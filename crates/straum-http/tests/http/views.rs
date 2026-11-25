@@ -94,7 +94,10 @@ fn a_view_shows_its_rows() {
         (404, "no view zones; GET /views lists them\n")
     );
     let reply = call(server.address, "POST", "/views/trips", "");
-    assert_eq!((reply.status, reply.body.as_str()), (405, "use GET, HEAD\n"));
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (405, "use GET, HEAD\n")
+    );
 
     writer.step().unwrap();
     let reply = call(server.address, "GET", "/views/trips", "");
@@ -189,6 +192,9 @@ fn a_view_shows_its_spec_while_the_tables_load() {
         (404, "no view zones; GET /views lists them\n")
     );
     let reply = call(server.address, "POST", "/views/trips/spec", "");
-    assert_eq!((reply.status, reply.body.as_str()), (405, "use GET, HEAD\n"));
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (405, "use GET, HEAD\n")
+    );
     server.stop();
 }
