@@ -229,7 +229,8 @@ column it keeps nothing and reads their counts.
 
 A `Projection` maps a dim's key values to the codes of the dim columns
 of every row under them. `Null` is code 0 in every dim column, so a
-missing row and a null read alike.
+missing row and a null read alike. As the map of a count distinct does,
+the map gives back its room once it holds under a quarter of it.
 
 `Bound` cells are the one place a cell keeps a dim value instead of the
 join column ([Dims](how-it-works.md#dims)). For a fact whose joins all

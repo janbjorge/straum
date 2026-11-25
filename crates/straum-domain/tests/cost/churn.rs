@@ -2,12 +2,14 @@
 //! values never seen again leave what a store that never held them
 //! holds, a bucket thinned out gives back its room, and an ask through
 //! a join or a filter remembers only the ids it read. A count of
-//! distinct values gives back the room of the values that went. Each
-//! test reads the heap through the counting allocator of `main.rs`.
+//! distinct values and a dim give back the room of the values and rows
+//! that went. Each test reads the heap through the counting allocator of
+//! `main.rs`.
 
 use super::{
-    Condition, Datum, HOUR, Literal, RefKind, Spec, Store, ZONES, Zones, allocations_of, ask,
-    borough, held, id, load_zones, peak, spec, spec_measuring, spec_of, tip_distinct, trip_row,
+    ColumnType, Condition, Datum, HOUR, Literal, RefKind, Spec, Store, ZONES, Zones,
+    allocations_of, ask, borough, held, id, load_zones, peak, spec, spec_measuring, spec_of,
+    tip_distinct, trip_row,
 };
 
 /// A truncate gives back the codes of the values the view held, not only
@@ -325,6 +327,70 @@ fn a_cell_coming_and_going_at_the_edge_moves_no_room() {
     let edge = come_and_go(EDGE + 1);
     eprintln!("{edge} allocations at the edge, {away} away from it");
     assert!(edge < away + 64, "{edge} allocations against {away}");
+}
+
+/// The heap a store holds after `zones` zone rows came and all but the
+/// first went.
+fn zones_kept_one_of(zones: i64) -> isize {
+    held(|| {
+        let mut store = Store::new(spec_of(&[], Zones::Joined));
+        store
+            .set_types("zones", &[ColumnType::Int, ColumnType::Text])
+            .unwrap();
+        for zone in 0..zones {
+            store
+                .add_row("zones", &[Datum::Int(zone), borough(zone)])
+                .unwrap();
+        }
+        for zone in 1..zones {
+            store
+                .remove_row("zones", &[Datum::Int(zone), borough(zone)])
+                .unwrap();
+        }
+        store
+    })
+}
+
+/// A dim gives back the room of its rows that went: 100,000 zones, all
+/// gone but one, hold about what one zone holds.
+#[test]
+fn a_dim_gives_back_the_room_of_its_rows() {
+    let one = zones_kept_one_of(1);
+    let many = zones_kept_one_of(100_000);
+    eprintln!("{one} bytes after one zone, {many} after 100,000, all but one gone");
+    assert!(many - one < 8 << 10, "{many} bytes against {one}");
+}
+
+/// A dim that loses a fifth of its keys keeps its room: the first fifth
+/// of 70,000 zones allocates what the second fifth does. The 56,000 keys
+/// left after the first fit the room of a smaller map, which a map that
+/// shrinks too soon takes. The 42,000 left after the second fit the
+/// same smaller map, so no map takes it then.
+#[test]
+fn a_dim_keeps_its_room_when_a_fifth_goes() {
+    const ZONES: i64 = 70_000;
+    let mut store = Store::new(spec_of(&[], Zones::Joined));
+    store
+        .set_types("zones", &[ColumnType::Int, ColumnType::Text])
+        .unwrap();
+    for zone in 0..ZONES {
+        store
+            .add_row("zones", &[Datum::Int(zone), borough(zone)])
+            .unwrap();
+    }
+    let mut remove = |zones: std::ops::Range<i64>| {
+        allocations_of(|| {
+            for zone in zones {
+                store
+                    .remove_row("zones", &[Datum::Int(zone), borough(zone)])
+                    .unwrap();
+            }
+        })
+    };
+    let first = remove(0..ZONES / 5);
+    let second = remove(ZONES / 5..2 * ZONES / 5);
+    eprintln!("{first} allocations for the first fifth, {second} for the second");
+    assert_eq!(first, second, "a fifth of the keys gone");
 }
 
 /// A store of the trips with a count of distinct tips and no zones.

@@ -7,7 +7,7 @@
 //! between keyed and bound cells.
 
 use crate::column::put;
-use crate::hash::FastMap;
+use crate::hash::{FastMap, give_back_room};
 use crate::value::Datum;
 use crate::value_counts::ValueCounts;
 
@@ -202,17 +202,10 @@ fn take(counts: &mut FastMap<Datum, u64>, value: &Datum, count: u64) -> bool {
     *held -= count;
     if *held == 0 {
         counts.remove(value);
-        // Half the room stays free, so a map that comes and goes near
-        // the edge does not shrink and grow each time.
-        if counts.capacity() > KEPT_ROOM && counts.len() * 4 < counts.capacity() {
-            counts.shrink_to(counts.len() * 2);
-        }
+        give_back_room(counts);
     }
     true
 }
-
-/// The room a map of values keeps however few values it holds.
-const KEPT_ROOM: usize = 128;
 
 #[cfg(test)]
 mod tests {
@@ -220,6 +213,7 @@ mod tests {
 
     use crate::aggregate::{Aggregate, Partials};
     use crate::column::Counts;
+    use crate::hash::keeps_its_room;
     use crate::identifier::Identifier;
     use crate::test_rng::Rng;
     use crate::value::{Datum, Value};
@@ -403,7 +397,7 @@ mod tests {
             for map in maps {
                 let (len, capacity) = (map.len(), map.capacity());
                 assert!(
-                    capacity <= super::KEPT_ROOM || len * 4 >= capacity,
+                    keeps_its_room(map),
                     "{len} values in the room of {capacity}"
                 );
             }

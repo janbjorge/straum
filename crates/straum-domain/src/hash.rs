@@ -7,7 +7,7 @@
 //! it.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasher, Hasher, RandomState};
+use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 
 /// From the fractional digits of pi, as `foldhash` takes them.
 const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
@@ -16,6 +16,24 @@ const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
 pub type FastMap<Key, Value> = HashMap<Key, Value, Seeded>;
 /// A `HashSet` hashed with [`Folded`].
 pub type FastSet<Item> = HashSet<Item, Seeded>;
+
+/// The room a map keeps however few entries it holds.
+const KEPT_ROOM: usize = 128;
+
+/// Gives back the room of `map` once it holds under a quarter of it. Half
+/// the room stays free, so a map that comes and goes near the edge does
+/// not shrink and grow each time.
+pub(crate) fn give_back_room<Key: Eq + Hash, Value>(map: &mut FastMap<Key, Value>) {
+    if map.capacity() > KEPT_ROOM && map.len() * 4 < map.capacity() {
+        map.shrink_to(map.len() * 2);
+    }
+}
+
+/// Whether `map` keeps no more room than [`give_back_room`] leaves it.
+#[cfg(test)]
+pub(crate) fn keeps_its_room<Key, Value>(map: &FastMap<Key, Value>) -> bool {
+    map.capacity() <= KEPT_ROOM || map.len() * 4 >= map.capacity()
+}
 
 /// The seed of one map, from which each of its hashes starts.
 #[derive(Debug)]

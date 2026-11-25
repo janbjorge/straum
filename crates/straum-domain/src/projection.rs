@@ -4,7 +4,7 @@
 //! join columns up here to find the dim's rows as they are now.
 
 use crate::codes::{Codes, worth_recoding};
-use crate::hash::FastMap;
+use crate::hash::{FastMap, give_back_room};
 use crate::rollup::{RowError, arity, split_rows};
 use crate::spec::Dim;
 use crate::value::{ColumnType, Datum};
@@ -189,6 +189,7 @@ impl Projection {
         }
         if held.is_empty() {
             self.rows.remove(key);
+            give_back_room(&mut self.rows);
         }
         Ok(())
     }
@@ -254,4 +255,109 @@ fn codes_match(known: &[Codes], attributes: &[Datum], codes: &[u32]) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::hash::keeps_its_room;
+    use crate::identifier::Identifier;
+    use crate::rollup::RowError;
+    use crate::spec::{Dim, Table};
+    use crate::test_rng::Rng;
+    use crate::value::Datum;
+
+    use super::{AttributeIndex, Projection};
+
+    /// Keys a run draws from: more than the room a map keeps, so the map
+    /// grows past it.
+    const KEYS: u64 = 400;
+    /// Steps of one wave: adds win in one wave, removes in the next.
+    const WAVE: usize = 1_000;
+    const BOROUGHS: [&str; 3] = ["m", "q", "b"];
+
+    fn id(name: &str) -> Identifier {
+        Identifier::new(name).unwrap()
+    }
+
+    fn zones() -> Dim {
+        Dim {
+            name: id("zones"),
+            table: Table {
+                schema: id("public"),
+                name: id("zones"),
+            },
+            key: vec![id("id")],
+            attributes: vec![id("borough")],
+            as_text: Vec::new(),
+        }
+    }
+
+    fn random_row(rng: &mut Rng) -> [Datum; 2] {
+        let key = i64::try_from(rng.below(KEYS)).unwrap();
+        let borough = BOROUGHS[rng.position_below(BOROUGHS.len())];
+        [Datum::Int(key), Datum::Text(borough.into())]
+    }
+
+    /// The boroughs the projection holds under `key`, sorted.
+    fn boroughs(projection: &Projection, key: &Datum) -> Vec<Datum> {
+        let mut found = Vec::new();
+        for codes in projection.matches(std::slice::from_ref(key)) {
+            found.push(
+                projection
+                    .attribute_value(AttributeIndex(0), codes[0])
+                    .clone(),
+            );
+        }
+        found.sort();
+        found
+    }
+
+    /// Dim rows added and removed at random, in waves that fill most keys
+    /// and then empty most, give what a list of every row gives. A row
+    /// never added is not found. The projection keeps no more room than
+    /// its rows need.
+    #[test]
+    fn a_projection_follows_a_list_of_every_row() {
+        let mut rng = Rng::new(5);
+        let mut projection = Projection::new(&zones());
+        let mut reference: Vec<[Datum; 2]> = Vec::new();
+        for step in 0..20 * WAVE {
+            let adds = if (step / WAVE).is_multiple_of(2) {
+                8
+            } else {
+                2
+            };
+            if reference.is_empty() || rng.below(10) < adds {
+                let row = random_row(&mut rng);
+                projection.add(&row).unwrap();
+                reference.push(row);
+            } else if rng.below(20) == 0 {
+                let never = [Datum::Int(-1), Datum::Text("m".into())];
+                assert_eq!(projection.remove(&never), Err(RowError::Missing));
+            } else {
+                let row = reference.swap_remove(rng.position_below(reference.len()));
+                projection.remove(&row).unwrap();
+            }
+            projection.reclaim_codes();
+            assert_eq!(projection.len(), reference.len(), "step {step}");
+            let (len, capacity) = (projection.rows.len(), projection.rows.capacity());
+            assert!(
+                keeps_its_room(&projection.rows),
+                "step {step}: {len} keys in the room of {capacity}"
+            );
+            if step % 100 == 0 {
+                for key in 0..KEYS {
+                    let key = Datum::Int(i64::try_from(key).unwrap());
+                    let mut expected = Vec::new();
+                    for [held, borough] in &reference {
+                        if *held == key {
+                            expected.push(borough.clone());
+                        }
+                    }
+                    expected.sort();
+                    assert_eq!(boroughs(&projection, &key), expected, "step {step}");
+                }
+            }
+        }
+    }
 }
