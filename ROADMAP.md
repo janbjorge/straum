@@ -4,41 +4,70 @@ What Straum does not do yet, in the order we mean to take it. Decisions
 live in [docs/adr/](docs/adr/); an item here names its record and goes
 when it ships. An item under Parked says what would bring it back.
 
-## Now: the outbox stream
+## Now: usage metering
 
-A third way to follow PostgreSQL, for servers that give neither
-logical decoding nor the replication attribute: triggers write changes
-to a table Straum polls (ADR-0018). Designed and measured in
-`bench/outbox.py`; none of it is in the binary.
+A billing service, for example Stripe Meters, Lago or OpenMeter,
+charges each account for its usage. Many apps write a row for each use
+into their own tables. Straum can keep the sums of these rows and give
+them to the billing service. The binary needs no change for this. An
+ask with the bounds of a month reads the day buckets of the view.
 
-1. Prove what is still only reasoned, in `bench/outbox.py`: a start
-   while writers run, applying only whole transactions, and what a
-   wide column no spec reads costs.
-2. Take the write-ahead log (WAL) words out of the source port, so a
-   source that has no log sequence number (LSN) fits it: positions and
-   a backlog (ADR-0016).
-3. Build the adapter in `straum-pg` on the connection methods it has
-   today, so the client can change under it: the start, the poll, the
-   sign. `straum plan` prints the table, the sequences, the trigger
-   and the SQL that removes them.
-4. The property test against a reference that ADR-0018 asks for.
-5. What ships with it: the chart stops the old Straum before the new
-   one starts on this stream; the status shows the outbox's size,
-   backlog and skipped writes; the guide and the help text say one
-   Straum an outbox.
+1. Write a guide that shows the steps on the `usage` view. Edit
+   ADR-0014 first, because the guide changes the page set.
+2. Write a Python script, run with uv. The script asks Straum for the
+   sum of each account in the last hour and sends it to Stripe Meters.
+3. Find out if users want this. Show it in a Show HN post and in a
+   Railway template.
 
 Still to decide:
 
-- The flag that picks the stream. `--wal logical|physical` today;
-  `--stream logical|physical|outbox` is proposed.
-- What the outbox stream shows where the others show an LSN: the
-  `Straum-LSN` header and the status line.
-- A spec table whose unique key is deferred: a new row can reach the
-  outbox before the old one leaves.
-- Whether the printed SQL refuses a table with a column PostgreSQL
-  can't send in binary, which would fail the table's writes.
+- The home of the guide: a new page, or a section of `asks.md`.
+- The data that the script uses. The `usage` tables have no data, and
+  the taxi trips have no accounts.
 
 ## Parked
+
+### The outbox stream
+
+Triggers write each change to a table, and Straum reads that table
+(ADR-0018). This stream is for a server that gives neither logical
+decoding nor the replication attribute. `bench/outbox.py` measures the
+design. None of it is in the binary.
+
+On 2026-11-25 we found little demand for this stream. Heroku Classic
+plans give no replication slot. Heroku Advanced gives logical slots
+since 2026-10-06. We found no user from 2025 or 2026 who asked for a
+stream without a slot. The triggers also add a cost to each write of
+the app.
+
+These steps remain:
+
+1. Prove these behaviours in `bench/outbox.py`: a start while writers
+   run, an apply of only whole transactions, and the cost of a wide
+   column that no spec reads.
+2. Remove the write-ahead log (WAL) words from the source port, so
+   that a source without a log sequence number (LSN) fits it
+   (ADR-0016).
+3. Build the adapter in `straum-pg`: the start, the poll and the sign.
+   `straum plan` prints the table, the sequences, the trigger and the
+   SQL that removes them.
+4. Write the property test against a reference that ADR-0018 asks for.
+5. Make the chart stop the old Straum before the new one starts. Show
+   the size, backlog and skipped writes of the outbox in the status.
+
+These questions remain open:
+
+- The flag that selects the stream: `--wal logical|physical` today,
+  or `--stream logical|physical|outbox`.
+- The value that the outbox stream shows in place of an LSN, in the
+  `Straum-LSN` header and the status line.
+- A spec table with a deferred unique key. A new row can get to the
+  outbox before the old row goes out.
+- A table with a column that PostgreSQL cannot send in binary. The
+  printed SQL can refuse it, or the writes to the table fail.
+
+Back when: a user names a server that gives neither logical decoding
+nor the replication attribute.
 
 ### A third-party PostgreSQL client
 
