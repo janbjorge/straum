@@ -64,6 +64,9 @@ pub(crate) enum Error {
     /// The watchdog ended the stream: the slot held more WAL than
     /// `--max-retained-wal` allows, or the watchdog couldn't read it.
     Watchdog(Verdict),
+    /// The server lists no slot of this name: PostgreSQL ended the slot's
+    /// session, which drops a temporary slot.
+    SlotGone(String),
     /// The thread reading the stream has stopped.
     Stopped,
 }
@@ -139,6 +142,10 @@ impl fmt::Display for Error {
                 "the watchdog couldn't read Straum's slot for {} s, so it ended the stream \
                  rather than leave the slot's WAL unwatched",
                 unwatched.as_secs()
+            ),
+            Error::SlotGone(slot) => write!(
+                formatter,
+                "slot {slot} is gone: PostgreSQL ended its session; the server log says why"
             ),
             Error::Stopped => formatter.write_str("the replication stream stopped"),
         }
@@ -228,6 +235,10 @@ mod tests {
                 },
                 "transaction 16/B374D848 changes more than 100000 rows Straum reads, \
                  the --max-transaction-rows limit",
+            ),
+            (
+                Error::SlotGone("straum_1".into()),
+                "slot straum_1 is gone: PostgreSQL ended its session; the server log says why",
             ),
             (Error::Stopped, "the replication stream stopped"),
         ];

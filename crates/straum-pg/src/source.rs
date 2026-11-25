@@ -808,7 +808,10 @@ pub(crate) fn read_wal(
          FROM pg_replication_slots WHERE slot_name = {}",
         escape_literal(slot)
     ))?;
-    let Some([inserted, restart, segment_bytes]) = rows.first().map(Vec::as_slice) else {
+    let Some(row) = rows.first() else {
+        return Err(Error::SlotGone(slot.to_owned()));
+    };
+    let [inserted, restart, segment_bytes] = row.as_slice() else {
         return Err(no_wal_position(slot));
     };
     let (Some(inserted), Some(restart), Some(segment_bytes)) = (

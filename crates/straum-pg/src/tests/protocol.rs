@@ -538,7 +538,10 @@ fn reads_the_servers_wal() {
     let error = read_wal(&mut connection, "nope", Lsn(0), start)
         .unwrap_err()
         .to_string();
-    assert_eq!(error, "PostgreSQL sent no WAL position for slot nope");
+    assert_eq!(
+        error,
+        "slot nope is gone: PostgreSQL ended its session; the server log says why"
+    );
 }
 
 /// A publication whose name holds a backslash and a quote streams: the
@@ -567,7 +570,11 @@ fn a_publication_named_with_a_backslash_streams() {
 /// The reply to the reading of the WAL: the insert position, the slot's
 /// restart position, and the segment size.
 fn wal_reply() -> Vec<u8> {
-    let columns = ["0/3000000", "0/1000000", "16777216"];
+    wal_reply_of(["0/3000000", "0/1000000", "16777216"])
+}
+
+/// The reply to the reading of the WAL, with `columns` as its row.
+fn wal_reply_of(columns: [&str; 3]) -> Vec<u8> {
     let mut description = i16::try_from(columns.len()).unwrap().to_be_bytes().to_vec();
     let mut row = description.clone();
     for (column, value) in columns.iter().enumerate() {
@@ -636,6 +643,20 @@ fn retained_wal_counts_from_where_the_slot_was_made() {
         let wal = read_wal(reading, "straum", from, Lsn(0)).unwrap();
         assert_eq!(wal.restart, counted_from, "from {from}");
     }
+}
+
+/// A row for the slot whose values do not read is no WAL position, not a
+/// slot that is gone.
+#[test]
+fn a_slot_row_that_does_not_read_is_no_wal_position() {
+    let reply = wal_reply_of(["x", "0/1000000", "16777216"]);
+    let server = scripted(vec![now(signed_in()), now(reply)]);
+    let mut connection = None;
+    let reading = plain(&mut connection, &server.dsn).unwrap();
+    let error = read_wal(reading, "straum", Lsn(0), Lsn(0))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "PostgreSQL sent no WAL position for slot straum");
 }
 
 #[test]
