@@ -309,6 +309,8 @@ fn prunes_as_17_and_19_log_it() {
     assert_eq!(slots(&heap), vec![1, 2, 3, 4, 5]);
 }
 
+/// A truncate drops the pages it cuts off a tracked file; a truncate of
+/// another file leaves every kept page.
 #[test]
 fn drops_pages_a_truncate_cuts_off() {
     let mut heap = heap(18);
@@ -316,20 +318,27 @@ fn drops_pages_a_truncate_cuts_off() {
         let images = full_page_images(vec![imaged(number, image(page_bytes(&[])))]);
         heap.apply(&images).unwrap();
     }
-    let main = truncate_main(FILE, 2, SMGR_TRUNCATE_HEAP);
-    heap.apply(&record(
-        RESOURCE_MANAGER_STORAGE,
-        SMGR_TRUNCATE,
-        main,
-        vec![],
-    ))
-    .unwrap();
+    truncate(&mut heap, OTHER, 0);
+    assert_eq!(kept_blocks(&heap), vec![0, 1, 2, 3]);
+    truncate(&mut heap, FILE, 2);
+    assert_eq!(kept_blocks(&heap), vec![0, 1]);
+}
+
+/// Applies a `VACUUM` truncate of `file` from page `first_gone`.
+fn truncate(heap: &mut Heap, file: RelationFile, first_gone: BlockNumber) {
+    let main = truncate_main(file, first_gone, SMGR_TRUNCATE_HEAP);
+    let truncate = record(RESOURCE_MANAGER_STORAGE, SMGR_TRUNCATE, main, vec![]);
+    assert_eq!(heap.apply(&truncate), Ok(vec![]));
+}
+
+/// The blocks of the kept pages, in order.
+fn kept_blocks(heap: &Heap) -> Vec<BlockNumber> {
     let mut kept: Vec<BlockNumber> = Vec::new();
     for (id, _) in heap.pages() {
         kept.push(id.block);
     }
     kept.sort_unstable();
-    assert_eq!(kept, vec![0, 1]);
+    kept
 }
 
 #[test]

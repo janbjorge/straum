@@ -380,7 +380,11 @@ impl Heap {
             database: read_u32(&main[TRUNCATE_DATABASE]),
             relation: read_u32(&main[TRUNCATE_RELATION]),
         };
-        if read_u32(&main[TRUNCATE_FLAGS]) & SMGR_TRUNCATE_HEAP == 0 {
+        // A truncate of any file on the server comes here: walk the kept
+        // pages only for a tracked one.
+        if read_u32(&main[TRUNCATE_FLAGS]) & SMGR_TRUNCATE_HEAP == 0
+            || !self.tracked.contains(&file)
+        {
             return Ok(());
         }
         let mut gone: Vec<PageId> = Vec::new();
