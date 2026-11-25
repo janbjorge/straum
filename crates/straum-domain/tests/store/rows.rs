@@ -9,7 +9,9 @@ use crate::{
     AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_COLUMNS, SHARED, START, TIP, TOLLED, VENDOR,
     WIDTH,
 };
-use straum_domain::{Aggregate, ColumnType, Datum, Identifier, KeyPart, RowError, Spec, Store};
+use straum_domain::{
+    Aggregate, AskKey, ColumnType, Datum, Identifier, KeyPart, RowError, Spec, Store, Value,
+};
 
 #[test]
 fn rows_added_together_add_none_on_error() {
@@ -272,6 +274,58 @@ fn a_row_never_added_is_missed_beside_rows_that_were() {
     assert_eq!(store.cells("trips"), Some(0));
 }
 
+/// The latest second whose bucket ends within 64 bits at every width
+/// the trips keep.
+fn latest_held_time(spec: &Spec) -> i64 {
+    let time = &spec.fact("trips").unwrap().time;
+    let mut latest = i64::MAX;
+    for width in std::iter::once(time.width).chain(time.wider.iter().copied()) {
+        let width = i64::from(width.seconds);
+        let last_start = (i64::MAX - width).div_euclid(width) * width;
+        latest = latest.min(last_start + width - 1);
+    }
+    latest
+}
+
+/// A row at the latest second a bucket of every width can hold is kept,
+/// and an ask with open ends finds it.
+#[test]
+fn the_latest_time_a_bucket_can_hold_is_kept() {
+    let spec = spec();
+    let mut store = Store::new(spec.clone());
+    let latest = base_trip_with(AT, Datum::Int(latest_held_time(&spec)));
+    store.add_row("trips", &latest).unwrap();
+    let mut ask = crate::trips_ask(&["trips"], vec![AskKey::Key(id("pay"))]);
+    ask.from = None;
+    ask.to = None;
+    let answer = store.ask(&ask).unwrap();
+    assert_eq!(answer.rows.len(), 1, "{answer:?}");
+    assert_eq!(answer.rows[0].values, [Value::Int(1)]);
+    store.remove_row("trips", &latest).unwrap();
+    assert_eq!(store.cells("trips"), Some(0));
+}
+
+/// A row whose bucket would end past the last second `i64` holds is
+/// refused, and holds no cell: one second past the latest time, and the
+/// last second itself.
+#[test]
+fn a_time_whose_bucket_ends_past_64_bits_is_refused() {
+    let spec = spec();
+    let mut store = Store::new(spec.clone());
+    for at in [latest_held_time(&spec) + 1, i64::MAX] {
+        let row = base_trip_with(AT, Datum::Int(at));
+        assert_eq!(
+            store.add_row("trips", &row),
+            Err(RowError::TimeOutOfRange { column: id("at") })
+        );
+        assert_eq!(
+            store.remove_row("trips", &row),
+            Err(RowError::TimeOutOfRange { column: id("at") })
+        );
+        assert_eq!(store.cells("trips"), Some(0));
+    }
+}
+
 #[test]
 fn row_error_display() {
     let cases = [
@@ -291,6 +345,10 @@ fn row_error_display() {
                 column: id("tolled"),
             },
             "column tolled is not a boolean",
+        ),
+        (
+            RowError::TimeOutOfRange { column: id("at") },
+            "column at is outside the times a bucket can hold",
         ),
         (RowError::Missing, "removed row was never added"),
     ];

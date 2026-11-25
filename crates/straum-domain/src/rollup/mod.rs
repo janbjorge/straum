@@ -598,11 +598,13 @@ impl Rollup {
         self.codes[part.0].value(code)
     }
 
-    /// Rejects a time so early that some level's bucket for it would
-    /// start before the earliest second `i64` holds.
+    /// Rejects a time so early or so late that some level's bucket for it
+    /// would start or end outside the seconds `i64` holds.
     fn check_time(&self, seconds: i64) -> Result<(), RowError> {
         for level in &self.levels {
-            if level.width.bucket_start(seconds).is_none() {
+            let start = level.width.bucket_start(seconds);
+            let end = start.and_then(|start| start.checked_add(i64::from(level.width.seconds)));
+            if end.is_none() {
                 return Err(RowError::TimeOutOfRange {
                     column: self.columns[TIME].clone(),
                 });
