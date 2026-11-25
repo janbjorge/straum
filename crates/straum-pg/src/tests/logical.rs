@@ -827,3 +827,76 @@ fn a_start_says_which_transactions_hold_it_back() {
     holder.run("COMMIT");
     assert!(source.open(&spec).is_ok());
 }
+
+/// The session of a slot that waits for open transactions does not see
+/// that Straum closed its socket. A start that waits too long ends that
+/// session, so it frees its WAL sender and its temporary slot. With two
+/// WAL senders, a third start that waits too long still gives the wait.
+#[test]
+fn starts_that_wait_too_long_leave_no_session() {
+    let pg = plain(image(&tag()).with_cmd(&[
+        "-c",
+        "wal_level=logical",
+        "-c",
+        "wal_sender_timeout=4s",
+        "-c",
+        "max_wal_senders=2",
+    ]));
+    let mut db = Db::new(&pg, "leavesnone", TABLES);
+    let spec = db.spec(SPEC);
+    let mut holder = db.another_connection();
+    holder.run("CREATE TABLE $S.other (id int)");
+    holder.run("BEGIN; INSERT INTO $S.other VALUES (1)");
+    let mut source = db.pg();
+    source.settings.consistent_wait = Duration::from_secs(1);
+    for _ in 0..3 {
+        let error = source.open(&spec).unwrap_err().to_string();
+        assert!(
+            error.starts_with("the start waited 1 s for transactions open on the server"),
+            "{error}"
+        );
+        wait_for(
+            &mut db.connection,
+            "SELECT 1 WHERE NOT EXISTS
+                 (SELECT FROM pg_stat_activity WHERE backend_type = 'walsender')
+               AND NOT EXISTS (SELECT FROM pg_replication_slots)",
+        );
+    }
+    holder.run("COMMIT");
+    assert!(source.open(&spec).is_ok());
+}
+
+/// A start that waits too long ends the session of its own slot, and not
+/// the session of a slot that streams.
+#[test]
+fn a_start_that_waits_too_long_ends_only_its_own_session() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "endsitsown", TABLES);
+    let spec = db.spec(SPEC);
+    let mut writer = db.writer(SPEC);
+    started(&mut writer);
+    wait_for(&mut db.connection, STREAMING);
+    let slots = "SELECT slot_name::text, active_pid::text FROM pg_replication_slots";
+    let before = db.rows(slots);
+    assert_eq!(before.len(), 1, "{before:?}");
+    let mut holder = db.another_connection();
+    holder.run("CREATE TABLE $S.other (id int)");
+    holder.run("BEGIN; INSERT INTO $S.other VALUES (1)");
+    let mut source = db.pg();
+    source.settings.consistent_wait = Duration::from_secs(1);
+    let error = source.open(&spec).unwrap_err().to_string();
+    assert!(
+        error.starts_with("the start waited 1 s for transactions open on the server"),
+        "{error}"
+    );
+    holder.run("COMMIT");
+    wait_for(
+        &mut db.connection,
+        "SELECT 1 WHERE (SELECT count(*) FROM pg_replication_slots) = 1",
+    );
+    assert_eq!(db.rows(slots), before);
+    db.run(&format!(
+        "INSERT INTO $S.logins VALUES (1, to_timestamp({START}), 1)"
+    ));
+    applied(&mut writer);
+}

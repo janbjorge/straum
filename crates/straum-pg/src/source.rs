@@ -210,7 +210,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     if let Err(Error::Io(error)) = &created
         && timed_out(error)
     {
-        return Err(waited_for(wait.as_secs(), slot_wait(dsn)?));
+        return Err(waited_for(wait.as_secs(), slot_wait(dsn, &slot)?));
     }
     replication.clear_read_timeout()?;
     let created = match created {
@@ -510,14 +510,22 @@ pub(crate) fn hold_tables(connection: &mut Connection, tables: &Tables) -> Resul
     Err(Error::Setup(problems))
 }
 
-/// What a logical slot waited for in vain: the transactions open with an
-/// xid, prepared ones included.
-fn slot_wait(dsn: &Dsn) -> Result<WaitProblem, Error> {
+/// What the logical slot `slot` waited for in vain: the transactions open
+/// with an xid, prepared ones included. Ends the session of the slot.
+fn slot_wait(dsn: &Dsn, slot: &str) -> Result<WaitProblem, Error> {
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
     let rows = connection.rows(
         "SELECT backend_xid::text FROM pg_stat_activity WHERE backend_xid IS NOT NULL
          UNION SELECT transaction::text FROM pg_prepared_xacts",
     )?;
+    // The session of the slot waits for those transactions and does not
+    // see that Straum closed its socket. Until they end, it uses one of
+    // the max_wal_senders.
+    let _ = connection.execute(&format!(
+        "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
+          WHERE slot_name = {} AND active_pid IS NOT NULL",
+        escape_literal(slot)
+    ));
     let mut xids = Vec::new();
     for row in rows {
         let Some(Some(text)) = row.into_iter().next() else {

@@ -224,7 +224,9 @@ the start waited 60 s for transactions open on the server to end before its slot
 ```
 
 The last line says 10 s when it is the wait after DDL ([Physical
-WAL](#physical-wal)).
+WAL](#physical-wal)). When the logical slot waits too long, Straum ends
+the slot's session, which otherwise uses one of the `max_wal_senders`
+until the transactions end.
 
 The load holds every spec table in `ACCESS SHARE` mode until the last
 one is loaded, so a rewrite waits for it. A rewrite that ended just

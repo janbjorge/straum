@@ -87,7 +87,9 @@ the log, and hands over to the stream at that point.
 
 With `--wal logical`, `Source::open` connects in replication mode and
 creates a temporary logical slot with `pgoutput` and `SNAPSHOT
-'export'`. The slot's start is the log sequence number (LSN) L, and it
+'export'`. When PostgreSQL makes no slot within the start's wait,
+`slot_wait` names the open transactions and ends the slot's session.
+The slot's start is the log sequence number (LSN) L, and it
 names a snapshot that sees every commit up to L; the slot sends every
 commit after it. A plain connection begins a read-only repeatable-read
 transaction and takes that snapshot up (`SET TRANSACTION SNAPSHOT`).
