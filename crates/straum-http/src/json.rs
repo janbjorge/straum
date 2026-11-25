@@ -5,6 +5,7 @@
 //! `quoted` writes a string as a JSON string with its quotes, and
 //! `quoted_or_null` writes null where there is no string.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -124,11 +125,13 @@ impl<'de> Visitor<'de> for JsonVisitor {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
         let mut fields: Vec<Field> = Vec::new();
+        // A set, not a scan of `fields`: a body of many keys stays linear.
+        let mut seen: HashSet<String> = HashSet::new();
         while let Some(name) = map.next_key::<String>()? {
             if fields.is_empty() && name == NUMBER {
                 return Ok(Json::Number(map.next_value()?));
             }
-            if has_field(&fields, &name) {
+            if !seen.insert(name.clone()) {
                 return Err(de::Error::custom(format!("key {name:?} given twice")));
             }
             let value = map.next_value()?;
@@ -136,15 +139,6 @@ impl<'de> Visitor<'de> for JsonVisitor {
         }
         Ok(Json::Object(fields))
     }
-}
-
-fn has_field(fields: &[Field], name: &str) -> bool {
-    for field in fields {
-        if field.name == name {
-            return true;
-        }
-    }
-    false
 }
 
 /// `text` as a JSON string, with its quotes.
@@ -220,6 +214,20 @@ mod tests {
         }
         let deep = "[".repeat(200) + &"]".repeat(200);
         assert!(parse_error(deep.as_bytes()).starts_with("recursion limit"));
+    }
+
+    /// A key is given twice only within one object.
+    #[test]
+    fn a_key_may_repeat_across_objects() {
+        let json = Json::parse(br#"{"a": {"a": 1}, "b": {"a": 2, "b": 3}}"#);
+        let expected = Json::Object(vec![
+            field("a", Json::Object(vec![field("a", Json::Int(1))])),
+            field(
+                "b",
+                Json::Object(vec![field("a", Json::Int(2)), field("b", Json::Int(3))]),
+            ),
+        ]);
+        assert_eq!(json.unwrap(), expected);
     }
 
     #[test]
