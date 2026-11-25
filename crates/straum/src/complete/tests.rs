@@ -213,6 +213,34 @@ fn where_offers_whole_conditions_with_the_next_parameter() {
     );
 }
 
+/// The highest number a `$n` can hold is offered again, never past it.
+#[test]
+fn the_next_parameter_stops_at_the_highest_number() {
+    let line = "SELECT orders FROM orders WHERE status = $18446744073709551615 AND ";
+    assert_eq!(
+        offers(line),
+        [
+            "bucket >= $18446744073709551615 AND bucket < $18446744073709551615 ",
+            "shipped = $18446744073709551615 ",
+            "country = $18446744073709551615 "
+        ]
+    );
+    let line = "SELECT orders FROM orders WHERE status = $18446744073709551614 AND ";
+    assert_eq!(
+        offers(line),
+        [
+            "bucket >= $18446744073709551615 AND bucket < $18446744073709551615 ",
+            "shipped = $18446744073709551615 ",
+            "country = $18446744073709551615 "
+        ]
+    );
+    let line = "SELECT orders FROM orders WHERE status = $18446744073709551613 AND ";
+    assert_eq!(
+        offers(line)[0],
+        "bucket >= $18446744073709551614 AND bucket < $18446744073709551615 "
+    );
+}
+
 #[test]
 fn where_offers_nothing_mid_condition_or_for_an_unknown_view() {
     // In the middle of a condition there is nothing to offer.

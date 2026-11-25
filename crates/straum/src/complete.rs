@@ -66,8 +66,10 @@ struct Key {
 struct ParameterNumber(usize);
 
 impl ParameterNumber {
+    /// The number after this one; the highest number a line can hold
+    /// has no next, so the hint gives it again rather than panic.
     fn next(self) -> ParameterNumber {
-        ParameterNumber(self.0 + 1)
+        ParameterNumber(self.0.saturating_add(1))
     }
 }
 
