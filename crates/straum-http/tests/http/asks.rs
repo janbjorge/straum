@@ -462,6 +462,23 @@ fn ask_bodies_too_big_or_broken_are_refused() {
     server.stop();
 }
 
+/// A body just under 1 MiB holds about 200,000 wrong parameters; the
+/// reply says the first 50 and counts the rest.
+#[test]
+fn a_body_of_many_errors_gets_a_short_reply() {
+    let server = serve(writer().app().clone());
+    let mut body = String::from(r#"{"query": "SELECT", "parameters": [null"#);
+    while body.len() < (1 << 20) - 16 {
+        body.push_str(",null");
+    }
+    body.push_str("]}");
+    let reply = call(server.address, "POST", "/ask", &body);
+    assert_eq!(reply.status, 400);
+    assert!(reply.body.len() < 8 * 1024, "{} bytes", reply.body.len());
+    assert!(reply.body.ends_with(r#" more errors"]}"#), "{}", reply.body);
+    server.stop();
+}
+
 /// An ask sent without `Content-Type`, or with `content_type`, and read
 /// back in `accept`.
 fn ask_sent_as(address: SocketAddr, content_type: Option<&str>, accept: Option<&str>) -> Reply {

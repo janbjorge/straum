@@ -1,6 +1,6 @@
 //! The JSON around an ask: its query and the values for its `$n`
 //! parameters. `read` takes the bytes of a `POST /ask` body, parses them
-//! with `json.rs` and checks each field, collecting every error it finds;
+//! with `json.rs` and checks each field, collecting the errors it finds;
 //! `routes.rs` then hands the query to the `ReadAsk` the binary gave.
 //! Fields Straum doesn't know are errors, never ignored.
 //!
@@ -59,6 +59,8 @@ pub(crate) enum BodyError {
         index: ParameterIndex,
         number: String,
     },
+    /// How many errors came past the first [`MAX_ERRORS`].
+    More(usize),
 }
 
 impl fmt::Display for BodyError {
@@ -86,11 +88,43 @@ impl fmt::Display for BodyError {
                 index.0,
                 index.0 + 1
             ),
+            BodyError::More(count) => write!(formatter, "and {count} more errors"),
         }
     }
 }
 
-/// Reads an ask's body, or says every error found.
+/// The most errors a body keeps. A 1 MiB body of nulls holds half a
+/// million, and printing each made a 17 MB reply; the rest are counted.
+const MAX_ERRORS: usize = 50;
+
+/// A body's first [`MAX_ERRORS`] errors in the order met, and how many
+/// came after them.
+#[derive(Default)]
+struct Errors {
+    kept: Vec<BodyError>,
+    more: usize,
+}
+
+impl Errors {
+    fn push(&mut self, error: BodyError) {
+        if self.kept.len() == MAX_ERRORS {
+            self.more += 1;
+            return;
+        }
+        self.kept.push(error);
+    }
+
+    /// The errors kept, then the count of the rest, if any came.
+    fn into_list(mut self) -> Vec<BodyError> {
+        if self.more > 0 {
+            self.kept.push(BodyError::More(self.more));
+        }
+        self.kept
+    }
+}
+
+/// Reads an ask's body, or says its first [`MAX_ERRORS`] errors and how
+/// many more it has.
 pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<BodyError>> {
     let json = match Json::parse(body) {
         Ok(json) => json,
@@ -100,7 +134,7 @@ pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<BodyError>> {
         let kind = json.kind();
         return Err(vec![BodyError::NotAnObject { kind }]);
     };
-    let mut errors = Vec::new();
+    let mut errors = Errors::default();
     let mut query = None;
     let mut parameters = Vec::new();
     let mut saw_query = false;
@@ -126,12 +160,12 @@ pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<BodyError>> {
         errors.push(BodyError::QueryMissing);
     }
     match query {
-        Some(query) if errors.is_empty() => Ok(AskBody { query, parameters }),
-        _ => Err(errors),
+        Some(query) if errors.kept.is_empty() => Ok(AskBody { query, parameters }),
+        _ => Err(errors.into_list()),
     }
 }
 
-fn read_parameters(items: &[Json], parameters: &mut Vec<Literal>, errors: &mut Vec<BodyError>) {
+fn read_parameters(items: &[Json], parameters: &mut Vec<Literal>, errors: &mut Errors) {
     for (position, item) in items.iter().enumerate() {
         match literal(ParameterIndex(position), item) {
             Ok(literal) => parameters.push(literal),
@@ -306,6 +340,34 @@ mod tests {
                 r#""parameters[5]" ($6) 0e-100000000 has more digits than Straum keeps exactly"#,
                 r#""parameters[6]" ($7) 1e-100000000 has more digits than Straum keeps exactly"#,
             ]
+        );
+    }
+
+    /// A body of `count` null parameters.
+    fn nulls(count: usize) -> String {
+        let parameters = vec!["null"; count].join(", ");
+        format!(r#"{{"query": "SELECT", "parameters": [{parameters}]}}"#)
+    }
+
+    #[test]
+    fn keeps_the_first_50_errors_and_counts_the_rest() {
+        let errors = errors_of(&nulls(256));
+        assert_eq!(errors.len(), 51);
+        assert_eq!(
+            errors[49],
+            r#""parameters[49]" ($50) must be a number, a string or a boolean, not null"#
+        );
+        assert_eq!(errors[50], "and 206 more errors");
+    }
+
+    #[test]
+    fn fifty_errors_have_no_count() {
+        let errors = errors_of(&nulls(50));
+        assert_eq!(errors.len(), 50);
+        assert!(
+            errors[49].starts_with(r#""parameters[49]""#),
+            "{}",
+            errors[49]
         );
     }
 
