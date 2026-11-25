@@ -260,8 +260,8 @@ cannot read the slot for 10 seconds, it ends the slot's session, even
 if the rest of Straum is stuck. Some managed services, Azure among
 them, fix `max_slot_wal_keep_size` at -1, so the flag is the only limit
 there. A physical slot keeps WAL from the last checkpoint's redo point,
-which the server keeps until its next checkpoint anyway; the watchdog
-counts from where the slot was made.
+which the server keeps until its next checkpoint anyway. The watchdog
+and `straum status` count from where the slot was made.
 
 While the tables load, the stream reads on and Straum holds the commits
 it reads in memory, up to `--max-load-memory` (1 GiB by default), past

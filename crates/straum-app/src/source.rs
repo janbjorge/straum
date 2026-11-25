@@ -90,7 +90,8 @@ pub struct Wal {
     pub written: Lsn,
     /// Every commit up to here is applied by Straum.
     pub applied: Lsn,
-    /// The server keeps WAL from here on for the slot: its `restart_lsn`.
+    /// The slot's retained WAL counts from here: its `restart_lsn`, or
+    /// where a physical slot was made if that is later.
     pub restart: Lsn,
 }
 

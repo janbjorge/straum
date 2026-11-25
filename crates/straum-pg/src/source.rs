@@ -84,6 +84,8 @@ pub struct Postgres {
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
+    /// Where that slot's retained WAL counts from, as the watchdog counts.
+    from: Lsn,
     /// The spec's tables as the last [`Source::open`] checked them, which
     /// each reading of the WAL checks are still those tables.
     followed: Followed,
@@ -144,6 +146,8 @@ enum State {
 struct Snapshot {
     connection: Connection,
     slot: String,
+    /// Where the slot's retained WAL counts from, as the watchdog counts.
+    from: Lsn,
     at: Lsn,
     /// The server's clock as the transaction began.
     taken: SystemTime,
@@ -182,6 +186,7 @@ impl Postgres {
             }),
             state: State::Closed,
             slot: String::new(),
+            from: LOGICAL_FROM,
             followed: Followed::default(),
             plain: None,
         }
@@ -241,6 +246,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     Ok(Snapshot {
         connection,
         slot,
+        from: LOGICAL_FROM,
         at,
         taken,
         tables,
@@ -291,7 +297,11 @@ fn physical_snapshot(
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::Nothing)?;
     let started = start_physical_stream(settings, &mut connection, checked(&tables), pages, guard)?;
-    let PhysicalStream { mut stream, slot } = started;
+    let PhysicalStream {
+        mut stream,
+        slot,
+        from,
+    } = started;
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
     let _ = connection.execute("SELECT pg_log_standby_snapshot()");
@@ -304,6 +314,7 @@ fn physical_snapshot(
     Ok(Snapshot {
         connection,
         slot,
+        from,
         at,
         taken,
         tables,
@@ -321,10 +332,12 @@ struct PageLimits {
     max_page_memory: usize,
 }
 
-/// A physical stream started, and the name of its slot.
+/// A physical stream started, the name of its slot, and where the slot's
+/// retained WAL counts from.
 struct PhysicalStream {
     stream: Stream,
     slot: String,
+    from: Lsn,
 }
 
 /// Starts the physical stream from the last redo point for `checked`,
@@ -341,6 +354,7 @@ fn start_physical_stream(
     // layouts nor the WAL read.
     let dsn = &settings.dsn;
     let (stream, start) = Physical::start(dsn)?;
+    let from = stream.made();
     // The stream thread reads layouts on this one after DDL: a server
     // that falls silent there must not hold it, nor a stop that joins it.
     let layouts_connection = Connection::connect(dsn, ConnectionKind::Sql)?;
@@ -349,7 +363,7 @@ fn start_physical_stream(
     guard.watch(
         dsn,
         stream.slot(),
-        stream.made(),
+        from,
         vec![
             stream.closer()?,
             connection.closer()?,
@@ -369,7 +383,7 @@ fn start_physical_stream(
     let reader = Reader::Physical(Box::new(replay));
     let mut stream = Stream::start(replication, reader, start, settings.max_load_memory)?;
     stream.close_too(layouts_closer);
-    Ok(PhysicalStream { stream, slot })
+    Ok(PhysicalStream { stream, slot, from })
 }
 
 /// Begins the load's transaction on `connection` once its snapshot sees
@@ -600,6 +614,7 @@ impl Source for Postgres {
         let start = snapshot.at;
         let at = snapshot.taken;
         self.slot.clone_from(&snapshot.slot);
+        self.from = snapshot.from;
         self.followed = Followed {
             tables: checked(&snapshot.tables),
             labels: snapshot.tables.labels.clone(),
@@ -689,6 +704,7 @@ impl Postgres {
             Ok(connection) => read_wal_and_check(
                 connection,
                 &self.slot,
+                self.from,
                 applied,
                 &self.followed,
                 &self.settings,
@@ -755,21 +771,24 @@ fn loaded(snapshot: &mut Snapshot, tables: &[Identifier]) -> Result<(), Error> {
 fn read_wal_and_check(
     connection: &mut Connection,
     slot: &str,
+    from: Lsn,
     applied: Lsn,
     followed: &Followed,
     settings: &Settings,
 ) -> Result<Wal, Error> {
-    let wal = read_wal(connection, slot, applied)?;
+    let wal = read_wal(connection, slot, from, applied)?;
     let publication = &settings.publication;
     catalog::still_followed(connection, followed, publication, settings.replication)?;
     Ok(wal)
 }
 
-/// The server's WAL position and where the slot keeps WAL from, beside
-/// `applied`, how far the stream has applied.
+/// The server's WAL position and where the slot's retained WAL counts
+/// from, never before `from`, beside `applied`, how far the stream has
+/// applied.
 pub(crate) fn read_wal(
     connection: &mut Connection,
     slot: &str,
+    from: Lsn,
     applied: Lsn,
 ) -> Result<Wal, Error> {
     // The insert position, not the write position: a commit is
@@ -794,7 +813,9 @@ pub(crate) fn read_wal(
     Ok(Wal {
         written: record_end(inserted, segment_bytes),
         applied,
-        restart,
+        // A physical slot keeps WAL from a redo point before it was made,
+        // which the server recycles at its next checkpoint anyway.
+        restart: restart.max(from),
     })
 }
 

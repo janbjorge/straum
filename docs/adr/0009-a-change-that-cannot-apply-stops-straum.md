@@ -1,6 +1,6 @@
 # ADR-0009: A change that can't apply stops Straum
 
-Status: Accepted 2026-11-10; revised 2026-11-24
+Status: Accepted 2026-11-10; revised 2026-11-25
 
 ## Context
 
@@ -81,6 +81,13 @@ the last reading whose WAL Straum had wholly applied; WAL written
 during a load counts from its start. `/readyz` is off past `--max-lag`
 (30 s), while asks still answer. The same reading gives `as_of`
 (ADR-0005) and the retained WAL.
+
+A physical slot keeps WAL from the redo point before Straum made the
+slot, and the server recycles that WAL at its next checkpoint. Thus
+for a physical slot, the watchdog and the writer count the retained
+WAL from `restart_lsn` or from where Straum made the slot, if that is
+later. A count from `restart_lsn` only was rejected: the writer then
+showed more retained WAL than the watchdog counted against the limit.
 
 ## Consequences
 

@@ -483,7 +483,7 @@ fn reads_the_servers_wal() {
 
     // A slot the server doesn't have.
     let mut connection = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
-    let error = read_wal(&mut connection, "nope", start)
+    let error = read_wal(&mut connection, "nope", Lsn(0), start)
         .unwrap_err()
         .to_string();
     assert_eq!(error, "PostgreSQL sent no WAL position for slot nope");
@@ -528,7 +528,7 @@ fn a_silent_server_fails_the_reading_of_the_wal() {
     let mut connection = None;
     let reading = plain(&mut connection, &silent.dsn).unwrap();
     let clock = Instant::now();
-    assert!(read_wal(reading, "straum", Lsn(0)).is_err());
+    assert!(read_wal(reading, "straum", Lsn(0), Lsn(0)).is_err());
     assert!(clock.elapsed() >= just_within);
     assert!(
         clock.elapsed() < WAL_READ_TIMEOUT + slack,
@@ -538,11 +538,29 @@ fn a_silent_server_fails_the_reading_of_the_wal() {
     let slow = scripted(vec![now(signed_in()), later(just_within, wal_reply())]);
     let mut connection = None;
     let reading = plain(&mut connection, &slow.dsn).unwrap();
-    let wal = read_wal(reading, "straum", Lsn(0x200_0000)).unwrap();
+    let wal = read_wal(reading, "straum", Lsn(0), Lsn(0x200_0000)).unwrap();
     assert_eq!(
         (wal.applied, wal.restart),
         (Lsn(0x200_0000), Lsn(0x100_0000))
     );
+}
+
+/// Retained WAL counts from where the slot was made, as the watchdog
+/// counts it: a physical slot's restart point before that is the
+/// server's to recycle. A restart point after it counts from there.
+#[test]
+fn retained_wal_counts_from_where_the_slot_was_made() {
+    let restart = Lsn(0x100_0000);
+    for (from, counted_from) in [
+        (Lsn(0x180_0000), Lsn(0x180_0000)),
+        (Lsn(0x80_0000), restart),
+    ] {
+        let server = scripted(vec![now(signed_in()), now(wal_reply())]);
+        let mut connection = None;
+        let reading = plain(&mut connection, &server.dsn).unwrap();
+        let wal = read_wal(reading, "straum", from, Lsn(0)).unwrap();
+        assert_eq!(wal.restart, counted_from, "from {from}");
+    }
 }
 
 #[test]

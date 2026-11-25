@@ -236,7 +236,8 @@ and this glossary. The clashes at the end are open.
   more for table layouts ([What Straum costs the
   server](postgresql.md#what-straum-costs-the-server)).
 - **WAL retained** (`Wal::retained`): bytes PostgreSQL keeps for the
-  slot ([straum status](cli.md#straum-status)).
+  slot, from where a physical slot was made
+  ([straum status](cli.md#straum-status)).
 - **Watchdog** (`SlotGuard`, `watchdog.rs`): two threads that end the
   stream when the slot holds more than `--max-retained-wal`, or when
   they get no reading of the slot for too long
