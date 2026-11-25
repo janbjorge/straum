@@ -9,7 +9,7 @@
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Attribute, ByKey, Condition, Dim, Fact, Identifier, Literal, Measure, Ref, Table, Time, Via,
+    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Via,
 };
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
@@ -248,13 +248,6 @@ impl Walker {
         }
         let as_text = cast_columns(&mut scope);
         let filter = self.read_filter(&scope, &conditions, Clause::Where)?;
-        if measures_share_filter(&measures) {
-            self.error(
-                at,
-                "every measure has the same FILTER; write it as the view's WHERE".into(),
-            );
-            return Err(Reported);
-        }
         let Some(time) = time else {
             self.error(
                 at,
@@ -461,65 +454,4 @@ pub(super) fn push_once(columns: &mut Vec<Identifier>, column: &Identifier) {
     if !columns.contains(column) {
         columns.push(column.clone());
     }
-}
-
-/// A FILTER every measure shares is the view's WHERE in disguise; a
-/// lone measure shares with nobody.
-fn measures_share_filter(measures: &[Measure]) -> bool {
-    let [first, rest @ ..] = measures else {
-        return false;
-    };
-    if first.filter.is_empty() || rest.is_empty() {
-        return false;
-    }
-    for measure in rest {
-        if !same_conditions(&measure.filter, &first.filter) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Whether two filters hold the same conditions, each with the same
-/// values, in any order: `a = 1 AND b = 2` is `b = 2 AND a = 1`.
-// Checked both ways, so a filter whose own conditions repeat in another
-// order still never equals one that lacks a condition.
-fn same_conditions(left: &[Condition], right: &[Condition]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    for condition in left {
-        if !holds_condition(right, condition) {
-            return false;
-        }
-    }
-    for condition in right {
-        if !holds_condition(left, condition) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Whether `filter` has a condition on `wanted`'s key with its values,
-/// in any order. An IN list holds each value once.
-fn holds_condition(filter: &[Condition], wanted: &Condition) -> bool {
-    for condition in filter {
-        if condition.key != wanted.key || condition.values.len() != wanted.values.len() {
-            continue;
-        }
-        if holds_every_value(&condition.values, &wanted.values) {
-            return true;
-        }
-    }
-    false
-}
-
-fn holds_every_value(values: &[Literal], wanted: &[Literal]) -> bool {
-    for value in wanted {
-        if !values.contains(value) {
-            return false;
-        }
-    }
-    true
 }

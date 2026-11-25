@@ -342,8 +342,10 @@ WHERE e.kind IN ('purchase', 'refund') AND a.region = 'eu'
 
 The view's conditions are those of a `FILTER`, below, on columns
 the view selects as keys, so a condition on a dim column follows the
-dim. A `FILTER` that every measure repeats, its conditions and `IN`
-values in any order, is refused: write it here.
+dim. A `FILTER` on every measure does not do the work of `WHERE`. The
+`FILTER` keeps a group that has no matching row, with a count of 0 and
+a null sum. `WHERE` removes the row before it groups, so that group is
+not in the answer.
 
 ## Null-ness keys
 

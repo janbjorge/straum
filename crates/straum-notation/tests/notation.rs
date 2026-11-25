@@ -353,6 +353,32 @@ fn literals_and_filters() {
     );
 }
 
+/// A FILTER on every measure is not the view's WHERE. It keeps a group
+/// whose rows it does not count, and WHERE removes that group.
+#[test]
+fn every_measure_may_share_a_filter() {
+    let base = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
+       f.a AS a, z.name AS name, count(*) AS n
+FROM public.t AS f
+INNER JOIN public.z AS z ON z.id = f.z_id
+GROUP BY 1, 2, 3";
+    for measures in [
+        "count(*) FILTER (WHERE f.a = 1) AS n, count(*) FILTER (WHERE f.a = 1) AS m",
+        // The same conditions in a different order.
+        "count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS n, \
+         sum(f.x) FILTER (WHERE z.name = 'x' AND f.a = 1) AS m",
+        "count(*) FILTER (WHERE f.a IN (1, 2)) AS n, \
+         sum(f.x) FILTER (WHERE f.a IN (2, 1)) AS m",
+    ] {
+        let spec = parse(&edit(base, "count(*) AS n", measures)).unwrap();
+        let fact = spec.fact("t").unwrap();
+        assert!(fact.filter.is_empty(), "{measures}");
+        assert!(!fact.measure("n").unwrap().filter.is_empty(), "{measures}");
+        assert!(!fact.measure("m").unwrap().filter.is_empty(), "{measures}");
+    }
+}
+
 #[test]
 fn a_column_measure_takes_a_filter() {
     let text = base(

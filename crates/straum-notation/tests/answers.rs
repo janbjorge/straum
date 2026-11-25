@@ -1,11 +1,12 @@
 //! Asks read end to end: a spec and an ask parsed from their text, then
 //! answered by a store that holds a few rows, as PostgreSQL would answer
-//! the same query over them.
+//! the same query over them: bounds with an offset, and a FILTER on every
+//! measure, which keeps the groups a WHERE would drop.
 
 mod common;
 
 use common::{JAN, described};
-use straum_domain::{AskError, ColumnType, Datum, Literal, Store, Value};
+use straum_domain::{AnswerRow, AskError, ColumnType, Datum, Literal, Store, Value};
 use straum_notation::{parse, parse_ask};
 
 /// Seconds in an hour.
@@ -84,4 +85,58 @@ fn an_offset_bound_on_a_timestamptz_answers() {
         "2024-01-01T01:00:00-05:00",
     );
     assert_eq!(counted, Ok(Value::Int(1)));
+}
+
+/// Every measure counts only the rows with `a = 1`.
+const EVERY_MEASURE_FILTERED: &str = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket, f.a AS a,
+       count(*) FILTER (WHERE f.a = 1) AS n, sum(f.v) FILTER (WHERE f.a = 1) AS s
+FROM public.t AS f
+GROUP BY 1, 2";
+
+/// The rows with `a = 1`, counted.
+const WHERE_FILTERED: &str = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket, f.a AS a, count(*) AS n, sum(f.v) AS s
+FROM public.t AS f
+WHERE f.a = 1
+GROUP BY 1, 2";
+
+/// The answer by `a` of the view `spec` makes, over one row with `a = 2`
+/// and `v = 5`, which no filter keeps.
+fn by_a_over_unkept_row(spec: &str) -> Vec<AnswerRow> {
+    let spec = parse(spec).unwrap();
+    let mut types = Vec::new();
+    for column in spec.fact("t").unwrap().columns() {
+        types.push(match column.as_str() {
+            "at" => ColumnType::Time { zoned: true },
+            _ => ColumnType::Int,
+        });
+    }
+    let mut row = Vec::new();
+    for column in spec.fact("t").unwrap().columns() {
+        row.push(match column.as_str() {
+            "at" => Datum::Int(JAN),
+            "a" => Datum::Int(2),
+            _ => Datum::Int(5),
+        });
+    }
+    let mut store = Store::new(spec);
+    store.set_types("t", &types).unwrap();
+    store.add_row("t", &row).unwrap();
+    let ask = parse_ask("SELECT a, n, s FROM t GROUP BY a", &[]).unwrap();
+    store.ask(&ask).unwrap().rows
+}
+
+/// PostgreSQL keeps a group whose rows no FILTER keeps, counting 0 with
+/// a null sum, where WHERE drops the rows before they group.
+#[test]
+fn a_filter_on_every_measure_keeps_a_group_where_would_drop() {
+    assert_eq!(
+        by_a_over_unkept_row(EVERY_MEASURE_FILTERED),
+        [AnswerRow {
+            keys: vec![Datum::Int(2)],
+            values: vec![Value::Int(0), Value::Null],
+        }]
+    );
+    assert_eq!(by_a_over_unkept_row(WHERE_FILTERED), []);
 }
