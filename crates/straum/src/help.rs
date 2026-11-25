@@ -49,8 +49,9 @@ or follow ends it with exit 1, for whatever runs it to start it again.
                                (100000)
   --max-page-memory BYTES      with --wal physical: rows held from the WAL
                                before Straum stops (1Gi)
-  --max-stream-memory BYTES    commits held while the tables load before
-                               Straum stops (1Gi)
+  --max-stream-memory BYTES    commits held while the tables load, or
+                               one transaction's rows, before Straum
+                               stops (1Gi)
   --max-memory BYTES           resident memory before Straum stops (off;
                                takes Ki, Mi, Gi or Ti)
 

@@ -71,7 +71,7 @@ fn layouts() -> Layouts {
 }
 
 fn pipeline(max_bytes: usize) -> Pipeline {
-    Pipeline::new(vec![reading_t("t")], layouts(), 18, 2, max_bytes)
+    Pipeline::new(vec![reading_t("t")], layouts(), 18, 2, max_bytes, 1 << 30)
 }
 
 /// Records at increasing LSNs, as the stream reads them.
@@ -294,7 +294,7 @@ fn transaction(wal: &mut Wal, xid: u32) -> Vec<Record> {
 /// A pipeline of `layouts`, consistent and past its snapshot, that a
 /// transaction of `ROWS` has run through, so its lists have grown.
 fn warmed(wal: &mut Wal, checked: Vec<Checked>, layouts: Layouts) -> Pipeline {
-    let mut pipeline = Pipeline::new(checked, layouts, 18, 2 * ROWS, 1 << 30);
+    let mut pipeline = Pipeline::new(checked, layouts, 18, 2 * ROWS, 1 << 30, 1 << 30);
     read_one(&mut pipeline, &wal.running(100, &[]));
     see_all(&mut pipeline, "100:100:").unwrap();
     read_all(&mut pipeline, &transaction(wal, 100)).unwrap();
@@ -377,7 +377,7 @@ fn stops_at_its_limits() {
     // A row counts once however many facts read it; a transaction's
     // rows count together over savepoints, though no xid has 3.
     let mut twice = pipeline(1 << 20);
-    twice.decoder = Decoder::new(vec![reading_t("t"), reading_t("u")], 2);
+    twice.decoder = Decoder::new(vec![reading_t("t"), reading_t("u")], 2, 1 << 30);
     see_all(&mut twice, "1:1:").unwrap();
     let records = [
         wal.running(300, &[]),
@@ -455,7 +455,7 @@ fn reads_layouts_again_only_after_an_enum_change_in_its_database() {
         tables: vec![layout],
         labels: HashMap::new(),
     };
-    let mut pipeline = Pipeline::new(vec![checked], layouts, 18, 2, 1 << 20);
+    let mut pipeline = Pipeline::new(vec![checked], layouts, 18, 2, 1 << 20, 1 << 30);
     let mut wal = Wal {
         lsn: TEST_LSN,
         block: 0,

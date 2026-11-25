@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use straum_app::{App, Source, Writer};
 
+use super::logical::{a_wide_transaction_stops, stream_capped_writer};
 use super::references::*;
 use super::streams::*;
 use super::support::*;
@@ -788,4 +789,14 @@ fn says_what_a_physical_start_waits_for() {
         "{:?}",
         started.elapsed()
     );
+}
+
+/// The physical stream decodes a transaction as the logical stream does,
+/// under the same limit in bytes.
+#[test]
+fn a_transaction_past_the_stream_memory_stops_the_physical_stream() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "wide_physical", TABLES);
+    let mut writer = stream_capped_writer(&db, PHYSICAL);
+    a_wide_transaction_stops(&mut db, &mut writer);
 }

@@ -284,8 +284,9 @@ and the lock is let go.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The decoder ends the
-stream on a transaction past `--max-transaction-rows`, and the physical
-stream also ends past `--max-page-memory`. Either ends past
+stream on a transaction past `--max-transaction-rows`, or one whose
+rows hold more than `--max-stream-memory` bytes. The physical stream
+also ends past `--max-page-memory`. Either stream ends past
 `--max-stream-memory` while the tables load.
 
 A writer can get stuck, under its lock or on a socket, and a stuck

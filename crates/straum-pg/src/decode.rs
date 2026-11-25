@@ -30,12 +30,17 @@ pub(crate) struct Decoder {
 }
 
 /// The transaction so far, held until its Commit; `limit` bounds its
-/// rows, since every change here is applied under the write lock.
+/// rows, since every change here is applied under the write lock, and
+/// `byte_limit` bounds the bytes its changes hold.
 struct Transaction {
     changes: Vec<Change>,
     /// Rows of the spec's tables changed so far, each once.
     rows: usize,
     limit: usize,
+    /// The bytes of the changes held so far, as [`footprint`] counts.
+    bytes: usize,
+    /// `--max-stream-memory`.
+    byte_limit: usize,
     /// The transaction being read, by the LSN of its commit record.
     lsn: Option<Lsn>,
 }
@@ -55,8 +60,9 @@ struct TableIndex(usize);
 
 impl Decoder {
     /// `tables` are the spec's tables, dims and facts; `limit` is the
-    /// most rows of them one transaction may change.
-    pub(crate) fn new(tables: Vec<Checked>, limit: usize) -> Decoder {
+    /// most rows of them one transaction may change, and `byte_limit` the
+    /// most bytes its changes may hold.
+    pub(crate) fn new(tables: Vec<Checked>, limit: usize, byte_limit: usize) -> Decoder {
         Decoder {
             tables,
             relations: FastMap::default(),
@@ -64,6 +70,8 @@ impl Decoder {
                 changes: Vec::new(),
                 rows: 0,
                 limit,
+                bytes: 0,
+                byte_limit,
                 lsn: None,
             },
         }
@@ -79,6 +87,7 @@ impl Decoder {
             Message::Commit { end_lsn, committed } => {
                 self.transaction.lsn = None;
                 self.transaction.rows = 0;
+                self.transaction.bytes = 0;
                 let changes = mem::take(&mut self.transaction.changes);
                 return Ok(Some(Commit {
                     lsn: Lsn(*end_lsn),
@@ -111,7 +120,7 @@ impl Decoder {
                     Some(change) => change,
                     None => unfit(table, Drift::Altered),
                 };
-                self.transaction.changes.push(change);
+                self.transaction.hold(change)?;
             }
         }
         Ok(None)
@@ -193,6 +202,45 @@ impl Transaction {
         self.rows += 1;
         Ok(())
     }
+
+    /// Holds `change`, or stops once the changes held pass the byte
+    /// limit: a transaction under the row limit can still hold gigabytes
+    /// of text.
+    fn hold(&mut self, change: Change) -> Result<(), Error> {
+        self.bytes = self.bytes.saturating_add(footprint(&change));
+        if self.bytes > self.byte_limit {
+            return Err(Error::TransactionMemory {
+                lsn: self.lsn.unwrap_or(Lsn(0)),
+                limit: self.byte_limit,
+            });
+        }
+        self.changes.push(change);
+        Ok(())
+    }
+}
+
+/// The bytes `change` holds, near enough to bound memory by: the change
+/// and its rows' values, text by its length.
+// Leaves out the tables' names, shared with the spec, and `Vec` slack.
+pub(crate) fn footprint(change: &Change) -> usize {
+    size_of::<Change>()
+        + match change {
+            Change::Insert { row, .. } => row_footprint(row),
+            Change::Update { old, new, .. } => row_footprint(old) + row_footprint(new),
+            Change::Delete { old, .. } => row_footprint(old),
+            Change::Truncate { .. } | Change::Unfit { .. } => 0,
+        }
+}
+
+/// The bytes of one row's values, text by its length.
+fn row_footprint(row: &[Datum]) -> usize {
+    let mut bytes = size_of_val(row);
+    for datum in row {
+        if let Datum::Text(text) = datum {
+            bytes += text.len();
+        }
+    }
+    bytes
 }
 
 /// Where the relation has the column named `column`, if it has one.
@@ -335,6 +383,7 @@ mod tests {
 
     use super::*;
     use crate::pgoutput::RelationColumn;
+    use crate::wal::test_support::Rng;
 
     const INT4: u32 = 23;
     const TEXT: u32 = 25;
@@ -342,6 +391,9 @@ mod tests {
     const FLOAT8: u32 = 701;
     /// Rows a transaction may change in these tests.
     const LIMIT: usize = 16;
+    /// Bytes a transaction may hold in these tests: far above any but
+    /// the tests of the byte limit, which set their own.
+    const BYTE_LIMIT: usize = 1 << 30;
 
     fn id(name: &str) -> Identifier {
         Identifier::new(name).unwrap()
@@ -377,6 +429,7 @@ mod tests {
                 },
             ],
             LIMIT,
+            BYTE_LIMIT,
         )
     }
 
@@ -407,7 +460,7 @@ mod tests {
         relation(7, &[("ref", UUID), ("id", INT4), ("name", TEXT)])
     }
 
-    fn row(id: Field<'static>, name: Field<'static>) -> Tuple<'static> {
+    fn row<'a>(id: Field<'a>, name: Field<'a>) -> Tuple<'a> {
         vec![Field::Text("r-1"), id, name]
     }
 
@@ -465,7 +518,7 @@ mod tests {
             enums: vec![777],
             ..Checked::public("moods", "zones", &["mood"], vec![ColumnType::Text])
         };
-        let mut decoder = Decoder::new(vec![moods], LIMIT);
+        let mut decoder = Decoder::new(vec![moods], LIMIT, BYTE_LIMIT);
         let changes = feed(
             &mut decoder,
             vec![
@@ -760,6 +813,91 @@ mod tests {
             ),
             "{error:?}"
         );
+    }
+
+    /// The zones relation, then an insert of each of `names`.
+    fn inserts_named(names: &[String]) -> Vec<Message<'_>> {
+        let mut messages = vec![zones()];
+        for name in names {
+            messages.push(Message::Insert {
+                relation: 7,
+                new: row(Field::Text("1"), Field::Text(name)),
+            });
+        }
+        messages
+    }
+
+    /// The bytes `changes` hold, as the byte limit counts them.
+    fn bytes_of(changes: &[Change]) -> usize {
+        changes.iter().map(footprint).sum()
+    }
+
+    /// A transaction whose changes hold exactly the byte limit commits,
+    /// and the count starts again at each commit.
+    #[test]
+    fn a_transaction_at_the_byte_limit_commits() {
+        let changes = feed(&mut zones_decoder(), zones_and_inserts(3)).unwrap();
+        let mut decoder = zones_decoder();
+        decoder.transaction.byte_limit = bytes_of(&changes);
+        for _ in 0..2 {
+            assert_eq!(feed(&mut decoder, zones_and_inserts(3)).unwrap(), changes);
+        }
+    }
+
+    /// One byte under what a transaction's changes hold stops the stream,
+    /// in the transaction that commits at 9.
+    #[test]
+    fn a_transaction_past_the_byte_limit_stops_the_stream() {
+        let changes = feed(&mut zones_decoder(), zones_and_inserts(3)).unwrap();
+        let limit = bytes_of(&changes) - 1;
+        let mut decoder = zones_decoder();
+        decoder.transaction.byte_limit = limit;
+        let error = feed(&mut decoder, zones_and_inserts(3)).unwrap_err();
+        assert!(
+            matches!(error, Error::TransactionMemory { lsn: Lsn(9), limit: held } if held == limit),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "transaction 0/9 holds more than {limit} bytes of rows Straum reads, \
+                 the --max-stream-memory limit"
+            )
+        );
+    }
+
+    /// Random transactions of random text through one decoder, against a
+    /// reference that sums each transaction's changes alone: each commits
+    /// when the sum is at the limit or under it, and stops the stream
+    /// past it.
+    #[test]
+    fn the_byte_limit_holds_each_transaction_alone() {
+        for seed in 0..200 {
+            let mut rng = Rng(seed);
+            let limit = 200 + rng.below_usize(2_000);
+            let mut decoder = zones_decoder();
+            decoder.transaction.byte_limit = limit;
+            let mut reference = zones_decoder();
+            for _ in 0..20 {
+                let mut names = Vec::new();
+                for _ in 0..rng.below_usize(4) {
+                    names.push("x".repeat(rng.below_usize(300)));
+                }
+                let expected = feed(&mut reference, inserts_named(&names)).unwrap();
+                let bytes = bytes_of(&expected);
+                match feed(&mut decoder, inserts_named(&names)) {
+                    Ok(changes) => {
+                        assert!(bytes <= limit, "seed {seed}: {bytes} of {limit} committed");
+                        assert_eq!(changes, expected, "seed {seed}");
+                    }
+                    Err(Error::TransactionMemory { .. }) => {
+                        assert!(bytes > limit, "seed {seed}: {bytes} of {limit} stopped");
+                        break;
+                    }
+                    Err(error) => panic!("seed {seed}: {error}"),
+                }
+            }
+        }
     }
 
     /// `pg_class.oid` of `public.boroughs`.

@@ -73,6 +73,7 @@ impl Pipeline {
             major,
             ROW_LIMIT,
             PAGE_MEMORY,
+            STREAM_MEMORY,
         );
         let nothing = TransactionSnapshot::parse("1:1:").unwrap();
         assert_eq!(inner.see(nothing, Lsn(0)).unwrap().1, []);

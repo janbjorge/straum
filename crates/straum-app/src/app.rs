@@ -36,8 +36,9 @@ pub struct Limits {
     /// Straum stops, so a Straum that can't keep up doesn't fill the
     /// server's disk.
     pub max_retained_wal: u64,
-    /// Bytes of commits the stream may hold while the tables load. The
-    /// source stops past it; the status shows how close it is.
+    /// Bytes of commits the stream may hold while the tables load, and
+    /// bytes of rows one transaction may hold. The source stops past it;
+    /// the status shows how close the load is.
     pub max_stream_memory: usize,
 }
 

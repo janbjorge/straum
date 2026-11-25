@@ -66,6 +66,7 @@ impl Pipeline {
         major: u32,
         limit: usize,
         max_bytes: usize,
+        max_stream_memory: usize,
     ) -> Pipeline {
         let publisher = Publisher::new(layouts);
         Pipeline {
@@ -76,7 +77,7 @@ impl Pipeline {
             heap: Heap::new(publisher.files(), major),
             transactions: Transactions::new(limit),
             publisher,
-            decoder: Decoder::new(checked, limit),
+            decoder: Decoder::new(checked, limit, max_stream_memory),
             held: Vec::new(),
             too_big: Vec::new(),
             last_before_snapshot: None,

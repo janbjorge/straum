@@ -27,7 +27,9 @@ dropped the starts, failures and last failure it kept across starts.
 a transaction may change, a default measured by `bench/taxi.py
 transactions`. A row counts once, however many views and dims read its
 table; counting a change per view stopped a spec with two views over
-one table at half the rows the flag names. Past
+one table at half the rows the flag names. `--max-stream-memory` caps
+the bytes of a transaction's rows too, on both streams: one transaction
+of 9,000 rows, under the row cap, held 360 MB of text. Past
 `--max-retained-wal` (4Gi) Straum stops too, since Azure fixes
 `max_slot_wal_keep_size` at `-1`, and past `--max-memory`, off unless
 set (ADR-0010). Past `--max-stream-memory` (1Gi) Straum stops as well:

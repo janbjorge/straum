@@ -128,7 +128,8 @@ the next start loads from a new slot: an update or delete whose old row is
 missing, a row never added, a dim row never held, a value it cannot read,
 a table whose columns now read differently, a renamed label of an enum it
 reads ([Enum columns](spec.md#enum-columns)), and a transaction above
-`--max-transaction-rows`. Stopping keeps a large transaction from waiting
+`--max-transaction-rows` or whose rows hold more bytes than
+`--max-stream-memory`. Stopping keeps a large transaction from waiting
 in memory; the new slot's snapshot brings its rows in through the bulk
 `COPY` instead. The [benchmark](performance.md#transactions) sets
 the default.

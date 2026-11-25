@@ -103,8 +103,8 @@ pub(crate) struct Settings {
     /// write lock for all of it.
     pub(crate) max_transaction_rows: usize,
     pub(crate) replication: Replication,
-    /// The bytes of commits the stream may hold while the tables load;
-    /// past it Straum stops.
+    /// The bytes of commits the stream may hold while the tables load, and
+    /// the bytes of rows one transaction may hold; past it Straum stops.
     pub(crate) max_stream_memory: usize,
     /// How long a start waits for its slot, and a physical start for a
     /// consistent point.
@@ -239,7 +239,11 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     replication.copy_both(&format!(
         "START_REPLICATION SLOT {slot} LOGICAL {at} (proto_version '1', publication_names {names})"
     ))?;
-    let reader = Decoder::new(checked(&tables), settings.max_transaction_rows);
+    let reader = Decoder::new(
+        checked(&tables),
+        settings.max_transaction_rows,
+        settings.max_stream_memory,
+    );
     let reader = Reader::Logical(reader);
     let stream = Stream::start(replication, reader, at, settings.max_stream_memory)?;
     let unloaded = unloaded(&tables);
@@ -378,6 +382,7 @@ fn start_physical_stream(
         stream.major(),
         pages.limit,
         pages.max_page_memory,
+        settings.max_stream_memory,
     );
     let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
     let reader = Reader::Physical(Box::new(replay));

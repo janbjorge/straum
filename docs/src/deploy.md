@@ -152,8 +152,10 @@ straum: Straum holds 1843.2 MiB of resident memory, past the --max-memory limit 
 ### Large transactions
 
 A transaction that changes more rows of the spec's tables than
-`--max-transaction-rows` ([straum run](cli.md#straum-run)) stops
-Straum, and the next start loads those rows through the bulk `COPY`.
+`--max-transaction-rows`, or whose rows hold more bytes than
+`--max-stream-memory` ([straum run](cli.md#straum-run)), stops Straum.
+The next start loads those rows through the bulk `COPY`. A transaction
+of wide text rows can pass the bytes limit far under the rows limit.
 Every replica reads the same transaction, so every one stops and loads
 again at once. Batch a backfill or bulk update into transactions under
 the limit, or raise the limit and pay what

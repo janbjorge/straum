@@ -48,6 +48,13 @@ pub(crate) enum Error {
         lsn: Lsn,
         limit: usize,
     },
+    /// A transaction's changes to the spec's tables hold more bytes than
+    /// `--max-stream-memory` allows. Starting again is the way through
+    /// it, as for [`Error::Transaction`].
+    TransactionMemory {
+        lsn: Lsn,
+        limit: usize,
+    },
     /// The physical stream holds more rows than `--max-page-memory`
     /// allows: pages, and changes of transactions not ended. Starting
     /// again lets go of them all.
@@ -120,6 +127,11 @@ impl fmt::Display for Error {
                 "transaction {lsn} changes more than {limit} rows Straum reads, \
                  the --max-transaction-rows limit"
             ),
+            Error::TransactionMemory { lsn, limit } => write!(
+                formatter,
+                "transaction {lsn} holds more than {limit} bytes of rows Straum reads, \
+                 the --max-stream-memory limit"
+            ),
             Error::Memory { held, limit } => write!(
                 formatter,
                 "the physical stream holds {held} bytes of rows, past the --max-page-memory \
@@ -171,6 +183,21 @@ mod tests {
             error.to_string(),
             "the stream holds 2048 bytes of commits while the tables load, past the \
              --max-stream-memory limit of 1024"
+        );
+    }
+
+    /// A transaction past the stream memory limit names its LSN, the
+    /// limit and the flag.
+    #[test]
+    fn display_transaction_memory() {
+        let error = Error::TransactionMemory {
+            lsn: Lsn(0x16_B374_D848),
+            limit: 1 << 20,
+        };
+        assert_eq!(
+            error.to_string(),
+            "transaction 16/B374D848 holds more than 1048576 bytes of rows Straum reads, \
+             the --max-stream-memory limit"
         );
     }
 

@@ -451,7 +451,7 @@ mod tests {
                 vec![ColumnType::Int, ColumnType::Text],
             )
         };
-        Decoder::new(vec![checked], 10)
+        Decoder::new(vec![checked], 10, 1 << 30)
     }
 
     /// A row of the first four attributes: `name` as given, its varlena
@@ -631,6 +631,7 @@ mod tests {
                 ..Checked::public("zones", "zones", &["id"], vec![ColumnType::Int])
             }],
             10,
+            1 << 30,
         );
         let changes = vec![HeapChange::Update {
             file: FILE,
@@ -724,7 +725,7 @@ mod tests {
                 vec![ColumnType::Int, ColumnType::Int],
             )
         };
-        let mut decoder = Decoder::new(vec![checked], 10);
+        let mut decoder = Decoder::new(vec![checked], 10, 1 << 30);
         let mut publisher = Publisher::new(layouts(vec![table]));
         let changes = vec![HeapChange::Insert {
             file: FILE,

@@ -1,8 +1,9 @@
 //! The logical stream end to end: Straum loads the tables, follows the
 //! changes pgoutput (PostgreSQL's logical decoding plugin) sends, and
 //! after each commit every view equals its SQL. Also how it stops: past
-//! the transaction limit, on a value it can't read, on an altered table;
-//! a new writer then loads again, as Straum started again does.
+//! the transaction limits in rows and in bytes, on a value it can't read,
+//! on an altered table; a new writer then loads again, as Straum started
+//! again does.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -13,6 +14,7 @@ use straum_app::{AnswerError, App, Source, Writer};
 use straum_domain::{AnswerRow, Ask, AskError, ColumnType, Datum, Literal, Value};
 
 use super::references::*;
+use super::streams::apply_through;
 use super::support::*;
 use crate::source::{Postgres, Replication, parse_lsn};
 
@@ -266,6 +268,71 @@ fn capped_writer(db: &Db) -> Writer<Postgres> {
         STREAM_MEMORY,
     );
     Writer::new(App::new(db.spec(SPEC), LIMITS), source)
+}
+
+/// `--max-stream-memory` of the writers that a wide transaction stops:
+/// 1 MiB.
+const STREAM_LIMIT: usize = 1 << 20;
+
+/// A writer by `replication` that refuses a transaction of more than
+/// `STREAM_LIMIT` bytes.
+pub(super) fn stream_capped_writer(db: &Db, replication: Replication) -> Writer<Postgres> {
+    let source = Postgres::new(
+        db.dsn.clone(),
+        &db.name,
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        replication,
+        STREAM_LIMIT,
+    );
+    Writer::new(App::new(db.spec(SPEC), LIMITS), source)
+}
+
+/// One transaction of 200 trips from id `from`, each rider `characters`
+/// long, a multiple of 32.
+fn trips_of_text(from: u64, characters: usize) -> String {
+    format!(
+        "INSERT INTO $S.trips SELECT {from} + g, to_timestamp({START} + g), 'cab', 1, 1.00, \
+         repeat(md5(g::text), {}), 1 FROM generate_series(1, 200) g",
+        characters / 32
+    )
+}
+
+/// 200 trips of 1,024 characters each apply under `STREAM_LIMIT`. 200
+/// trips of 20,000 characters, about 4 MB, stop `writer` before it
+/// applies them.
+pub(super) fn a_wide_transaction_stops(db: &mut Db, writer: &mut Writer<Postgres>) {
+    started(writer);
+    let written = db.run_committed(&trips_of_text(0, 1_024));
+    apply_through(writer, written, &Wait::new("the narrow transaction"));
+    let written = db.run_committed(&trips_of_text(1_000, 20_000));
+    let wait = Wait::new("the writer to stop");
+    let error = loop {
+        wait.check();
+        match writer.step() {
+            Err(error) => break error.to_string(),
+            Ok(_) => assert!(
+                writer.app().status().applied < Some(written),
+                "the wide transaction applied"
+            ),
+        }
+    };
+    let lsn = error.split(' ').nth(1).unwrap_or_default();
+    assert_eq!(
+        error,
+        format!(
+            "transaction {lsn} holds more than {STREAM_LIMIT} bytes of rows Straum reads, \
+             the --max-stream-memory limit"
+        )
+    );
+}
+
+#[test]
+fn a_transaction_past_the_stream_memory_stops_the_logical_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "wide_logical", TABLES);
+    let mut writer = stream_capped_writer(&db, Replication::Logical);
+    a_wide_transaction_stops(&mut db, &mut writer);
 }
 
 /// One transaction inserting `rows` trips from id `from`.

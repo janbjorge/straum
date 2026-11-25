@@ -349,7 +349,14 @@ impl PipelineRead {
             Tables::Nothing => (Vec::new(), Layouts::default()),
         };
         PipelineRead {
-            pipeline: Pipeline::new(checked, layouts, setup.major, COPY_BATCH, MAX_BYTES),
+            pipeline: Pipeline::new(
+                checked,
+                layouts,
+                setup.major,
+                COPY_BATCH,
+                MAX_BYTES,
+                usize::MAX,
+            ),
             layouts: setup.layouts.clone(),
             snapshot: Some(setup.snapshot.clone()),
             peak: 0,

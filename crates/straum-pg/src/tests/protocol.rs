@@ -388,7 +388,7 @@ fn scripted_stream(parts: Vec<Part>) -> Stream {
     connection.copy_both("START_REPLICATION").unwrap();
     Stream::start(
         connection,
-        Reader::Logical(Decoder::new(Vec::new(), ROW_LIMIT)),
+        Reader::Logical(Decoder::new(Vec::new(), ROW_LIMIT, STREAM_MEMORY)),
         Lsn(0x10),
         STREAM_MEMORY,
     )

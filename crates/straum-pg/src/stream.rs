@@ -17,10 +17,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use postgres_protocol::message::backend::Message as Backend;
-use straum_app::{Change, Commit, Lsn};
-use straum_domain::Datum;
+use straum_app::{Commit, Lsn};
 
-use crate::decode::Decoder;
+use crate::decode::{self, Decoder};
 use crate::error::Error;
 use crate::pgoutput::{self, CopyMessage};
 use crate::physical::Replay;
@@ -530,30 +529,12 @@ impl Size {
     }
 }
 
-/// The bytes `commit` holds, near enough to bound memory by: its changes
-/// and their rows' values, text by its length.
-// Leaves out the tables' names, shared with the spec, and `Vec` slack.
+/// The bytes `commit` holds, near enough to bound memory by: its changes,
+/// as [`decode::footprint`] counts them.
 fn footprint(commit: &Commit) -> usize {
     let mut bytes = size_of::<Commit>();
     for change in &commit.changes {
-        bytes += size_of::<Change>();
-        bytes += match change {
-            Change::Insert { row, .. } => row_footprint(row),
-            Change::Update { old, new, .. } => row_footprint(old) + row_footprint(new),
-            Change::Delete { old, .. } => row_footprint(old),
-            Change::Truncate { .. } | Change::Unfit { .. } => 0,
-        };
-    }
-    bytes
-}
-
-/// The bytes of one row's values, text by its length.
-fn row_footprint(row: &[Datum]) -> usize {
-    let mut bytes = size_of_val(row);
-    for datum in row {
-        if let Datum::Text(text) = datum {
-            bytes += text.len();
-        }
+        bytes += decode::footprint(change);
     }
     bytes
 }
@@ -593,7 +574,8 @@ mod tests {
 
     use crate::tests::support::{STREAM_MEMORY, now, scripted, signed_in};
     use crate::wire::ConnectionKind;
-    use straum_domain::Identifier;
+    use straum_app::Change;
+    use straum_domain::{Datum, Identifier};
 
     /// Long enough that only a thread that stopped reading passes it.
     const STALL: Duration = Duration::from_secs(10);
@@ -635,7 +617,7 @@ mod tests {
         let shared = Arc::new(Shared::new(Lsn(0)));
         let thread = StreamThread {
             connection,
-            reader: Reader::Logical(Decoder::new(Vec::new(), 1)),
+            reader: Reader::Logical(Decoder::new(Vec::new(), 1, STREAM_MEMORY)),
             commits,
             shared: Arc::clone(&shared),
             max_stream_memory,
