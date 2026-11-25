@@ -290,13 +290,12 @@ const ALWAYS_READ: [u8; 4] = [
 /// bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Interest {
-    /// The record may matter: read it whole and check it.
+    /// The record may matter, or its block headers run past `head`: read
+    /// it whole and check it.
     Read,
     /// It names only pages of other relation files, and its resource
     /// manager says nothing else Straum reads.
     PassBy,
-    /// Its block headers run past `head`: read it whole to know.
-    Unsure,
 }
 
 /// Whether a reader of `files`' rows needs the record of `total_length`
@@ -310,7 +309,7 @@ pub(super) fn interest(
     let (Some(resource_manager), Some(info)) =
         (head.get(RECORD_RESOURCE_MANAGER), head.get(RECORD_INFO))
     else {
-        return Interest::Unsure;
+        return Interest::Read;
     };
     // A page image of the XLOG manager matters only for the pages it
     // holds, as a heap record's does; its other records always do.
@@ -328,7 +327,7 @@ pub(super) fn interest(
     let mut payload = 0usize;
     while total_length.saturating_sub(cursor.at) > payload {
         let Some(id) = cursor.u8() else {
-            return Interest::Unsure;
+            return Interest::Read;
         };
         match id {
             DATA_SHORT | DATA_LONG => return Interest::PassBy,
@@ -336,7 +335,7 @@ pub(super) fn interest(
             TOPLEVEL_XID if cursor.u32().is_some() => {}
             id if id <= MAX_BLOCK_ID => {
                 let Some(block) = read_block_header(&mut cursor, id, previous_file) else {
-                    return Interest::Unsure;
+                    return Interest::Read;
                 };
                 if block.fork == MAIN_FORK && files.contains(&block.file) {
                     return Interest::Read;
@@ -344,7 +343,7 @@ pub(super) fn interest(
                 payload += block.payload_length();
                 previous_file = Some(block.file);
             }
-            _ => return Interest::Unsure,
+            _ => return Interest::Read,
         }
     }
     Interest::PassBy
