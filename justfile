@@ -1,75 +1,66 @@
-# Entry point to every tool, locally and in CI. Docs name the recipe;
-# just --show RECIPE prints the command it runs.
+# Run `just` to list the recipes.
 #
-# With no crate named, a recipe takes the crates changed since HEAD,
-# untracked files included. Name crates to override: just test straum-pg
-# or just check "straum-pg straum-domain". all takes the whole workspace,
-# as CI does: just test all.
+# lint, test, cov and check take crate names, or all for the workspace.
+# With no crate named, they take the crates that changed since HEAD:
 #
-# Every setting below has a default; override it on the command line or
-# through its environment variable:
-#   just postgres=17 seeds=50 correctness
-#   STRAUM_TEST_POSTGRES=17 just test straum-pg
-# just --evaluate prints what a run will use.
+#   just test
+#   just test straum-pg -- NAME
+#   just check "straum-pg straum-http"
+#   just lint all
+#
+# A recipe with *args gives them to its tool: just taxi --help.
+# postgres sets the PostgreSQL major: just postgres=17 taxi.
 
-# A backtick runs only when a recipe reads its variable, so just --list,
-# docs and fmt need neither git nor uv
+# A backtick runs only when a recipe reads its variable, so fmt, docs and
+# image need no uv
 set lazy
+# "$@" in a recipe holds its arguments
+set positional-arguments
 
-# PostgreSQL major of the tests, benchmarks and try
+# The tests and the bench scripts read the major from STRAUM_TEST_POSTGRES,
+# with the same default
 postgres := env("STRAUM_TEST_POSTGRES", "18")
-# Random workloads of correctness: how many, from which seed
-seeds := env("STRAUM_TEST_SEEDS", "6")
-seed_from := env("STRAUM_TEST_SEED_FROM", "0")
-# Reads of each kind in wal-bench; the fastest counts
-runs := env("STRAUM_BENCH_RUNS", "3")
-# The WAL Straum reads in taxi: logical or physical
-wal := env("STRAUM_TAXI_WAL", "logical")
-# Tag of the published image demo runs
-tag := env("STRAUM_DEMO_TAG", "latest")
-# Line coverage cov fails under
-coverage := env("STRAUM_COVERAGE", "98")
-
 export STRAUM_TEST_POSTGRES := postgres
-export STRAUM_TEST_SEEDS := seeds
-export STRAUM_TEST_SEED_FROM := seed_from
-export STRAUM_BENCH_RUNS := runs
 
+# The crates that changed since HEAD, untracked files included
 changed := `scripts/changed-crates.py`
-# What all names: every crate of the workspace
-all := "all"
 
 [private]
 default:
-    @just --list
+    @just --list --unsorted
 
-# fmt, clippy, test and the script checks for the changed crates
+# Stop when no crate is named and none changed: cargo with no -p takes the
+# whole workspace
+[private]
+_named crates:
+    {{ if trim(crates) == "" { error("no crate changed since HEAD; name one, as in just test straum-pg") } else { "" } }}
+
+# Run fmt, lint, test and scripts
 [group('check')]
 check crates=changed: (_named crates) fmt (lint crates) (test crates) scripts
 
-# Format the workspace and this file; just fmt --check only checks, as CI does
+# Format the Rust code and this file; just fmt --check only checks
 [group('check')]
-[positional-arguments]
 fmt *args:
     cargo fmt --all "$@"
-    {{ quote(just_executable()) }} --justfile {{ quote(justfile()) }} --fmt "$@"
+    just --fmt "$@"
 
-# Clippy with warnings as errors
+# Run clippy; a warning fails
 [group('check')]
 lint crates=changed: (_named crates)
-    cargo clippy {{ if crates == all { '--workspace' } else { prepend('-p ', crates) } }} --all-targets -- -D warnings
+    cargo clippy {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} --all-targets -- -D warnings
 
-# Tests; args go to cargo test: just test straum-pg -- tests::name
+# Run the tests; args go to cargo test: just test straum-pg -- NAME
 [group('check')]
 test crates=changed *args: (_named crates)
-    cargo test {{ if crates == all { '--workspace' } else { prepend('-p ', crates) } }} {{ args }}
+    cargo test {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} {{ args }}
 
-# Line coverage gate; add the crates whose tests exercise these
+# Fail under 98% line coverage; name each crate whose tests run the code
 [group('check')]
 cov crates=changed: (_named crates)
-    cargo llvm-cov {{ if crates == all { '--workspace' } else { prepend('-p ', crates) } }} --all-targets --fail-under-lines {{ coverage }}
+    cargo llvm-cov {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} --all-targets --fail-under-lines 98
 
-# Layers, no Straum SQL in straum-domain, test filters that select a test, a valid OpenAPI document, and the tests of the check and bench scripts
+# Run the checks in scripts/ and the tests of scripts/ and bench/
 [group('check')]
 scripts:
     scripts/check-layers.py
@@ -79,72 +70,64 @@ scripts:
     scripts/test-checks.py
     bench/test-stack.py
 
-# Cargo.lock against the RustSec advisories; needs cargo-audit
+# Test both streams on random workloads; STRAUM_TEST_SEEDS=50 runs 50
+[group('check')]
+correctness: (test "straum-pg" "--" "tests::decoding::commits_what_logical_decoding_commits_at_random" "tests::decoding::follows_random_workloads_from_a_random_start" "tests::decoding::follows_random_workloads_from_a_random_logical_start")
+
+# Write the heap fixtures again after a WAL layout change, for each postgres major
+[group('check')]
+heap-fixtures: (test "straum-pg" "--lib" "capture_heap_fixture" "--" "--ignored")
+
+# Check Cargo.lock against the RustSec advisories; needs cargo-audit
 [group('check')]
 audit:
     cargo audit
 
-# Both streams against random workloads, as CI's correctness job
-[group('check')]
-correctness: (test "straum-pg" "--" "tests::decoding::commits_what_logical_decoding_commits_at_random" "tests::decoding::follows_random_workloads_from_a_random_start" "tests::decoding::follows_random_workloads_from_a_random_logical_start")
-
-# Capture the heap fixtures of the postgres major again, after a WAL layout change
-[group('check')]
-heap-fixtures: (test "straum-pg" "--lib" "capture_heap_fixture" "--" "--ignored")
-
-# Helm chart checks
+# Check the Helm chart
 [group('check')]
 chart:
     scripts/check-chart.py
 
-# Build the image from compose.yaml and run its help, as CI does
+# Build the image from compose.yaml and run its help
 [group('check')]
 image:
     docker compose build straum
     docker compose run --rm straum help
 
-# Build the book as CI does; just docs serve --open for live reload
-[group('docs')]
-[positional-arguments]
-docs command="build" *flags:
+# Build the guide; just docs serve --open shows it while you edit
+[group('check')]
+docs command="build" *args:
     mdbook "$@" docs
 
-# Taxi trips in a throwaway PostgreSQL: asks, transactions, materialized, load, retention or shell
-[group('taxi')]
-taxi mode="asks":
-    bench/taxi.py {{ mode }} --wal {{ wal }}
+# Compare Straum with PostgreSQL on the taxi trips; --help lists the modes
+[group('bench')]
+taxi *args:
+    bench/taxi.py "$@"
 
-# taxi.sql view against PostgreSQL (loads the taxi month, needs uv)
-[group('taxi')]
+# Compare the taxi.sql view with PostgreSQL through the taxi month
+[group('bench')]
 taxi-month: (test "straum-pg" "--release" "taxi_month" "--" "--ignored" "--nocapture")
 
-# Physical WAL read speed over the taxi month (needs uv)
-[group('taxi')]
+# Time the physical WAL reads; STRAUM_BENCH_RUNS=6 reads six times
+[group('bench')]
 wal-bench: (test "straum-pg" "--release" "physical_wal_bench" "--" "--ignored" "--nocapture")
 
-# An ask and a zone change on a store the size of the taxi month, against their time budgets
-[group('taxi')]
+# Time an ask and a zone change on a store the size of the taxi month
+[group('bench')]
 cost-bench: (test "straum-domain" "--release" "--test" "cost" "--" "--ignored" "--nocapture")
 
-# January on the published image: one ask, a delete, a borough move
-[group('taxi')]
-demo:
-    bench/demo.py --tag {{ tag }}
-
-# The trigger outbox of ADR-0018 on the taxi trips: its checks, then its cost
-[group('taxi')]
+# Check the trigger outbox of ADR-0018 on the taxi trips, then time it
+[group('bench')]
 outbox:
     bench/outbox.py
 
-# Straum on a copy from straum plan --copy: SPEC --data DIR, then straum shell
+# Run Straum on a copy from straum plan --copy: just try SPEC --data DIR
 [group('try')]
 [no-cd]
-[positional-arguments]
-try *flags:
-    {{ quote(justfile_directory() / "bench/try_your_data.py") }} --postgres {{ postgres }} "$@"
+try *args:
+    {{ quote(justfile_directory() / "bench/try_your_data.py") }} "$@"
 
-# Fails when no crate is named and none changed: cargo with no -p would
-# take the whole workspace
-[private]
-_named crates:
-    {{ if trim(crates) == "" { error("no crate changed since HEAD; name one, as in just test straum-pg") } else { "" } }}
+# Run the published image on January's trips; --tag X.Y.Z picks a release
+[group('try')]
+demo *args:
+    bench/demo.py "$@"

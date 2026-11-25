@@ -202,8 +202,8 @@ kept for a time ([Keeping widths for a time](#keeping-widths-for-a-time)).
 [`straum shell`](cli.md#straum-shell) at the trips in place of the
 asks; leaving the shell removes PostgreSQL.
 
-Each mode takes `wal=physical`, as in `just wal=physical taxi
-shell`, to have Straum read the
+Each mode takes `--wal physical`, as in
+`just taxi shell --wal physical`, to have Straum read the
 [physical WAL](postgresql.md#physical-wal) in place of logical
 decoding. The script then turns `full_page_writes` back on after the
 load and takes a checkpoint, since the physical stream needs page
@@ -403,7 +403,7 @@ off and the checkpoint interval is an hour, so each run writes the same
 records. `postgres` picks the major, as in `just postgres=17 wal-bench`.
 
 Straum then reads the captured WAL again, with no socket in the way,
-three times each way (`just runs=6 wal-bench` for six);
+three times each way (`STRAUM_BENCH_RUNS=6 just wal-bench` for six);
 the fastest read counts. "Records read" only splits pages into records.
 "Pipeline read" goes all the way to the commits for
 `crates/straum-notation/tests/taxi.sql`; every row changed must come

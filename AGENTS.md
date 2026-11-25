@@ -6,8 +6,8 @@ file do not agree, the record is correct.
 ## Commands
 
 Run each tool through a recipe in the `justfile`, on your computer and
-in CI. Read the justfile to find a recipe and its settings. Do not run
-the command in a recipe directly.
+in CI. Run `just` to list the recipes. Do not run the command in a
+recipe directly.
 
 Run each crate recipe only on the crates that you change. CI runs
 `all`. PostgreSQL tests need Docker with Compose. If you do not have
@@ -33,16 +33,19 @@ dataset by hand. ADR-0014 tells which doc pages use the taxi trips.
 
 Rules for the justfile:
 
-- When you add a script, check, benchmark or setting, add a recipe or
-  variable in the same commit. Give it the same default as the code.
+- When you add a script, check or benchmark, add a recipe in the same
+  commit.
+- Do not add a variable for a setting. A script takes a flag. A test
+  reads an environment variable: name it in the recipe comment.
+  `postgres` is the only exception, because many recipes use it.
 - CI calls the recipe, never the command in it.
 - Keep one recipe for each tool. Put it in a `[group]` and give it a
-  one-line comment.
+  short one-line comment. `just` lists the recipes in file order.
 - Keep recipes thin. Put the logic in the script or the test.
 - A recipe that runs a cargo test calls `test`. Each test filter names
   a test in the form that `cargo test -- --list` shows.
-- A recipe that passes free arguments uses `[positional-arguments]` and
-  `"$@"`.
+- A recipe that runs a script gives it all its arguments with `"$@"`.
+  Then `just RECIPE --help` shows the flags of the script.
 - When you remove a tool, remove its recipe. Then fix each doc that
   names the recipe.
 
