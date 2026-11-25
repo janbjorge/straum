@@ -7,7 +7,7 @@
 //! and may recycle that WAL: the slot is never streamed again. What the
 //! writer has applied goes to the lag instead (`report.rs`).
 //! While the tables load the thread reads on and queues every commit, up
-//! to `--max-load-memory` bytes of them; once the writer takes the first,
+//! to `--max-stream-memory` bytes of them; once the writer takes the first,
 //! the queue holds a few commits ahead of it and the thread waits for room.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -39,7 +39,7 @@ pub(crate) const POLL: Duration = Duration::from_secs(1);
 /// can't outlast a `wal_sender_timeout` of a few seconds.
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// Commits read ahead of the writer once it takes them. While the tables
-/// load the bound is `--max-load-memory` instead.
+/// load the bound is `--max-stream-memory` instead.
 const QUEUE: usize = 64;
 /// Changes read ahead of the writer, beside [`QUEUE`]: 64 commits at the
 /// row limit would hold gigabytes. A commit bigger than this still goes
@@ -133,13 +133,13 @@ impl Shared {
 
 impl Stream {
     /// Takes over a connection on which `START_REPLICATION` has begun,
-    /// streaming from `start`. Past `max_load_memory` bytes of commits
+    /// streaming from `start`. Past `max_stream_memory` bytes of commits
     /// queued while the tables load, the stream fails.
     pub(crate) fn start(
         connection: Connection,
         reader: Reader,
         start: Lsn,
-        max_load_memory: usize,
+        max_stream_memory: usize,
     ) -> Result<Stream, Error> {
         connection.set_read_timeout(POLL)?;
         let closer = connection.closer()?;
@@ -154,7 +154,7 @@ impl Stream {
             idle: start,
             reported: Reported::at(start),
             last_report: Instant::now(),
-            max_load_memory,
+            max_stream_memory,
         };
         let thread = thread::Builder::new()
             .name("straum-stream".into())
@@ -192,7 +192,7 @@ impl Stream {
         }
     }
 
-    /// Bytes of the commits queued, which `--max-load-memory` bounds while
+    /// Bytes of the commits queued, which `--max-stream-memory` bounds while
     /// the tables load.
     pub(crate) fn held_bytes(&self) -> usize {
         self.shared.queued_bytes.load(Ordering::Acquire)
@@ -303,7 +303,7 @@ struct StreamThread {
     commits: Sender<Result<Commit, Error>>,
     shared: Arc<Shared>,
     /// The bytes of commits the queue may hold while the tables load.
-    max_load_memory: usize,
+    max_stream_memory: usize,
     /// The LSN of the last commit queued.
     sent: Lsn,
     /// The server's position at the last keepalive between transactions.
@@ -453,16 +453,16 @@ impl StreamThread {
     }
 
     /// Whether an item of `size` may be queued now. While the tables load
-    /// it may, unless it takes the queue past `--max-load-memory`; after,
+    /// it may, unless it takes the queue past `--max-stream-memory`; after,
     /// only within the queue's bounds in commits and changes.
     fn room(&self, size: Size) -> Result<Room, Error> {
         let shared = &self.shared;
         if shared.loading.load(Ordering::Acquire) {
             let queued = shared.queued_bytes.load(Ordering::Acquire);
             let held = queued.saturating_add(size.bytes);
-            if held > self.max_load_memory {
-                let limit = self.max_load_memory;
-                return Err(Error::LoadMemory { held, limit });
+            if held > self.max_stream_memory {
+                let limit = self.max_stream_memory;
+                return Err(Error::StreamMemory { held, limit });
             }
             return Ok(Room::Fits);
         }
@@ -591,7 +591,7 @@ const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
 mod tests {
     use super::*;
 
-    use crate::tests::support::{LOAD_MEMORY, now, scripted, signed_in};
+    use crate::tests::support::{STREAM_MEMORY, now, scripted, signed_in};
     use crate::wire::ConnectionKind;
     use straum_domain::Identifier;
 
@@ -627,7 +627,7 @@ mod tests {
 
     /// The writer's end and the thread's end of a stream from a fake
     /// server, the thread's end not yet running, the tables loading.
-    fn ends(max_load_memory: usize) -> (Stream, StreamThread) {
+    fn ends(max_stream_memory: usize) -> (Stream, StreamThread) {
         let server = scripted(vec![now(signed_in())]);
         let connection = Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap();
         let closer = connection.closer().unwrap();
@@ -638,7 +638,7 @@ mod tests {
             reader: Reader::Logical(Decoder::new(Vec::new(), 1)),
             commits,
             shared: Arc::clone(&shared),
-            max_load_memory,
+            max_stream_memory,
             sent: Lsn(0),
             idle: Lsn(0),
             reported: Reported::at(Lsn(0)),
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn a_check_gives_the_error_after_the_commits_queued() {
         for count in [QUEUED_CHANGES + 1, 1] {
-            let (mut stream, mut thread) = ends(LOAD_MEMORY);
+            let (mut stream, mut thread) = ends(STREAM_MEMORY);
             // Loaded, so the queue's bounds hold the error back.
             stream.shared.loading.store(false, Ordering::Release);
             let handle = thread::spawn(move || {
@@ -697,7 +697,7 @@ mod tests {
     /// with nobody taking them, past the bound that holds after.
     #[test]
     fn while_loading_the_queue_holds_more_than_its_bound() {
-        let (stream, mut thread) = ends(LOAD_MEMORY);
+        let (stream, mut thread) = ends(STREAM_MEMORY);
         let shared = Arc::clone(&stream.shared);
         let (done, delivered) = mpsc::channel();
         let handle = thread::spawn(move || {
@@ -717,11 +717,11 @@ mod tests {
         assert_eq!(queued, QUEUE * 4);
     }
 
-    /// Past `--max-load-memory` the stream fails, and the writer hears it
+    /// Past `--max-stream-memory` the stream fails, and the writer hears it
     /// after the commits queued, with what was held and the limit. Up to
     /// the limit it does not.
     #[test]
-    fn past_the_load_memory_the_stream_fails() {
+    fn past_the_stream_memory_the_stream_fails() {
         let bytes = footprint(&commit_of(1));
         let (mut stream, mut thread) = ends(bytes * 3);
         for _ in 0..3 {
@@ -736,7 +736,7 @@ mod tests {
             error,
             format!(
                 "the stream holds {held} bytes of commits while the tables load, past the \
-                 --max-load-memory limit of {limit}"
+                 --max-stream-memory limit of {limit}"
             )
         );
     }
@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn after_the_load_the_queue_is_bounded_again() {
         let one = Size::of(&commit_of(1));
-        let (mut stream, mut thread) = ends(LOAD_MEMORY);
+        let (mut stream, mut thread) = ends(STREAM_MEMORY);
         let backlog = QUEUE * 2;
         // Room is checked first: a stream that bounds the queue while the
         // tables load would block in `deliver`, with nobody to drain it.
@@ -765,7 +765,7 @@ mod tests {
         }
         assert_eq!(taken, backlog);
 
-        let (mut stream, mut thread) = ends(LOAD_MEMORY);
+        let (mut stream, mut thread) = ends(STREAM_MEMORY);
         for queued in 0..3 {
             let half = commit_of(QUEUED_CHANGES / 2);
             let size = Size::of(&half);
@@ -782,7 +782,7 @@ mod tests {
     /// taken everything queued, through `next` and through `check`.
     #[test]
     fn the_bytes_queued_return_to_zero() {
-        let (mut stream, mut thread) = ends(LOAD_MEMORY);
+        let (mut stream, mut thread) = ends(STREAM_MEMORY);
         let commits = [commit_of(1), commit_of(5), commit_with_text("trip")];
         let mut total = 0;
         for commit in commits {

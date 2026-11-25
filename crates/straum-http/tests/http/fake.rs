@@ -41,7 +41,7 @@ const FOUR_GIBIBYTES: u64 = 4 << 30;
 pub(crate) const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: FOUR_GIBIBYTES,
-    max_load_memory: 1 << 30,
+    max_stream_memory: 1 << 30,
 };
 
 /// Loads fixed zones and trips at [`START`], then streams its commits.

@@ -119,7 +119,7 @@ has read, so PostgreSQL can recycle write-ahead log (WAL): the commits
 read wait in Straum's memory, and the slot is never streamed again, so
 the server needs none of it back. Lag counts from what the writer has
 applied. While the tables load the stream reads on and holds every
-commit until the writer takes them, up to `--max-load-memory` (1 GiB by
+commit until the writer takes them, up to `--max-stream-memory` (1 GiB by
 default) of them, so the WAL the server keeps no longer grows with the
 load ([What Straum costs the server](postgresql.md)).
 
@@ -134,7 +134,7 @@ in memory; the new slot's snapshot brings its rows in through the bulk
 the default.
 
 Straum also stops on a lost connection, WAL past `--max-retained-wal`,
-commits held past `--max-load-memory` while the tables load or, when
+commits held past `--max-stream-memory` while the tables load or, when
 set, resident memory past `--max-memory`
 ([States](deploy.md#states)), on a spec table that is renamed away
 or replaced by another table under its name, on a spec table that

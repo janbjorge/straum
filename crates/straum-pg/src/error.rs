@@ -55,9 +55,9 @@ pub(crate) enum Error {
         held: usize,
         limit: usize,
     },
-    /// The stream queued more bytes of commits than `--max-load-memory`
+    /// The stream queued more bytes of commits than `--max-stream-memory`
     /// allows while the tables loaded. Starting again lets go of them.
-    LoadMemory {
+    StreamMemory {
         held: usize,
         limit: usize,
     },
@@ -125,10 +125,10 @@ impl fmt::Display for Error {
                 "the physical stream holds {held} bytes of rows, past the --max-page-memory \
                  limit of {limit}"
             ),
-            Error::LoadMemory { held, limit } => write!(
+            Error::StreamMemory { held, limit } => write!(
                 formatter,
                 "the stream holds {held} bytes of commits while the tables load, past the \
-                 --max-load-memory limit of {limit}"
+                 --max-stream-memory limit of {limit}"
             ),
             Error::Watchdog(Verdict::Retained { retained, limit }) => write!(
                 formatter,
@@ -160,17 +160,17 @@ mod tests {
     use crate::problem::{ServerProblem, WaitProblem};
     use straum_domain::ColumnType;
 
-    /// The load's memory limit names the flag, what was held and the limit.
+    /// The stream memory limit names the flag, what was held and the limit.
     #[test]
-    fn display_load_memory() {
-        let error = Error::LoadMemory {
+    fn display_stream_memory() {
+        let error = Error::StreamMemory {
             held: 2048,
             limit: 1024,
         };
         assert_eq!(
             error.to_string(),
             "the stream holds 2048 bytes of commits while the tables load, past the \
-             --max-load-memory limit of 1024"
+             --max-stream-memory limit of 1024"
         );
     }
 

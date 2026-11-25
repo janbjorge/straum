@@ -267,9 +267,9 @@ which the server keeps until its next checkpoint anyway. The watchdog
 and `straum status` count from where the slot was made.
 
 While the tables load, the stream reads on and Straum holds the commits
-it reads in memory, up to `--max-load-memory` (1 GiB by default), past
+it reads in memory, up to `--max-stream-memory` (1 GiB by default), past
 which it stops. None is applied until the load ends, but each is
-confirmed once read, so a long load meets `--max-load-memory`, not
+confirmed once read, so a long load meets `--max-stream-memory`, not
 `--max-retained-wal`. A physical slot then keeps a few MiB of WAL. A
 logical slot's restart point moves only at the server's
 running-transactions record, so it keeps the WAL written since the last

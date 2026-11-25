@@ -30,7 +30,7 @@ table; counting a change per view stopped a spec with two views over
 one table at half the rows the flag names. Past
 `--max-retained-wal` (4Gi) Straum stops too, since Azure fixes
 `max_slot_wal_keep_size` at `-1`, and past `--max-memory`, off unless
-set (ADR-0010). Past `--max-load-memory` (1Gi) Straum stops as well:
+set (ADR-0010). Past `--max-stream-memory` (1Gi) Straum stops as well:
 while the tables load, the stream thread reads on and holds every
 commit it reads, where it used to stop reading once 64 commits or
 200,000 changes waited, and the flag bounds those commits in bytes, as
@@ -38,7 +38,7 @@ ADR-0010 bounds memory in bytes rather than a count. The thread
 reports to the server what it has read, not what the writer has
 applied: the slot is temporary and never streamed twice, so the server
 needs none of the WAL Straum holds the commits of. A slow load meets
-`--max-load-memory`, not the WAL cap. Reporting what was applied kept
+`--max-stream-memory`, not the WAL cap. Reporting what was applied kept
 the whole load's WAL on the server and ended a long load at the WAL
 cap. A value
 Straum can't read (`NaN`,
@@ -104,7 +104,7 @@ showed more retained WAL than the watchdog counted against the limit.
 - Asks answer not ready while a load runs, and get no answer between a
   failure and the next start, as the port closes; the failed run's last
   log lines say why it stopped.
-- A load whose stream holds more commits than `--max-load-memory`
+- A load whose stream holds more commits than `--max-stream-memory`
   fails each start, which the supervisor's restarts show. So does a
   spec whose cells pass `--max-memory`. A stuck writer after the load
   still stops the stream reading, so its report stands still and the

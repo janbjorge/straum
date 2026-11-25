@@ -223,7 +223,7 @@ impl<S: Source> Writer<S> {
                 estimate,
                 rows_read: 0,
                 held_bytes: 0,
-                max_load_memory: self.app.limits.max_load_memory,
+                max_stream_memory: self.app.limits.max_stream_memory,
             };
             self.load(load, loading, &mut store)?;
         }

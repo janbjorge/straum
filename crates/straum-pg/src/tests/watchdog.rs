@@ -258,7 +258,7 @@ fn writer_stuck(pg: &PostgresContainer, name: &str, replication: Replication) {
         ROW_LIMIT,
         SMALL_LIMIT_BYTES,
         replication,
-        LOAD_MEMORY,
+        STREAM_MEMORY,
     );
     let spec = db.spec(SPEC);
     source.open(&spec).unwrap();

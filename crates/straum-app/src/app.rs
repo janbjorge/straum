@@ -38,7 +38,7 @@ pub struct Limits {
     pub max_retained_wal: u64,
     /// Bytes of commits the stream may hold while the tables load. The
     /// source stops past it; the status shows how close it is.
-    pub max_load_memory: usize,
+    pub max_stream_memory: usize,
 }
 
 /// The store as the writer last left it, for asks. Clones share it.
@@ -231,7 +231,7 @@ impl App {
         Some(Loading {
             rows_read: self.counts.rows.load(Ordering::Relaxed),
             held_bytes: self.counts.held_bytes.load(Ordering::Relaxed),
-            max_load_memory: self.limits.max_load_memory,
+            max_stream_memory: self.limits.max_stream_memory,
             ..loading.clone()
         })
     }
@@ -317,7 +317,7 @@ pub(crate) mod tests {
             Limits {
                 max_lag: std::time::Duration::from_secs(30),
                 max_retained_wal: 4 * BYTES_PER_GIB,
-                max_load_memory: 1 << 30,
+                max_stream_memory: 1 << 30,
             },
         )
     }

@@ -263,7 +263,7 @@ fn capped_writer(db: &Db) -> Writer<Postgres> {
         CAP,
         MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
-        LOAD_MEMORY,
+        STREAM_MEMORY,
     );
     Writer::new(App::new(db.spec(SPEC), LIMITS), source)
 }

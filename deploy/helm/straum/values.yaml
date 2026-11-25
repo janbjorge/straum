@@ -58,18 +58,18 @@ wal: ""
 # can stop it.
 maxPageMemory: "1Gi"
 
-# maxLoadMemory is how many bytes of commits straum may hold while its
+# maxStreamMemory is how many bytes of commits straum may hold while its
 # tables load, read from the stream ahead of the writer, before it exits 1
 # and the pod restarts to load every table again; with a Ki, Mi, Gi or Ti
 # suffix. It comes on top of the cells, and of maxPageMemory with wal
 # "physical", so keep it under resources.limits.memory.
-maxLoadMemory: "1Gi"
+maxStreamMemory: "1Gi"
 
 # maxMemory is how much resident memory straum may hold, cells, page
 # memory and all, before it exits 1 with a line naming the limit, instead
 # of the kernel killing the pod with no word from straum; in bytes or with
 # a Ki, Mi, Gi or Ti suffix. Empty, the default, passes no limit. Set it
-# a little under resources.limits.memory, and above maxLoadMemory plus
+# a little under resources.limits.memory, and above maxStreamMemory plus
 # the cells, and maxPageMemory too with wal "physical". A spec too big for
 # it fails each start.
 maxMemory: ""

@@ -390,7 +390,7 @@ fn scripted_stream(parts: Vec<Part>) -> Stream {
         connection,
         Reader::Logical(Decoder::new(Vec::new(), ROW_LIMIT)),
         Lsn(0x10),
-        LOAD_MEMORY,
+        STREAM_MEMORY,
     )
     .unwrap()
 }

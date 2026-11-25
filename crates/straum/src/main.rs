@@ -474,7 +474,7 @@ fn run(
             max_transaction_rows,
             limits.max_retained_wal,
             replication,
-            limits.max_load_memory,
+            limits.max_stream_memory,
         ),
     )
     .reporting(log);

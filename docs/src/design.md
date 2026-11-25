@@ -142,7 +142,7 @@ streamed twice, so nothing confirmed is asked for again
 the last commit the writer has applied, or, while no commit it has
 queued waits and no transaction is open, the WAL it has read. During a
 load that is the start. While the tables
-load its queue has no bound in commits, only `--max-load-memory` in
+load its queue has no bound in commits, only `--max-stream-memory` in
 bytes; the writer's first `Stream::next` ends that, and from then 64
 commits or 200,000 changes bound it, so the thread reads nothing more
 until the writer has taken a backlog below them. While the queue is
@@ -286,7 +286,7 @@ The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The decoder ends the
 stream on a transaction past `--max-transaction-rows`, and the physical
 stream also ends past `--max-page-memory`. Either ends past
-`--max-load-memory` while the tables load.
+`--max-stream-memory` while the tables load.
 
 A writer can get stuck, under its lock or on a socket, and a stuck
 writer must not keep a slot that holds WAL back. So from when the slot

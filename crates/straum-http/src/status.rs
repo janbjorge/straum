@@ -261,7 +261,7 @@ mod tests {
             limits: Limits {
                 max_lag: Duration::from_secs(30),
                 max_retained_wal: FOUR_GIBIBYTES,
-                max_load_memory: 1 << 30,
+                max_stream_memory: 1 << 30,
             },
         }
     }
@@ -421,7 +421,7 @@ memory:       unknown; this system has neither /proc/self/status nor ps
                 },
                 rows_read: 410,
                 held_bytes: 0,
-                max_load_memory: 1 << 30,
+                max_stream_memory: 1 << 30,
             }),
             ..loading()
         };

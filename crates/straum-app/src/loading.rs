@@ -40,8 +40,8 @@ pub struct Loading {
     pub rows_read: u64,
     /// Bytes of commits the stream holds while the tables load.
     pub held_bytes: usize,
-    /// As [`Limits::max_load_memory`](crate::Limits::max_load_memory).
-    pub max_load_memory: usize,
+    /// As [`Limits::max_stream_memory`](crate::Limits::max_stream_memory).
+    pub max_stream_memory: usize,
 }
 
 /// Every load of the spec, in the order they run: dims first, so a
@@ -187,7 +187,7 @@ impl fmt::Display for Loading {
             formatter,
             "; commits held {} of {}",
             mebibytes(self.held_bytes),
-            mebibytes(self.max_load_memory)
+            mebibytes(self.max_stream_memory)
         )
     }
 }
@@ -209,7 +209,7 @@ mod tests {
             },
             rows_read: 410,
             held_bytes: 3 << 20,
-            max_load_memory: 1 << 30,
+            max_stream_memory: 1 << 30,
         }
     }
 

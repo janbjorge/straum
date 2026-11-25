@@ -115,7 +115,7 @@ Stopping ends with exit 0 ([straum run](cli.md#straum-run)).
 
 While loading, `/readyz` names the table being read, its place among
 the tables, how much of PostgreSQL's estimate of its rows is read, and
-the commits the stream holds against `--max-load-memory`. The percent
+the commits the stream holds against `--max-stream-memory`. The percent
 is left out for a table never analysed, which has no estimate. Before
 the first table it says only `not ready: loading`.
 
@@ -126,7 +126,7 @@ never understate it.
 
 A lost connection, a missing setup, a change Straum can't apply, a
 table altered under it, too much WAL retained for its slot, or more
-commits held while the tables load than `--max-load-memory` allows ends
+commits held while the tables load than `--max-stream-memory` allows ends
 the process with exit 1, and the last lines of its log say why. The
 connections close with it, and PostgreSQL drops the temporary slot.
 Straum keeps no state across a failure and never retries inside the

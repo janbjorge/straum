@@ -105,7 +105,7 @@ pub(crate) struct Settings {
     pub(crate) replication: Replication,
     /// The bytes of commits the stream may hold while the tables load;
     /// past it Straum stops.
-    pub(crate) max_load_memory: usize,
+    pub(crate) max_stream_memory: usize,
     /// How long a start waits for its slot, and a physical start for a
     /// consistent point.
     pub(crate) consistent_wait: Duration,
@@ -118,14 +118,14 @@ impl Settings {
         publication: &str,
         max_transaction_rows: usize,
         replication: Replication,
-        max_load_memory: usize,
+        max_stream_memory: usize,
     ) -> Settings {
         Settings {
             dsn,
             publication: publication.to_owned(),
             max_transaction_rows,
             replication,
-            max_load_memory,
+            max_stream_memory,
             consistent_wait: CONSISTENT_WAIT,
         }
     }
@@ -169,14 +169,14 @@ impl Postgres {
         max_transaction_rows: usize,
         max_retained_wal: u64,
         replication: Replication,
-        max_load_memory: usize,
+        max_stream_memory: usize,
     ) -> Postgres {
         let settings = Settings::new(
             dsn,
             publication,
             max_transaction_rows,
             replication,
-            max_load_memory,
+            max_stream_memory,
         );
         Postgres {
             settings,
@@ -241,7 +241,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     ))?;
     let reader = Decoder::new(checked(&tables), settings.max_transaction_rows);
     let reader = Reader::Logical(reader);
-    let stream = Stream::start(replication, reader, at, settings.max_load_memory)?;
+    let stream = Stream::start(replication, reader, at, settings.max_stream_memory)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
@@ -381,7 +381,7 @@ fn start_physical_stream(
     );
     let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
     let reader = Reader::Physical(Box::new(replay));
-    let mut stream = Stream::start(replication, reader, start, settings.max_load_memory)?;
+    let mut stream = Stream::start(replication, reader, start, settings.max_stream_memory)?;
     stream.close_too(layouts_closer);
     Ok(PhysicalStream { stream, slot, from })
 }

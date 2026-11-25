@@ -46,7 +46,7 @@ const MAX_RETAINED_WAL_FLAG: &str = "--max-retained-wal";
 const MAX_TRANSACTION_ROWS_FLAG: &str = "--max-transaction-rows";
 const MAX_ANSWER_ROWS_FLAG: &str = "--max-answer-rows";
 const MAX_PAGE_MEMORY_FLAG: &str = "--max-page-memory";
-const MAX_LOAD_MEMORY_FLAG: &str = "--max-load-memory";
+const MAX_STREAM_MEMORY_FLAG: &str = "--max-stream-memory";
 const MAX_MEMORY_FLAG: &str = "--max-memory";
 const URL_FLAG: &str = "--url";
 const TIMEOUT_FLAG: &str = "--timeout";
@@ -56,7 +56,7 @@ const FOUR_GIBIBYTES: u64 = 4 << 30;
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: FOUR_GIBIBYTES,
-    max_load_memory: MAX_LOAD_MEMORY,
+    max_stream_memory: MAX_STREAM_MEMORY,
 };
 /// Rows one transaction may change before Straum stops instead of applying
 /// it, so the next start brings its rows in through the load;
@@ -75,8 +75,8 @@ const ROW_COUNT_TAKES: &str = "a count of rows above 0";
 const MAX_PAGE_MEMORY: usize = 1 << 30;
 /// Bytes of commits the stream holds while the tables load before
 /// Straum stops: a guard on a long load of busy tables.
-const MAX_LOAD_MEMORY: usize = 1 << 30;
-/// What `--max-page-memory` and `--max-load-memory` take, as their
+const MAX_STREAM_MEMORY: usize = 1 << 30;
+/// What `--max-page-memory` and `--max-stream-memory` take, as their
 /// errors say.
 const MEMORY_LIMIT_TAKES: &str = "bytes above 0, as 1073741824 or 1Gi";
 /// The longest `--timeout`: a day. A timeout is added to the clock, and
@@ -156,7 +156,7 @@ impl Name {
                 MAX_TRANSACTION_ROWS_FLAG,
                 MAX_ANSWER_ROWS_FLAG,
                 MAX_PAGE_MEMORY_FLAG,
-                MAX_LOAD_MEMORY_FLAG,
+                MAX_STREAM_MEMORY_FLAG,
                 MAX_MEMORY_FLAG,
             ],
             Name::Plan => &[
@@ -597,9 +597,9 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
         count,
         ROW_COUNT_TAKES,
     )?;
-    let max_load_memory = flags.parsed(
-        MAX_LOAD_MEMORY_FLAG,
-        MAX_LOAD_MEMORY,
+    let max_stream_memory = flags.parsed(
+        MAX_STREAM_MEMORY_FLAG,
+        MAX_STREAM_MEMORY,
         memory,
         MEMORY_LIMIT_TAKES,
     )?;
@@ -615,7 +615,7 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
         limits: Limits {
             max_lag,
             max_retained_wal,
-            max_load_memory,
+            max_stream_memory,
         },
         max_transaction_rows,
         max_answer_rows,

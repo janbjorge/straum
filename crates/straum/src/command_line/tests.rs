@@ -72,7 +72,7 @@ fn reads_run_and_plan() {
             "run --dsn-file d --listen 127.0.0.1:9 s --publication p \
              --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
              --max-page-memory 256Mi --max-memory 2Gi --max-answer-rows 50 \
-             --max-load-memory 512Mi"
+             --max-stream-memory 512Mi"
         )),
         Ok(Command::Run(Run {
             spec: "s".into(),
@@ -86,7 +86,7 @@ fn reads_run_and_plan() {
             limits: Limits {
                 max_lag: Duration::from_secs(5),
                 max_retained_wal: 536_870_912,
-                max_load_memory: 512 << 20,
+                max_stream_memory: 512 << 20,
             },
             max_transaction_rows: 2500,
             max_answer_rows: 50,
@@ -116,32 +116,35 @@ fn max_memory_is_off_unless_set() {
     );
 }
 
-/// `--max-load-memory` is 1 GiB unless set, with either WAL, takes bytes
+/// `--max-stream-memory` is 1 GiB unless set, with either WAL, takes bytes
 /// with or without a suffix, and refuses what is not bytes above 0.
 #[test]
-fn max_load_memory_defaults_to_a_gibibyte() {
-    assert_eq!(MAX_LOAD_MEMORY, 1 << 30);
+fn max_stream_memory_defaults_to_a_gibibyte() {
+    assert_eq!(MAX_STREAM_MEMORY, 1 << 30);
     let cases = [
-        ("run s --wal logical", MAX_LOAD_MEMORY),
-        ("run s --wal physical", MAX_LOAD_MEMORY),
-        ("run s --wal logical --max-load-memory 4294967296", 4 << 30),
-        ("run s --wal physical --max-load-memory=512Mi", 512 << 20),
+        ("run s --wal logical", MAX_STREAM_MEMORY),
+        ("run s --wal physical", MAX_STREAM_MEMORY),
+        (
+            "run s --wal logical --max-stream-memory 4294967296",
+            4 << 30,
+        ),
+        ("run s --wal physical --max-stream-memory=512Mi", 512 << 20),
     ];
     for (line, expected) in cases {
         let Ok(Command::Run(run)) = command_of(&args(line)) else {
             panic!("{line}");
         };
-        assert_eq!(run.limits.max_load_memory, expected, "{line}");
+        assert_eq!(run.limits.max_stream_memory, expected, "{line}");
     }
     for value in ["0", "-1", "1Pi", "1G", "lots"] {
         assert_eq!(
-            usage(&format!("run s --wal logical --max-load-memory={value}")),
-            format!("--max-load-memory takes bytes above 0, as 1073741824 or 1Gi, not {value:?}")
+            usage(&format!("run s --wal logical --max-stream-memory={value}")),
+            format!("--max-stream-memory takes bytes above 0, as 1073741824 or 1Gi, not {value:?}")
         );
     }
     assert_eq!(
-        usage("plan s --wal logical --max-load-memory 1Gi"),
-        "straum plan takes no \"--max-load-memory\""
+        usage("plan s --wal logical --max-stream-memory 1Gi"),
+        "straum plan takes no \"--max-stream-memory\""
     );
 }
 
@@ -526,7 +529,7 @@ fn help_names_each_default() {
         format!("({MAX_TRANSACTION_ROWS})"),
         format!("({MAX_ANSWER_ROWS})"),
         format!("({})", gibibytes(MAX_PAGE_MEMORY as u64)),
-        format!("({})", gibibytes(MAX_LOAD_MEMORY as u64)),
+        format!("({})", gibibytes(MAX_STREAM_MEMORY as u64)),
         "(off;".to_owned(),
     ] {
         assert!(run.contains(&default), "run {default}");
@@ -828,7 +831,7 @@ const PIECES: [&str; 36] = [
     "--max-lag",
     "--max-retained-wal",
     "--max-page-memory",
-    "--max-load-memory",
+    "--max-stream-memory",
     "--max-memory",
     "--max-answer-rows",
     "-h",
