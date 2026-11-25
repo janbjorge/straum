@@ -60,6 +60,11 @@ const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
 /// catalog and holds the tables. A lock request queues behind a waiting
 /// `ALTER TABLE`, which may itself wait on a long transaction.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// How long the check of each reading of the WAL waits for a lock:
+/// `pg_publication_tables` locks each table it reads, and an
+/// `ALTER TABLE` holds its lock until it commits. The writer reads the
+/// WAL each second.
+const CHECK_LOCK_WAIT: Duration = Duration::from_millis(200);
 /// The SQLSTATE of a statement that gave up at `lock_timeout`.
 const LOCK_NOT_AVAILABLE: &str = "55P03";
 
@@ -780,7 +785,8 @@ fn loaded(snapshot: &mut Snapshot, tables: &[Identifier]) -> Result<(), Error> {
 }
 
 /// The server's WAL position, then a check that the spec's tables are
-/// still followed.
+/// still followed, skipped when a table lock holds it past
+/// `CHECK_LOCK_WAIT`.
 fn read_wal_and_check(
     connection: &mut Connection,
     slot: &str,
@@ -791,7 +797,19 @@ fn read_wal_and_check(
 ) -> Result<Wal, Error> {
     let wal = read_wal(connection, slot, from, applied)?;
     let publication = &settings.publication;
-    catalog::still_followed(connection, followed, publication, settings.replication)?;
+    connection.execute(&format!(
+        "BEGIN; SET LOCAL lock_timeout = '{}ms'",
+        CHECK_LOCK_WAIT.as_millis()
+    ))?;
+    match catalog::still_followed(connection, followed, publication, settings.replication) {
+        Ok(()) => connection.execute("COMMIT")?,
+        // A lock held on a published table stops the check, never the
+        // reading: the next reading checks again.
+        Err(Error::Server { code, .. }) if code == LOCK_NOT_AVAILABLE => {
+            connection.execute("ROLLBACK")?;
+        }
+        Err(error) => return Err(error),
+    }
     Ok(wal)
 }
 

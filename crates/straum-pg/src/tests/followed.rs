@@ -419,3 +419,62 @@ fn a_column_granted_keeps_the_logical_stream_and_one_retyped_stops_it() {
         db.sql("trips: a column Straum reads of $S.trips was altered")
     );
 }
+
+/// The tables of [`TABLES`], plus a published table the spec does not
+/// read.
+fn with_other(db: &mut Db) {
+    db.run("CREATE TABLE $S.other (id int); ALTER PUBLICATION $S ADD TABLE $S.other");
+}
+
+/// An `ALTER TABLE` that holds its lock on a spec table, or a lock on
+/// another published table, keeps the reading of the WAL: it skips the
+/// check at the lock timeout and does not wait out the read timeout.
+#[test]
+fn a_lock_on_a_published_table_keeps_the_reading_of_the_wal() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "lockedreading", TABLES);
+    with_other(&mut db);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    let mut locker = db.another_connection();
+    for lock in [
+        "ALTER TABLE $S.trips ADD COLUMN note text",
+        "LOCK TABLE $S.other IN ACCESS EXCLUSIVE MODE",
+    ] {
+        locker.run(&format!("BEGIN; {lock}"));
+        let clock = Instant::now();
+        source
+            .wal()
+            .unwrap_or_else(|error| panic!("{lock}: {error}"));
+        let waited = clock.elapsed();
+        assert!(waited < Duration::from_secs(2), "{lock}: waited {waited:?}");
+        locker.run("ROLLBACK");
+    }
+}
+
+/// A spec table left out of the publication while a lock holds the check
+/// stops the stream at the first reading after the lock goes.
+#[test]
+fn a_table_left_out_under_a_lock_stops_the_stream_once_the_lock_goes() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "leftunderlock", TABLES);
+    with_other(&mut db);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    let mut locker = db.another_connection();
+    locker.run("BEGIN; LOCK TABLE $S.other IN ACCESS EXCLUSIVE MODE");
+    db.run("ALTER PUBLICATION $S DROP TABLE $S.trips");
+    assert!(source.wal().is_ok());
+    locker.run("ROLLBACK");
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql(
+            "trips: publication $S leaves out $S.trips: ALTER PUBLICATION $S ADD TABLE $S.trips"
+        )
+    );
+}

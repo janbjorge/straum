@@ -142,7 +142,10 @@ or replaced by another table under its name, on a spec table that
 another table now inherits from, and, on logical decoding, on a
 publication altered to leave a spec table out, filter its rows or stop
 sending inserts, updates, deletes or truncates. It checks for these
-once a second.
+once a second. The check waits at most 200 ms for a lock on a
+published table. While another session holds a lock that blocks a
+read, as `ALTER TABLE` does until it commits, Straum skips the check
+and keeps the lag.
 
 ## The logical stream
 
