@@ -16,6 +16,10 @@
 - [Deploying Straum](deploy.md)
 - [Performance](performance.md)
 
+# Use cases
+
+- [Usage metering](use-cases/usage-metering.md)
+
 # Reference
 
 - [Spec](spec.md)

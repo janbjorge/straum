@@ -53,6 +53,10 @@ Off the path, looked up rather than read:
   `asks.md` (the ask language, answers, errors, `Straum-LSN`, every
   endpoint), `cli.md` (every command and flag), `glossary.md` (a line
   per term and a link to its home).
+- Use cases: `use-cases/usage-metering.md`, how to bill each account
+  for its usage: the ask for the bill of a month, the ask for the usage
+  of the last hour, and the same numbers in SQL. It shows each step on
+  the `usage` view, and owns no fact of the reference.
 - Contributing: `design.md` (crates, store, invariants, machines, which
   record shaped what) and `reading-the-code.md`. Design names the code;
   the mechanism it links to How Straum works.
@@ -89,9 +93,11 @@ A new page, a moved fact or a changed order edits this record first.
 - A restructure is a diff against this list, not a rewrite.
 - A reader on the path never meets a term before its page.
 - Some repetition remains on purpose: a link's sentence of context.
-- Fourteen pages to keep true: running splits into deploy and the CLI
+- Fifteen pages to keep true: running splits into deploy and the CLI
   reference, and trying Straum on your own tables has a page of its
-  own, with its compose file and its script.
+  own, with its compose file and its script. Usage metering has a page
+  of its own, because it is the first use case that we show to users
+  (ROADMAP.md).
 - The introduction's sentences on pg_ivm and TimescaleDB describe
   projects that release without us, so they go stale by themselves;
   `research/ALTERNATIVES.md` holds the quotes to read again.

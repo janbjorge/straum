@@ -43,6 +43,13 @@ quick start January 2024, performance January to June 2024.
   What to expect: the benchmark against the raw tables and a
   materialized view, and memory sizing. Examples use the taxi trips.
 
+## Use cases
+
+- [Usage metering](https://janbjorge.github.io/straum/use-cases/usage-metering.html):
+  How to bill each account for its usage: the bill of a month, the
+  usage of the last hour, and the same numbers in SQL. Examples use
+  the usage view over the usage events of the Azure Functions trace.
+
 ## Reference
 
 - [Spec](https://janbjorge.github.io/straum/spec.html): Every spec rule,
