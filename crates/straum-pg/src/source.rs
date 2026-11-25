@@ -820,8 +820,8 @@ pub(crate) fn read_wal(
         return Err(no_wal_position(slot));
     };
     let (Some(inserted), Some(restart), Some(segment_bytes)) = (
-        lsn_of(inserted.as_deref()),
-        lsn_of(restart.as_deref()),
+        inserted.as_deref().and_then(parse_lsn),
+        restart.as_deref().and_then(parse_lsn),
         whole_number(segment_bytes.as_deref()),
     ) else {
         return Err(no_wal_position(slot));
@@ -844,11 +844,6 @@ fn replication_literal(text: &str) -> String {
 
 fn no_wal_position(slot: &str) -> Error {
     Error::Protocol(Unexpected::NoWalPositionForSlot(slot.to_owned()))
-}
-
-/// A column's LSN, if it holds one.
-fn lsn_of(value: Option<&str>) -> Option<Lsn> {
-    value.and_then(parse_lsn)
 }
 
 /// A column's whole number, if it holds one.
