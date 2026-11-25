@@ -4,6 +4,8 @@
 //! most walks each cell once; one whose joins can repeat a cell walks it
 //! once per join row, as PostgreSQL repeats the fact row.
 
+use std::mem;
+
 use crate::aggregate::Partials;
 use crate::ask::Ask;
 use crate::hash::FastMap;
@@ -164,8 +166,8 @@ impl<'s> CellLoop<'s> {
 
     /// One row per group met that meets every HAVING check, in the order
     /// of its keys; with a window, only the rows it shows. A group's
-    /// checked measures are finished first; a group they drop finishes no
-    /// other measure and reads no keys.
+    /// checked measures are finished first and kept; a group they drop
+    /// finishes no other measure and reads no keys.
     // Benchmark: `bench/taxi.py`'s ask by hour and zone over six months,
     // 509,200 groups, of which HAVING keeps one in eight.
     pub(super) fn answer_rows(self, having: &[HavingCheck], window: Option<Window>) -> Rows {
@@ -181,11 +183,16 @@ impl<'s> CellLoop<'s> {
         for check in having {
             checked[check.position] = true;
         }
+        let checked_positions = positions_of(&checked);
         for measure in &mut measures {
             measure.partials.grow(group_count);
         }
         let mut values = vec![Value::Null; measures.len()];
         let mut kept = groups.in_key_order(&by, rollup);
+        // The checked values of each kept group, in the order of `kept`. A
+        // percentile or a distinct count sorts its values when it finishes,
+        // so do not finish it two times.
+        let mut kept_values = Vec::new();
         if !having.is_empty() {
             let mut meeting = Vec::new();
             for group in kept {
@@ -193,6 +200,9 @@ impl<'s> CellLoop<'s> {
                 finish_where(&mut measures, &checked, Which::Checked, place, &mut values);
                 if meets(&values, having) {
                     meeting.push(group);
+                    for &position in &checked_positions {
+                        kept_values.push(mem::replace(&mut values[position], Value::Null));
+                    }
                 }
             }
             kept = meeting;
@@ -201,11 +211,20 @@ impl<'s> CellLoop<'s> {
         // asked for a few rows builds those few.
         let cut = Cut::of(window, kept.len());
         let mut rows = Vec::with_capacity(cut.end() - cut.first);
-        for &group in &kept[cut.first..cut.end()] {
-            let place = group as usize;
-            for which in [Which::Checked, Which::Unchecked] {
-                finish_where(&mut measures, &checked, which, place, &mut values);
+        for row in cut.first..cut.end() {
+            let group = kept[row];
+            let first_value = row * checked_positions.len();
+            for (offset, &position) in checked_positions.iter().enumerate() {
+                let value = &mut kept_values[first_value + offset];
+                values[position] = mem::replace(value, Value::Null);
             }
+            finish_where(
+                &mut measures,
+                &checked,
+                Which::Unchecked,
+                group as usize,
+                &mut values,
+            );
             rows.push(AnswerRow {
                 keys: groups.key_values(&by, rollup, group),
                 values: values.clone(),
@@ -228,6 +247,17 @@ pub(super) struct Rows {
 enum Which {
     Checked,
     Unchecked,
+}
+
+/// The places of the measures `checked` marks.
+fn positions_of(checked: &[bool]) -> Vec<usize> {
+    let mut positions = Vec::new();
+    for (position, &is_checked) in checked.iter().enumerate() {
+        if is_checked {
+            positions.push(position);
+        }
+    }
+    positions
 }
 
 /// Finishes `group`'s measures of the kind `which` into their place among
