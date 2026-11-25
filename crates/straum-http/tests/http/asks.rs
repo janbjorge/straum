@@ -187,6 +187,9 @@ fn accept_picks_the_format_and_each_route_its_default() {
         (Some("Application/JSON"), json, json),
         (Some("text/html, TEXT/plain;q=0.9, */*;q=0.1"), text, text),
         (Some("text/html"), json, text),
+        (Some("application/json;q=0, text/plain"), text, text),
+        (Some("text/plain; q=0.0, application/json"), json, json),
+        (Some("text/plain;Q=0"), json, text),
         (Some("*/*"), json, text),
         (None, json, text),
     ] {

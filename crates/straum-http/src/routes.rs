@@ -67,12 +67,16 @@ enum Format {
 
 impl Format {
     /// The first format `Accept` names among its media ranges, whatever
-    /// their parameters or case, else the route's own.
+    /// their parameters or case, else the route's own. A range with
+    /// `q=0` refuses its format, so it names none.
     fn of(accept: Option<&HeaderValue>, default: Format) -> Format {
         let Some(Ok(accept)) = accept.map(HeaderValue::to_str) else {
             return default;
         };
         for range in accept.split(',') {
+            if refused(range) {
+                continue;
+            }
             let media_type = media_type(range);
             if media_type.eq_ignore_ascii_case(JSON) {
                 return Format::Json;
@@ -228,6 +232,18 @@ fn is_json(content_type: Option<&HeaderValue>) -> bool {
 /// A media type or range without its parameters or the spaces around it.
 fn media_type(value: &str) -> &str {
     value.split(';').next().unwrap_or_default().trim()
+}
+
+/// Whether a media range has a weight of zero, `q=0` or `q=0.000` say.
+fn refused(range: &str) -> bool {
+    for parameter in range.split(';').skip(1) {
+        if let Some((name, weight)) = parameter.split_once('=')
+            && name.trim().eq_ignore_ascii_case("q")
+        {
+            return weight.trim().parse::<f64>() == Ok(0.0);
+        }
+    }
+    false
 }
 
 async fn post_ask(
