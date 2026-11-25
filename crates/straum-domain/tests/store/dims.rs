@@ -207,6 +207,51 @@ fn a_short_dim_update_leaves_every_answer_as_it_was() {
     assert_eq!(after.rows[0].values, [Value::Int(2)]);
 }
 
+/// A fact update whose new row has text in an int measure column fails.
+/// The old row stays, and every answer stays as it was.
+#[test]
+fn a_bad_fact_update_leaves_every_answer_as_it_was() {
+    let mut store = typed(&spec());
+    let mut row = trip(&mut Rng(11));
+    row[AT] = Datum::Int(START);
+    store.add_row("trips", &row).unwrap();
+    let ask = trips_ask(&["trips", "fare"], vec![AskKey::Key(id("pay"))]);
+    let before = store.ask(&ask).unwrap();
+    let mut bad = row.clone();
+    bad[FARE] = text("dear");
+    assert_eq!(
+        store.update_row("trips", &row, &bad),
+        Err(RowError::NotInt { column: id("fare") })
+    );
+    assert_eq!(store.ask(&ask).unwrap(), before);
+    store.remove_row("trips", &row).unwrap();
+    assert_eq!(store.cells("trips"), Some(0));
+}
+
+/// A dim update that changes the key and has the wrong width fails. The
+/// old dim row and the bound cells stay as they were.
+#[test]
+fn a_short_dim_update_with_a_new_key_leaves_every_answer_as_it_was() {
+    let mut store = typed(&spec());
+    let labelled = [Datum::Int(1), text("v1")];
+    store.add_row("vendors", &labelled).unwrap();
+    let mut row = trip(&mut Rng(7));
+    row[AT] = Datum::Int(START);
+    row[VENDOR] = Datum::Int(1);
+    store.add_row("trips", &row).unwrap();
+    let by_label = trips_ask(&["trips"], vec![AskKey::Key(id("vend_label"))]);
+    let before = store.ask(&by_label).unwrap();
+    assert_eq!(
+        store.update_row("vendors", &labelled, &[Datum::Int(2)]),
+        Err(RowError::Arity {
+            expected: 2,
+            found: 1
+        })
+    );
+    assert_eq!(store.dim_rows("vendors"), Some(1));
+    assert_eq!(store.ask(&by_label).unwrap(), before);
+}
+
 /// Combos of pickup zone 1 with vendors 1 and 2, labelled x and y, laid
 /// end to end.
 fn two_combos() -> Vec<Datum> {

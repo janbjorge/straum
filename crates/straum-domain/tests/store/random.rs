@@ -9,7 +9,7 @@ use crate::reference::measure_scale;
 use crate::{DAY, DRO, DimRows, Dims, END, HOME, HOUR, KEYS, START, WEEK, WIDTH, trips_ask};
 use straum_domain::{
     Aggregate, Answer, Ask, AskKey, Comparison, Condition, Datum, Fact, Identifier, Literal,
-    MeasureCondition, Spec, Store, Value, Width,
+    MeasureCondition, RowError, Spec, Store, Value, Width,
 };
 
 /// The widths an ask's rows may take: the `date_bin` width and each
@@ -167,7 +167,8 @@ fn random_dim_row(rng: &mut Rng) -> DimChange {
 
 /// A random change to one dim, applied to the store and to `dims`: a row
 /// relabelled, removed or added, under a key with a null now and then,
-/// or the dim truncated and loaded again.
+/// or the dim truncated and loaded again. Now and then an update with a
+/// broken new row fails and changes nothing.
 pub(crate) fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     if rng.chance(5) {
         let dim = *rng.pick(&["zones", "combos", "vendors"]);
@@ -188,6 +189,24 @@ pub(crate) fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     } = random_dim_row(rng);
     let rows = dims.get_mut(dim).unwrap();
     match rows.remove(&key) {
+        // Now and then a new row one column short, under a new key. The
+        // update fails, and the old row stays.
+        Some(old) if rng.chance(10) => {
+            let old_row = dim_row(&key, &old);
+            let mut new_key = key.clone();
+            new_key[0] = Datum::Int(99);
+            let mut broken = dim_row(&new_key, &attributes);
+            broken.pop();
+            assert_eq!(
+                store.update_row(dim, &old_row, &broken),
+                Err(RowError::Arity {
+                    expected: old_row.len(),
+                    found: broken.len()
+                })
+            );
+            rows.insert(key, old);
+            return;
+        }
         Some(old) if rng.chance(40) => {
             store.remove_row(dim, &dim_row(&key, &old)).unwrap();
             return;

@@ -612,7 +612,7 @@ impl Rollup {
     }
 
     /// Rejects rows that would leave the rollup half updated.
-    fn check(&self, row: &[Datum]) -> Result<(), RowError> {
+    pub(crate) fn check(&self, row: &[Datum]) -> Result<(), RowError> {
         arity(self.column_count(), row.len())?;
         if !matches!(row[TIME], Datum::Null | Datum::Int(_)) {
             return Err(RowError::NotInt {

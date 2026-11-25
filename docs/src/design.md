@@ -462,6 +462,7 @@ a property test.
 | No commit is missed or applied twice. | The snapshot is at the slot's consistent point L, and the stream starts at L (`Source::open`). `the_snapshot_and_the_stream_split_exactly` races 2,000 commits against it. |
 | Only the writer writes. | Asks reach the store through `App::read`, the writer alone through `App::write`. |
 | A row removed was added. | `RowError::Missing` from a cell, a value count or a projection entry ends the step (`Rollup::remove`, `Projection::remove`), and Straum exits. |
+| A row turned away changes nothing. | Each row is checked before a cell or a projection entry changes (`Rollup::check`, `Projection::check`). An update checks its new row before its old row leaves (`Store::update_row`). |
 | Types come from the catalog only. | The load sets them (`Store::set_types`), a filter value must fit its column (`ColumnType::fits`), and a Relation message that changes them is `Unfit` (`Decoder`). |
 | Null joins nothing. | A dim row with a null key is never held, and a lookup with a null finds nothing (`Projection::add`, `Projection::matches`). |
 | A row with no time is kept, never answered. | `Level::bucket` puts it under `None`, which no ask reads. |

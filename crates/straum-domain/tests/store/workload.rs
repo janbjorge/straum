@@ -1,16 +1,17 @@
-//! The random workload: trips and dim rows added, updated and removed, the
+//! The random workload: trips and dim rows added, updated and removed,
+//! now and then an update with a broken new row that must fail, the
 //! trips truncated halfway; every so often the store answers random asks and each must equal the
 //! reference. Also rows loaded in batches against rows added one by one,
 //! and two views of the trips in one store, sharing their dims.
 
-use crate::common::{Rng, dim_row, id};
+use crate::common::{Rng, dim_row, id, text};
 use crate::random::{
     change_dim, held, load_dims, meet_a_group, near, random_ask, random_dims, trip, trips,
 };
 use crate::reference::reference;
 use crate::views::{spec, spec_joining, trip_types, typed};
-use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, KEYS, ROW_COLUMNS, SEEDS, STEPS, trips_ask};
-use straum_domain::{AskKey, Datum, Identifier, RefKind, Spec, Store};
+use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, FARE, KEYS, ROW_COLUMNS, SEEDS, STEPS, trips_ask};
+use straum_domain::{AskKey, Datum, Identifier, RefKind, RowError, Spec, Store};
 
 /// The second view of [`Views::Two`], a copy of the trips view.
 const TWIN: &str = "twins";
@@ -117,6 +118,26 @@ impl Workload {
         let mut new = trip(&mut self.rng);
         if self.rng.chance(50) {
             near(&mut self.rng, &mut new, &self.rows[index]);
+        }
+        // Now and then a broken new row. The update fails, and the old
+        // row stays in the store and in the reference.
+        if self.rng.chance(5) {
+            let (broken, error) = if self.rng.chance(50) {
+                new[FARE] = text("dear");
+                (&new[..], RowError::NotInt { column: id("fare") })
+            } else {
+                let arity = RowError::Arity {
+                    expected: ROW_COLUMNS,
+                    found: ROW_COLUMNS - 1,
+                };
+                (&new[..ROW_COLUMNS - 1], arity)
+            };
+            for view in &self.views {
+                let old = &self.rows[index];
+                let updated = self.store.update_row(view.as_str(), old, broken);
+                assert_eq!(updated, Err(error.clone()), "seed {}", self.seed);
+            }
+            return;
         }
         for view in &self.views {
             let old = &self.rows[index];

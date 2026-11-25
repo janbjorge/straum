@@ -142,12 +142,15 @@ impl Store {
         old: &[Datum],
         new: &[Datum],
     ) -> Result<(), RowError> {
+        // Add checks the new row too, but a failure after the remove
+        // would drop `old` and return before the bound cells move.
+        if let Some(fact) = self.fact_index(table) {
+            self.rollups[fact.0].check(new)?;
+        }
         if let Some(dim) = self.dim_index(table) {
+            self.projections[dim.0].check(new)?;
             let key_columns = self.projections[dim.0].key_column_count();
             if old.get(..key_columns) == new.get(..key_columns) {
-                // Add checks the width. A failure after the remove would
-                // drop `old` and return before the bound cells move.
-                self.projections[dim.0].check(new)?;
                 let changes = [
                     DimRowChange {
                         row: old,
