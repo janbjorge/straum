@@ -86,7 +86,8 @@ Straum takes no more requests on it. The request in flight gets its
 whole reply, and then Straum closes the connection. A client that keeps
 a connection open for many asks must then open a new connection. If
 the connection is still open 1 minute later, Straum cuts it. Thus a
-client that does not read its answer cannot hold that answer in memory.
+client that does not read its answer can hold that answer in memory
+for 6 minutes at most.
 
 ## States
 
