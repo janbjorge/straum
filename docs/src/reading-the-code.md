@@ -63,6 +63,8 @@ review holds the rest.
 | A walk's errors pushed onto a list, then `Err(Reported)`, so a spec reports them all | Returning the first error of a spec |
 | Dense code, such as `#[inline]` or a closure in a hot loop, where a benchmark measured the plain form slower, naming it | Dense code no measurement asks for |
 | A `//!` header per file, a `///` line per public type, other comments saying why | Comments that restate the code or name callers or tickets, `TODO`, commented-out code |
-| `#[expect(.., reason = ..)]` | `#[allow]` |
+| `#[expect(.., reason = ..)]` | `#[allow]`, except `dead_code` on a helper module that several test binaries share |
+| `[lints] workspace = true` in each crate | Lint settings of one crate |
+| Names and signatures from the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) | |
 | Functions under 70 lines, files under 1000 | |
 | `unsafe` only in the two counting allocators of the cost tests | `unsafe` anywhere else, macros of our own |
