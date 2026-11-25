@@ -36,7 +36,7 @@ With `wal: physical`, set `maxPageMemory` well under
 cells, and at the defaults, both `1Gi`, the pod is killed for its
 memory before straum's own limit can stop it with exit 1.
 
-`maxStreamMemory`, `1Gi` by default, bounds the commits straum holds
+`maxStreamMemory`, `256Mi` by default, bounds the commits straum holds
 ahead of the writer, and the rows of one transaction. Past it while the
 tables load, or in one transaction, straum exits 1; after the load, a
 full queue waits for the writer. The queue and a transaction can each

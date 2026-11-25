@@ -40,7 +40,7 @@ tests:
             - --max-answer-rows
             - "100000"
             - --max-stream-memory
-            - 1Gi
+            - 256Mi
             - --wal
             - logical
       - equal:
@@ -71,7 +71,7 @@ tests:
       maxRetainedWal: 512Mi
       maxTransactionRows: 2500
       maxAnswerRows: 50
-      maxStreamMemory: 256Mi
+      maxStreamMemory: 512Mi
       publication: trips
       dsn.key: url
     asserts:
@@ -93,7 +93,7 @@ tests:
             - --max-answer-rows
             - "50"
             - --max-stream-memory
-            - 256Mi
+            - 512Mi
             - --wal
             - logical
       - equal:
@@ -186,7 +186,7 @@ tests:
             - --max-answer-rows
             - "100000"
             - --max-stream-memory
-            - 1Gi
+            - 256Mi
             - --wal
             - physical
             - --max-page-memory
@@ -222,7 +222,7 @@ tests:
             - --max-answer-rows
             - "100000"
             - --max-stream-memory
-            - 1Gi
+            - 256Mi
             - --wal
             - logical
             - --max-memory

@@ -65,8 +65,10 @@ maxPageMemory: "1Gi"
 # to load every table again; after the load, a full queue waits for the
 # writer. The queue and a transaction can each hold this much, so up to
 # twice it comes on top of the cells, and of maxPageMemory with wal
-# "physical": keep that under resources.limits.memory.
-maxStreamMemory: "1Gi"
+# "physical": keep that under resources.limits.memory. The default,
+# 256Mi, is a quarter of the default memory limit, so twice it leaves half
+# for the cells; straum run without the flag takes 1Gi.
+maxStreamMemory: "256Mi"
 
 # maxMemory is how much resident memory straum may hold, cells, page
 # memory and all, before it exits 1 with a line naming the limit, instead
