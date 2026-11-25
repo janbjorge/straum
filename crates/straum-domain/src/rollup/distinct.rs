@@ -202,9 +202,17 @@ fn take(counts: &mut FastMap<Datum, u64>, value: &Datum, count: u64) -> bool {
     *held -= count;
     if *held == 0 {
         counts.remove(value);
+        // Half the room stays free, so a map that comes and goes near
+        // the edge does not shrink and grow each time.
+        if counts.capacity() > KEPT_ROOM && counts.len() * 4 < counts.capacity() {
+            counts.shrink_to(counts.len() * 2);
+        }
     }
     true
 }
+
+/// The room a map of values keeps however few values it holds.
+const KEPT_ROOM: usize = 128;
 
 #[cfg(test)]
 mod tests {
@@ -229,6 +237,8 @@ mod tests {
     const SPACINGS: [i64; 3] = [1, 7, 1_000];
     /// Steps before the columns start over, so most hold numbers only.
     const STEPS: usize = 100;
+    /// Text values a flood puts into one cell, more than the kept room.
+    const FLOOD: usize = 300;
 
     /// A cell's place: its column, and its place among the column's cells.
     #[derive(Debug, Clone, Copy)]
@@ -361,6 +371,45 @@ mod tests {
         }
     }
 
+    /// Puts `FLOOD` text values into a cell of the mixed column, then
+    /// takes them out in a random order. The map grows past the room it
+    /// keeps, and must give the room back as the values go.
+    fn flood(followed: &mut Followed, rng: &mut Rng) {
+        let cell = rng.position_below(CELLS);
+        let mut values = Vec::with_capacity(FLOOD);
+        for value in 0..FLOOD {
+            let datum = Datum::Text(format!("flood {value}").into());
+            followed.columns[MIXED].add(cell, &datum);
+            *followed.reference[MIXED][cell]
+                .entry(datum.clone())
+                .or_default() += 1;
+            values.push(datum);
+        }
+        while !values.is_empty() {
+            let datum = values.swap_remove(rng.position_below(values.len()));
+            followed.columns[MIXED].remove(cell, 1, &datum).unwrap();
+            take_from(&mut followed.reference[MIXED][cell], &datum, 1);
+            assert_room(followed);
+        }
+    }
+
+    /// Each map of values that holds more than the kept room is a
+    /// quarter full at least.
+    fn assert_room(followed: &Followed) {
+        for column in &followed.columns {
+            let State::Distinct(super::DistinctCells::Values(maps)) = column else {
+                continue;
+            };
+            for map in maps {
+                let (len, capacity) = (map.len(), map.capacity());
+                assert!(
+                    capacity <= super::KEPT_ROOM || len * 4 >= capacity,
+                    "{len} values in the room of {capacity}"
+                );
+            }
+        }
+    }
+
     /// A cell goes, the last taking its place, and a new one comes.
     fn replace(followed: &mut Followed, rng: &mut Rng) {
         let at = place(rng);
@@ -426,12 +475,16 @@ mod tests {
             let spacing = SPACINGS[run % SPACINGS.len()];
             let mut followed = Followed::new(spacing);
             for _ in 0..STEPS {
+                if rng.below(50) == 0 {
+                    flood(&mut followed, &mut rng);
+                }
                 match rng.below(10) {
                     0..4 => add(&mut followed, &mut rng),
                     4..7 => remove(&mut followed, &mut rng),
                     7 | 8 => absorb(&mut followed, &mut rng),
                     _ => replace(&mut followed, &mut rng),
                 }
+                assert_room(&followed);
                 ask(&followed, &mut rng);
             }
         }

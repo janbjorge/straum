@@ -1,11 +1,13 @@
 //! What a store keeps as rows come and go: a truncate, a dim change or
 //! values never seen again leave what a store that never held them
 //! holds, a bucket thinned out gives back its room, and an ask through
-//! a join or a filter remembers only the ids it read. Each test reads the heap through the counting allocator of `main.rs`.
+//! a join or a filter remembers only the ids it read. A count of
+//! distinct values gives back the room of the values that went. Each
+//! test reads the heap through the counting allocator of `main.rs`.
 
 use super::{
     Condition, Datum, HOUR, Literal, RefKind, Spec, Store, ZONES, Zones, allocations_of, ask,
-    borough, held, id, load_zones, peak, spec, spec_of, trip_row,
+    borough, held, id, load_zones, peak, spec, spec_measuring, spec_of, tip_distinct, trip_row,
 };
 
 /// A truncate gives back the codes of the values the view held, not only
@@ -323,4 +325,122 @@ fn a_cell_coming_and_going_at_the_edge_moves_no_room() {
     let edge = come_and_go(EDGE + 1);
     eprintln!("{edge} allocations at the edge, {away} away from it");
     assert!(edge < away + 64, "{edge} allocations against {away}");
+}
+
+/// A store of the trips with a count of distinct tips and no zones.
+fn distinct_tips() -> Store {
+    Store::new(spec_measuring(&[], Zones::Apart, vec![tip_distinct()]))
+}
+
+/// A trip of `store`'s view in the first cell, with the tip `tip`.
+fn tip_row(store: &Store, tip: &Datum) -> Vec<Datum> {
+    let mut row = trip_row(store, 0, 0);
+    let columns = store.spec().fact("trips").unwrap().columns();
+    for (value, column) in row.iter_mut().zip(columns) {
+        if column.as_str() == "tip" {
+            *value = tip.clone();
+        }
+    }
+    row
+}
+
+/// The trips of the first cell, each with a text tip of its own.
+fn text_tips(store: &Store, tips: i64) -> Vec<Vec<Datum>> {
+    let mut rows = Vec::new();
+    for tip in 0..tips {
+        rows.push(tip_row(store, &Datum::Text(format!("tip {tip}").into())));
+    }
+    rows
+}
+
+/// The heap a store holds after `tips` distinct text tips came into one
+/// cell and all but the first went.
+fn kept_one_of(tips: i64) -> isize {
+    held(|| {
+        let mut store = distinct_tips();
+        let rows = text_tips(&store, tips);
+        for row in &rows {
+            store.add_row("trips", row).unwrap();
+        }
+        for row in &rows[1..] {
+            store.remove_row("trips", row).unwrap();
+        }
+        store
+    })
+}
+
+/// A count of distinct values gives back the room of the values that
+/// went: 100,000 tips, all gone but one, hold about what one tip holds.
+/// Kept, the room of 100,000 values would be MiB.
+#[test]
+fn a_distinct_map_gives_back_the_room_of_its_values() {
+    let one = kept_one_of(1);
+    let many = kept_one_of(100_000);
+    eprintln!("{one} bytes after one tip, {many} after 100,000, all but one gone");
+    assert!(many - one < 8 << 10, "{many} bytes against {one}");
+}
+
+/// A count of distinct values that loses a fifth of its values keeps
+/// its room. Each tip is held twice. The removes of the first copies
+/// change only the counts, and the removes of the second copies take
+/// the values out with no allocation more. The 56,000 values left fit
+/// the room of a smaller map, which a map that shrinks too soon takes.
+#[test]
+fn a_distinct_map_keeps_its_room_when_a_fifth_goes() {
+    let mut store = distinct_tips();
+    let rows = text_tips(&store, 70_000);
+    for row in rows.iter().chain(&rows) {
+        store.add_row("trips", row).unwrap();
+    }
+    let mut remove_a_fifth = || {
+        allocations_of(|| {
+            for row in &rows[..14_000] {
+                store.remove_row("trips", row).unwrap();
+            }
+        })
+    };
+    let counted = remove_a_fifth();
+    let gone = remove_a_fifth();
+    eprintln!("{counted} allocations to count down, {gone} to take a fifth out");
+    assert_eq!(gone, counted, "a fifth of the values gone");
+}
+
+/// The allocations of ten rounds of the tips over 1,000 going and coming
+/// back, in a store that holds 2,000 number tips `copies` times after
+/// one text tip. The text tip keeps a map of values, and a number makes
+/// no allocation of its own.
+fn fall_and_rise(copies: usize) -> usize {
+    let mut store = distinct_tips();
+    let mut rows = Vec::new();
+    for tip in 0..2_000 {
+        rows.push(tip_row(&store, &Datum::Int(tip)));
+    }
+    let first = tip_row(&store, &Datum::Text("first".into()));
+    store.add_row("trips", &first).unwrap();
+    for _ in 0..copies {
+        for row in &rows {
+            store.add_row("trips", row).unwrap();
+        }
+    }
+    allocations_of(|| {
+        for _ in 0..10 {
+            for row in &rows[1_000..] {
+                store.remove_row("trips", row).unwrap();
+            }
+            for row in &rows[1_000..] {
+                store.add_row("trips", row).unwrap();
+            }
+        }
+    })
+}
+
+/// A count of distinct values that moves between 1,000 and 2,000 values
+/// keeps the room of 2,000: its rounds allocate what rounds that change
+/// only the counts allocate.
+#[test]
+fn a_distinct_map_moving_between_sizes_moves_no_room() {
+    let counted = fall_and_rise(2);
+    let moved = fall_and_rise(1);
+    eprintln!("{moved} allocations over ten rounds, {counted} to count only");
+    assert_eq!(moved, counted, "ten falls and rises");
 }

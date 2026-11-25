@@ -223,7 +223,8 @@ over one column share it. A count distinct keeps per-value counts, as a
 min or max does, while its column holds only numbers. At its first
 value of another type it moves to a hash map per cell
 (`DistinctCells`), because the load sets the column types only after
-the states exist. Beside a min, max, mode or percentile on the same
+the states exist. A map gives back its room once it holds under a
+quarter of it. Beside a min, max, mode or percentile on the same
 column it keeps nothing and reads their counts.
 
 A `Projection` maps a dim's key values to the codes of the dim columns
