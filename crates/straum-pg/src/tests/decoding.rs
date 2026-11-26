@@ -158,6 +158,7 @@ fn commits_what_logical_decoding_commits_at_random() {
         "-c",
         "max_prepared_transactions=8",
     ]));
+    let mut done = Done::default();
     for seed in seeds() {
         let mut rng = Rng::new(1_000 + seed);
         let mut db = random_db(&pg, &format!("twin{seed}"), &mut rng);
@@ -181,9 +182,9 @@ fn commits_what_logical_decoding_commits_at_random() {
         let ours = commits_after(pipeline.through_now(&mut db, &mut stream), start);
         assert!(theirs.len() > 50, "seed {seed}: {} commits", theirs.len());
         assert_same_in_order(&ours, &theirs, &format!("seed {seed}"));
-        let done = workload.done;
-        assert!(done.all_ran(), "seed {seed}: {done:?}");
+        done.add(workload.done);
     }
+    assert!(done.all_ran(), "seeds {:?}: {done:?}", seeds());
 }
 
 /// The same workloads under `wal_level = replica`, where PostgreSQL logs
@@ -199,9 +200,13 @@ fn follows_random_workloads_from_a_random_start() {
         "-c",
         "max_prepared_transactions=8",
     ]));
+    let mut done = Done::default();
     for seed in seeds() {
-        follow_from_a_random_start(&pg, &format!("replica{seed}"), seed, Db::physical_writer);
+        let name = format!("replica{seed}");
+        let writer = Db::physical_writer;
+        done.add(follow_from_a_random_start(&pg, &name, seed, writer));
     }
+    assert!(done.all_ran(), "seeds {:?}: {done:?}", seeds());
 }
 
 /// The same workloads on the logical stream: Straum makes its slot at a
@@ -216,20 +221,24 @@ fn follows_random_workloads_from_a_random_logical_start() {
         "-c",
         "max_prepared_transactions=8",
     ]));
+    let mut done = Done::default();
     for seed in seeds() {
-        follow_from_a_random_start(&pg, &format!("logical{seed}"), seed, Db::writer);
+        let name = format!("logical{seed}");
+        done.add(follow_from_a_random_start(&pg, &name, seed, Db::writer));
     }
+    assert!(done.all_ran(), "seeds {:?}: {done:?}", seeds());
 }
 
 /// Runs the workload of `seed` over schema `name` on another thread,
 /// starts the writer `writer_for` makes at a random step of it, goes on
-/// while it streams, and checks its views equal SQL's at the end.
+/// while it streams, and checks its views equal SQL's at the end. Gives
+/// the steps that ran.
 fn follow_from_a_random_start(
     pg: &PostgresContainer,
     name: &str,
     seed: u64,
     writer_for: fn(&Db, &str) -> Writer<Postgres>,
-) {
+) -> Done {
     let mut rng = Rng::new(2_000 + seed);
     let mut db = random_db(pg, name, &mut rng);
     let start_at = rng.below(STEPS);
@@ -264,9 +273,9 @@ fn follow_from_a_random_start(
     );
     started.store(true, Ordering::Release);
     let done = workload.join().unwrap();
-    assert!(done.all_ran(), "seed {seed}: {done:?}");
     let mut next = FIRST_ID_AFTER_THE_WORKLOAD;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    done
 }
 
 /// Trip ids from here on are past every id a workload gives.
@@ -322,7 +331,8 @@ struct Workload {
     done: Done,
 }
 
-/// How often each kind of step ran.
+/// How often each kind of step ran. One seed can miss a kind by chance,
+/// so a test checks the sum over all its seeds.
 #[derive(Debug, Default, Clone, Copy)]
 struct Done {
     insert: u32,
@@ -339,6 +349,21 @@ struct Done {
 }
 
 impl Done {
+    /// Adds the steps of `other`.
+    fn add(&mut self, other: Done) {
+        self.insert += other.insert;
+        self.update += other.update;
+        self.key_change += other.key_change;
+        self.delete += other.delete;
+        self.savepoint += other.savepoint;
+        self.commit += other.commit;
+        self.abort += other.abort;
+        self.prepare += other.prepare;
+        self.ddl += other.ddl;
+        self.checkpoint += other.checkpoint;
+        self.vacuum += other.vacuum;
+    }
+
     /// Whether every kind of step ran at least once.
     fn all_ran(&self) -> bool {
         let counts = [
