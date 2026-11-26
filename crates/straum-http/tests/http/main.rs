@@ -4,7 +4,8 @@
 //! holds the server and the request helpers; the tests are split by route:
 //! `asks.rs`, `views.rs` and `health.rs`, the `Host` a request may
 //! name in `hosts.rs`, the OpenAPI document in `openapi.rs`, and the
-//! connections served at once and their deadline in `connections.rs`.
+//! connections served at once, their deadline and the bytes of unread
+//! answers in `connections.rs`.
 
 mod asks;
 mod connections;
@@ -32,9 +33,11 @@ use crate::fake::{Fake, SPEC, START};
 /// The most rows an ask may get, as `straum run` has it by default.
 const MAX_ANSWER_ROWS: usize = 100_000;
 
-/// The limits `straum run` serves with.
+/// The limits `straum run` serves with. Without `--max-memory`, unread
+/// answers get the 1 GiB of `--max-stream-memory`.
 const SERVE_LIMITS: ServeLimits = ServeLimits {
     max_answer_rows: MAX_ANSWER_ROWS,
+    max_answer_bytes: 1 << 30,
     max_connections: straum_http::MAX_CONNECTIONS,
     connection_deadline: straum_http::CONNECTION_DEADLINE,
     connection_grace: straum_http::CONNECTION_GRACE,

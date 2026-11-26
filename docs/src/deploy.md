@@ -86,6 +86,14 @@ request head for 5 s, from when it opens or from its last reply. Each
 connection can also hold an ask body of up to 1 MiB in memory while
 Straum reads it.
 
+Straum writes each answer whole in memory. It keeps the answer until it
+sends the last byte, so a client that does not read keeps its answer in
+Straum. The answers that Straum has not sent yet may hold a quarter of
+`--max-memory`, or `--max-stream-memory` without `--max-memory`
+([straum run](cli.md#straum-run)). An answer past that gets 503 busy
+([Errors](asks.md#errors)). The bytes come back when the client reads
+its answer, or when its connection closes.
+
 A client that opens more than about 205 idle connections each second
 still holds the limit. Then a health check on that port gets no
 answer, and Kubernetes restarts the pod. `--health-listen ADDRESS`
@@ -227,7 +235,10 @@ process, cells and page memory alike. Set it a little under the memory
 limit, so Straum stops with a line naming it before the kernel kills
 the pod, or, on a shared host, something else. With `--wal physical`
 keep it above `maxPageMemory` plus the cells, or it stops Straum
-before the page memory limit can.
+before the page memory limit can. The answers that Straum has not sent
+yet may hold a quarter of `maxMemory` ([Connections](#connections)).
+Without `maxMemory`, they may hold `maxStreamMemory`, on top of the
+cells.
 
 A certificate authority (CA) Straum does not already trust, such as
 Amazon RDS's or Cloud SQL's ([Connect](postgresql.md#2-connect)), is a

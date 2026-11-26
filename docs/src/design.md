@@ -343,6 +343,15 @@ An ask builds at most `--max-answer-rows` rows, 100,000 by default, and
 an answer with more is 400: it is written whole in memory, so an ask over
 every key of a large view could take more than the process may hold.
 
+The turn ends when the answer is written, before hyper sends it. Then
+the answer takes one permit for each of its bytes from a second
+semaphore. That semaphore holds a quarter of `--max-memory`, or
+`--max-stream-memory` without it. The answer is 503 busy when too few
+permits are free. The permits go in the
+body's `Bytes`, because hyper drops the body once it queues the last
+frame. They come back when hyper sends the last byte or drops the
+connection, so a client that does not read holds its answer's bytes.
+
 The answer carries `as_of` from the `Lag`, the applied LSN in the
 `Straum-LSN` header and `Cache-Control: no-store`. It is JSON, or a
 table in plain text for an ask sent with `Accept: text/plain`.

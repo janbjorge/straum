@@ -31,7 +31,7 @@ use std::thread;
 use rustyline::error::ReadlineError;
 use straum_app::{App, MemoryReadings, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
-use straum_http::{AskSyntax, Listeners, QueryError};
+use straum_http::{AskSyntax, Listeners, QueryError, ServeLimits};
 use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, PgEnv, Postgres, Replication};
 
@@ -496,13 +496,20 @@ fn run(
         main: listener,
         health: health.map(|bound| bound.listener),
     };
+    let serve_limits = ServeLimits {
+        max_answer_rows,
+        max_answer_bytes: answer_bytes(max_memory, limits.max_stream_memory),
+        max_connections: straum_http::MAX_CONNECTIONS,
+        connection_deadline: straum_http::CONNECTION_DEADLINE,
+        connection_grace: straum_http::CONNECTION_GRACE,
+    };
     straum_http::serve_until_signal(
         listeners,
         app,
         syntax,
         definitions,
         allow_hosts,
-        max_answer_rows,
+        serve_limits,
         say_stopping,
     )
     .map_err(Failure::Serving)?;
@@ -510,6 +517,17 @@ fn run(
     // Leaving closes the replication connections, and PostgreSQL drops
     // their temporary slots.
     Ok(())
+}
+
+/// The bytes that unread answers may hold: a quarter of `--max-memory`, as
+/// the chart gives `maxStreamMemory` a quarter of the memory limit. Without
+/// `--max-memory`, `--max-stream-memory`: it bounds the commits that wait
+/// for the writer, as this bounds the answers that wait for a client.
+fn answer_bytes(max_memory: Option<u64>, max_stream_memory: usize) -> usize {
+    match max_memory {
+        Some(bytes) => usize::try_from(bytes / 4).unwrap_or(usize::MAX),
+        None => max_stream_memory,
+    }
 }
 
 /// A socket bound for HTTP, and the address it took: with port 0 the
@@ -623,6 +641,21 @@ mod tests {
         };
         let first = errors[0].to_string();
         assert!(first.starts_with("line 1: "), "{first}");
+    }
+
+    #[test]
+    fn unread_answers_get_a_quarter_of_max_memory() {
+        assert_eq!(answer_bytes(Some(4 << 30), 1 << 30), 1 << 30);
+        assert_eq!(answer_bytes(Some(7), 1 << 30), 1);
+        assert_eq!(answer_bytes(Some(3), 1 << 30), 0);
+        let quarter = usize::try_from(u64::MAX / 4).unwrap_or(usize::MAX);
+        assert_eq!(answer_bytes(Some(u64::MAX), 1 << 30), quarter);
+    }
+
+    #[test]
+    fn unread_answers_get_max_stream_memory_without_max_memory() {
+        assert_eq!(answer_bytes(None, 256 << 20), 256 << 20);
+        assert_eq!(answer_bytes(None, usize::MAX), usize::MAX);
     }
 
     #[test]

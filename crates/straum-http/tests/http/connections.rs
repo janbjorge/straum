@@ -1,5 +1,6 @@
 //! What a client may hold of the server: the connections served at once,
-//! and how long one stays open. Each test serves with a small limit and
+//! how long one stays open, and the bytes of answers that clients have not
+//! read. Each test serves with a small limit and
 //! waits on what the socket gives back: a reply, or the connection's end.
 
 use std::io::{ErrorKind, Read, Write};
@@ -8,10 +9,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use straum_app::Writer;
 use straum_http::{HEADER_TIMEOUT, ServeLimits};
 
-use crate::fake::{loaded, writer};
-use crate::{SERVE_LIMITS, STATUS_CODE, first_hour, read_reply, serve_limited, serve_with_health};
+use crate::fake::{Fake, LIMITS, fake, int, loaded, trip, writer, writer_with};
+use crate::{
+    SERVE_LIMITS, STATUS_CODE, first_hour, read_reply, send, serve_limited, serve_with_health,
+};
 
 /// Fires only if the server stalls: every wait below ends far sooner.
 const HANG_GUARD: Duration = Duration::from_secs(20);
@@ -271,5 +275,113 @@ fn a_connection_that_sends_a_head_in_time_is_served() {
     slow.set_read_timeout(Some(HANG_GUARD)).unwrap();
     thread::sleep(IN_TIME);
     assert_eq!(livez_kept_open(&mut slow, server.address), 200);
+    server.stop();
+}
+
+/// Kinds of trip in each hour. Each hour and kind is a row of its own,
+/// so a day of them is an answer of some megabytes. That is far past
+/// what the two sockets buffer, so a client that does not read it leaves
+/// most of it in the server.
+const KINDS: i64 = 4_000;
+
+/// Every hour and kind of 2024-01-01.
+const EVERY_ROW: &str = r#"{"query": "SELECT bucket, kind, zone_id, trips, fare FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY bucket, kind, zone_id", "parameters": ["2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z"]}"#;
+
+/// A trip for each hour of 2024-01-01 and each of [`KINDS`] kinds, loaded.
+fn many_rows() -> Writer<Fake> {
+    let mut trips = Vec::new();
+    for hour in 0..24 {
+        for kind in 0..KINDS {
+            trips.push(trip(hour, kind, 1, int(100)));
+        }
+    }
+    let mut writer = writer_with(LIMITS, Fake { trips, ..fake() });
+    writer.step().unwrap();
+    writer
+}
+
+/// `POST /ask` of [`EVERY_ROW`], closing the connection after the reply.
+fn ask_every_row(address: SocketAddr) -> String {
+    format!(
+        "POST /ask HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n\
+         content-type: application/json\r\ncontent-length: {}\r\n\r\n{EVERY_ROW}",
+        EVERY_ROW.len()
+    )
+}
+
+/// Reads a reply's head and no more of its body than comes with it; its
+/// status and its body's length.
+fn head_only(stream: &mut TcpStream) -> (u16, usize) {
+    let mut read = Vec::new();
+    let mut buffer = [0; 1024];
+    loop {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "closed in the head");
+        read.extend_from_slice(&buffer[..count]);
+        let text = String::from_utf8_lossy(&read);
+        if let Some((head, _)) = text.split_once("\r\n\r\n") {
+            return (head[STATUS_CODE].parse().unwrap(), content_length(head));
+        }
+    }
+}
+
+/// The limits with `bytes` for the answers that clients have not read.
+fn answer_budget(bytes: usize) -> ServeLimits {
+    ServeLimits {
+        max_answer_bytes: bytes,
+        ..SERVE_LIMITS
+    }
+}
+
+/// A client that does not read its answer holds it in the server. With a
+/// budget of one and a half answers, a second ask gets 503 while the
+/// first is unread, and 200 once the first is read.
+#[test]
+fn an_ask_past_the_bytes_of_unread_answers_is_refused() {
+    let writer = many_rows();
+    // A first server tells about how long the answer is: its `as_of`
+    // can change the length by a few bytes.
+    let probe = serve_limited(writer.app().clone(), SERVE_LIMITS);
+    let reply = send(probe.address, &ask_every_row(probe.address));
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let budget = reply.body.len() * 3 / 2;
+    probe.stop();
+
+    let server = serve_limited(writer.app().clone(), answer_budget(budget));
+    let mut unread = TcpStream::connect(server.address).unwrap();
+    unread.set_read_timeout(Some(HANG_GUARD)).unwrap();
+    unread
+        .write_all(ask_every_row(server.address).as_bytes())
+        .unwrap();
+    let (status, length) = head_only(&mut unread);
+    assert_eq!(status, 200);
+
+    let refused = send(server.address, &ask_every_row(server.address));
+    assert_eq!(
+        refused.status,
+        503,
+        "the server holds an unread answer of {length} bytes of a budget of \
+         {budget}, and still answered another of {} bytes",
+        refused.body.len()
+    );
+    // Its own answer's length can differ from the first's by a few bytes.
+    let error = "busy: unread answers hold the memory that this answer of ";
+    assert!(
+        refused
+            .body
+            .starts_with(&format!("{{\"errors\":[\"{error}"))
+            && refused
+                .body
+                .ends_with(" bytes needs; ask again shortly, or narrow the ask\"]}"),
+        "{}",
+        refused.body
+    );
+
+    // The server closes the first once it sent all of it, and its bytes
+    // are free again.
+    let mut rest = Vec::new();
+    unread.read_to_end(&mut rest).unwrap();
+    let answered = send(server.address, &ask_every_row(server.address));
+    assert_eq!(answered.status, 200, "{}", answered.body);
     server.stop();
 }

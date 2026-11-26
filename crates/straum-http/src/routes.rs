@@ -128,12 +128,12 @@ pub(crate) async fn handle(
 ) -> Result<Reply, Infallible> {
     let Served {
         app,
-        syntax,
         definitions,
         hosts,
         max_answer_rows,
         turns,
         health_only,
+        ..
     } = &*served;
     let (parts, body) = request.into_parts();
     // 421, as for a name this server does not serve: the request was not
@@ -162,7 +162,7 @@ pub(crate) async fn handle(
                     max_rows: *max_answer_rows,
                 };
                 let writing = Writing { format, rows };
-                post_ask(body, app, turns, *syntax, writing).await
+                post_ask(body, &served, writing).await
             } else {
                 let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
                 format.errors(StatusCode::UNSUPPORTED_MEDIA_TYPE, &[error])
@@ -184,7 +184,7 @@ pub(crate) async fn handle(
             let named = &path[ROWS_PREFIX.len()..];
             match named.strip_suffix(SPEC_SUFFIX) {
                 Some(view) => get_spec(definitions, view),
-                None => get_rows(app, turns, syntax.describe, named, parts.uri.query()).await,
+                None => get_rows(&served, named, parts.uri.query()).await,
             }
         }
         (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET, HEAD"),
@@ -202,6 +202,39 @@ fn take_turn(turns: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
 /// The reply when every turn to read the store is taken.
 fn busy(format: Format) -> Reply {
     let error = "busy: every core is answering an ask; ask again shortly";
+    format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
+}
+
+/// One of `answer_bytes`' permits for each of `count` bytes, if that many
+/// are free. A count past what a semaphore or `u32` holds never fits.
+fn take_bytes(answer_bytes: &Arc<Semaphore>, count: usize) -> Option<OwnedSemaphorePermit> {
+    if count > Semaphore::MAX_PERMITS {
+        return None;
+    }
+    let count = u32::try_from(count).ok()?;
+    Arc::clone(answer_bytes).try_acquire_many_owned(count).ok()
+}
+
+/// An answer's body and its bytes of the budget, which go back when hyper
+/// drops the last of the body.
+struct Unread {
+    body: Vec<u8>,
+    _bytes: OwnedSemaphorePermit,
+}
+
+impl AsRef<[u8]> for Unread {
+    fn as_ref(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+/// The reply when the answers that clients have not read leave too few
+/// bytes for this one.
+fn no_bytes(format: Format, count: usize) -> Reply {
+    let error = format!(
+        "busy: unread answers hold the memory that this answer of {count} bytes needs; \
+         ask again shortly, or narrow the ask"
+    );
     format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
 }
 
@@ -252,13 +285,8 @@ fn refused(range: &str) -> bool {
     false
 }
 
-async fn post_ask(
-    body: Incoming,
-    app: &App,
-    turns: &Arc<Semaphore>,
-    syntax: AskSyntax,
-    writing: Writing,
-) -> Reply {
+async fn post_ask(body: Incoming, served: &Served, writing: Writing) -> Reply {
+    let syntax = served.syntax;
     let format = writing.format;
     let start = Instant::now();
     let collected = Limited::new(body, MAX_ASK_BYTES).collect();
@@ -280,7 +308,7 @@ async fn post_ask(
             return format.errors(StatusCode::BAD_REQUEST, &[error]);
         }
     };
-    let Some(turn) = take_turn(turns) else {
+    let Some(turn) = take_turn(&served.turns) else {
         return busy(format);
     };
     let parsing = Instant::now();
@@ -295,16 +323,7 @@ async fn post_ask(
         Err(error) => panic::resume_unwind(error.into_panic()),
     };
     let parse_time = parsing.elapsed();
-    answer(
-        app,
-        asked,
-        writing,
-        syntax.describe,
-        parse_time,
-        start,
-        turn,
-    )
-    .await
+    answer(served, asked, writing, parse_time, start, turn).await
 }
 
 /// The ask a body holds, or every error in it.
@@ -347,15 +366,9 @@ fn no_view(view: &str) -> Reply {
     )
 }
 
-async fn get_rows(
-    app: &App,
-    turns: &Arc<Semaphore>,
-    describe: DescribeAskError,
-    view: &str,
-    query: Option<&str>,
-) -> Reply {
+async fn get_rows(served: &Served, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
-    let Some(asked) = app.rows_ask(view) else {
+    let Some(asked) = served.app.rows_ask(view) else {
         return no_view(view);
     };
     let window = match rows_window(query.unwrap_or("")) {
@@ -366,10 +379,10 @@ async fn get_rows(
         format: Format::Text,
         rows: Rows::Window(window),
     };
-    let Some(turn) = take_turn(turns) else {
+    let Some(turn) = take_turn(&served.turns) else {
         return busy(Format::Text);
     };
-    answer(app, asked, writing, describe, Duration::ZERO, start, turn).await
+    answer(served, asked, writing, Duration::ZERO, start, turn).await
 }
 
 /// The rows `GET /views/NAME` writes, from `start` and `count` in its
@@ -491,12 +504,12 @@ fn within_answer_rows(cut: Cut, max_rows: usize) -> Result<(), Unwritten> {
 
 /// The answer to `asked` on a blocking thread, holding `turn` till it is
 /// written: a client that hangs up stops neither, so the turn is not
-/// freed while the store is still being read.
+/// freed while the store is still being read. The written answer then
+/// holds its bytes of the budget until hyper sends it.
 async fn answer(
-    app: &App,
+    served: &Served,
     asked: Ask,
     writing: Writing,
-    describe: DescribeAskError,
     parse_time: Duration,
     start: Instant,
     turn: OwnedSemaphorePermit,
@@ -506,7 +519,7 @@ async fn answer(
     if !range_errors.is_empty() {
         return format.errors(StatusCode::BAD_REQUEST, &range_errors);
     }
-    let app = app.clone();
+    let app = served.app.clone();
     // A big ask reads every cell of a fact, so it runs off the async
     // threads.
     let answered = tokio::task::spawn_blocking(move || {
@@ -515,8 +528,14 @@ async fn answer(
     })
     .await;
     match answered {
-        Ok(Ok(timed)) => answered_reply(timed, format, parse_time, start),
-        Ok(Err(error)) => answer_error(&error, describe, format),
+        Ok(Ok(timed)) => {
+            let count = timed.body.len();
+            let Some(bytes) = take_bytes(&served.answer_bytes, count) else {
+                return no_bytes(format, count);
+            };
+            answered_reply(timed, bytes, format, parse_time, start)
+        }
+        Ok(Err(error)) => answer_error(&error, served.syntax.describe, format),
         // A panic is not the ask's error: pass it on, and send no reply.
         Err(error) => panic::resume_unwind(error.into_panic()),
     }
@@ -559,8 +578,21 @@ struct Phase {
     took: Duration,
 }
 
-fn answered_reply(timed: Timed, format: Format, parse_time: Duration, start: Instant) -> Reply {
-    let mut reply = respond(StatusCode::OK, format.content_type(), timed.body);
+fn answered_reply(
+    timed: Timed,
+    bytes: OwnedSemaphorePermit,
+    format: Format,
+    parse_time: Duration,
+    start: Instant,
+) -> Reply {
+    let mut reply = respond(StatusCode::OK, format.content_type(), Vec::new());
+    // The permit goes in the Bytes, not the body: hyper 1.12 drops the body
+    // once it queues the last frame (proto/h1/dispatch.rs), before it sends it.
+    let unread = Unread {
+        body: timed.body,
+        _bytes: bytes,
+    };
+    *reply.body_mut() = Full::new(Bytes::from_owner(unread));
     let lsn = HeaderValue::try_from(timed.applied.to_string()).expect("an LSN is ASCII");
     reply.headers_mut().insert(LSN, lsn);
     // total also holds reading the body and the hops to and from the
@@ -770,6 +802,37 @@ mod tests {
         for (query, error) in wrong {
             assert_eq!(rows_window(query), Err(error.to_owned()), "{query}");
         }
+    }
+
+    #[test]
+    fn an_answer_takes_its_bytes_while_they_are_free() {
+        let answer_bytes = Arc::new(Semaphore::new(3));
+        let taken = take_bytes(&answer_bytes, 3).unwrap();
+        assert_eq!(answer_bytes.available_permits(), 0);
+        assert!(take_bytes(&answer_bytes, 1).is_none());
+        // The bytes come back with the last of the body.
+        let body = Bytes::from_owner(Unread {
+            body: b"abc".to_vec(),
+            _bytes: taken,
+        });
+        let copy = body.clone();
+        drop(body);
+        assert_eq!(answer_bytes.available_permits(), 0);
+        assert_eq!(&copy[..], b"abc");
+        drop(copy);
+        assert_eq!(answer_bytes.available_permits(), 3);
+        assert!(take_bytes(&answer_bytes, 0).is_some());
+    }
+
+    #[test]
+    fn an_answer_past_the_budget_or_a_u32_takes_no_bytes() {
+        let answer_bytes = Arc::new(Semaphore::new(Semaphore::MAX_PERMITS));
+        assert!(take_bytes(&Arc::new(Semaphore::new(3)), 4).is_none());
+        let past_u32 = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+        assert!(take_bytes(&answer_bytes, past_u32).is_none());
+        assert!(take_bytes(&answer_bytes, Semaphore::MAX_PERMITS + 1).is_none());
+        assert!(take_bytes(&answer_bytes, usize::MAX).is_none());
+        assert_eq!(answer_bytes.available_permits(), Semaphore::MAX_PERMITS);
     }
 
     #[test]

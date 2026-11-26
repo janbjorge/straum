@@ -289,6 +289,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | 421 | The `Host` is none `--allow-hosts` lists, or Straum listens on loopback and the `Host` names another machine or port, on every endpoint ([Who can ask](deploy.md#who-can-ask)). |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 | 503 | `{"errors": ["busy: every core is answering an ask; ask again shortly"]}`: Straum answers as many asks at once as it has cores, and `GET /views` and `GET /views/NAME` count as asks. Retry. |
+| 503 | `{"errors": ["busy: unread answers hold the memory that this answer of N bytes needs; ask again shortly, or narrow the ask"]}`: the answers that Straum has not sent yet hold all the bytes that they may hold ([Connections](deploy.md#connections)). `GET /views/NAME` counts too. Retry, or narrow an answer that is larger than all of them. |
 
 No ask is answered 500: a panic in Straum ends the process rather than
 answering from a store it may have left half written, and the client

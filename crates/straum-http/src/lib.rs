@@ -20,8 +20,10 @@
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer
 //!   or whose answer has more rows than `serve` is told it may, 503 while a
-//!   table it reads isn't ready or while every core answers another ask. With `Accept: text/plain` the
-//!   answer is a table and the errors are lines, for people (ADR-0011).
+//!   table it reads isn't ready or while every core answers another ask.
+//!   It is 503 too while unread answers hold the bytes this answer needs.
+//!   With `Accept: text/plain` the answer is a table and the errors are
+//!   lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /openapi.json`: the OpenAPI document of these routes, the
 //!   crate's `openapi.json`; its JSON bodies are the contract.
@@ -89,14 +91,14 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// How long a stop waits for the requests in flight: inside the 30 s a
 /// Kubernetes pod gets before it is killed.
 pub const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
-/// The connections `serve_until_signal` serves at once: each can hold an
-/// answer of `max_answer_rows` rows and a file descriptor.
+/// The connections `straum run` serves at once: each holds a file
+/// descriptor, and its answer within `max_answer_bytes`.
 pub const MAX_CONNECTIONS: usize = 1024;
-/// How long `serve_until_signal` keeps a connection open: far past any
-/// answer a client reads, so only a client that stalls is cut.
+/// How long `straum run` keeps a connection open: far past any answer a
+/// client reads, so only a client that stalls is cut.
 pub const CONNECTION_DEADLINE: Duration = Duration::from_secs(300);
-/// How long `serve_until_signal` lets a connection past its deadline
-/// finish the request in flight: far past any answer a client reads.
+/// How long `straum run` lets a connection past its deadline finish the
+/// request in flight: far past any answer a client reads.
 pub const CONNECTION_GRACE: Duration = Duration::from_secs(60);
 /// How long a connection may take to send a request head, at its start
 /// and after each reply. hyper's own 30 s let idle connections fill
@@ -122,6 +124,10 @@ pub struct ServeLimits {
     /// a large view could take more than the process may hold; past this
     /// it is refused.
     pub max_answer_rows: usize,
+    /// The bytes that all answers not yet sent may hold. A client that
+    /// does not read keeps its answer in memory until its connection
+    /// closes; an answer past this gets 503.
+    pub max_answer_bytes: usize,
     /// The connections served at once. A connection past them waits in
     /// the listen backlog until one closes.
     pub max_connections: usize,
@@ -183,6 +189,9 @@ struct Served {
     /// done, so asks without end can't keep the writer from the store's
     /// lock, which a waiting writer would hold every new reader behind.
     turns: Arc<Semaphore>,
+    /// One per byte of [`ServeLimits::max_answer_bytes`]: an answer holds
+    /// one per byte of its body until hyper sends the last byte.
+    answer_bytes: Arc<Semaphore>,
     /// On the health listener: every route but `/livez` and `/readyz`
     /// gets 404.
     health_only: bool,
@@ -194,8 +203,8 @@ struct Served {
 /// time enabled. With `named_hosts`, each `NAME[:PORT]`, a request whose
 /// `Host` is none of them gets 421; with none, the address decides. On
 /// the health listener its address always decides.
-/// `limits` caps each answer's rows, the connections served at once and
-/// how long each stays open.
+/// `limits` caps each answer's rows, the bytes of unread answers, the
+/// connections served at once and how long each stays open.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 pub async fn serve(
     listeners: Listeners,
@@ -218,6 +227,9 @@ pub async fn serve(
         hosts,
         max_answer_rows: limits.max_answer_rows,
         turns: Arc::new(Semaphore::new(cores)),
+        answer_bytes: Arc::new(Semaphore::new(
+            limits.max_answer_bytes.min(Semaphore::MAX_PERMITS),
+        )),
         health_only: false,
     };
     let (stop, stopping) = watch::channel(false);
@@ -229,6 +241,7 @@ pub async fn serve(
             definitions: Vec::new(),
             hosts: Hosts::of(health.local_addr()?, Vec::new()),
             turns: Arc::clone(&served.turns),
+            answer_bytes: Arc::clone(&served.answer_bytes),
             health_only: true,
             ..served
         };
@@ -323,14 +336,14 @@ fn to_tokio(listener: net::TcpListener) -> io::Result<TcpListener> {
 /// [`DRAIN_DEADLINE`], and returns; a second signal returns at once. The
 /// caller stays synchronous, since only this crate runs tokio (ADR-0002).
 /// `stopping` runs when the first signal arrives; `named_hosts` and
-/// `max_answer_rows` as for [`serve`].
+/// `limits` as for [`serve`].
 pub fn serve_until_signal(
     listeners: Listeners,
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
     named_hosts: Vec<String>,
-    max_answer_rows: usize,
+    limits: ServeLimits,
     stopping: fn(),
 ) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -355,12 +368,6 @@ pub fn serve_until_signal(
     let second = async move {
         either_signal(&mut terminate_again, &mut interrupt_again).await;
         either_signal(&mut terminate_again, &mut interrupt_again).await;
-    };
-    let limits = ServeLimits {
-        max_answer_rows,
-        max_connections: MAX_CONNECTIONS,
-        connection_deadline: CONNECTION_DEADLINE,
-        connection_grace: CONNECTION_GRACE,
     };
     let served = serve(
         listeners,
