@@ -550,9 +550,11 @@ fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
 
 /// While Straum waits for a snapshot that sees DDL, the stream thread
 /// reads nothing, so it answers the server there too. A wait past a
-/// `wal_sender_timeout` of 4 s keeps the stream, and the commits after
+/// `wal_sender_timeout` of 2 s keeps the stream, and the commits after
 /// the DDL apply. The thread answers about once a second, not at each
-/// look for the snapshot.
+/// look for the snapshot. The test holds the DDL for 3 s only. A commit
+/// becomes visible only after the checkpointer reads the release, and a
+/// checkpoint can delay that by seconds.
 #[test]
 fn the_ddl_wait_outlasts_wal_sender_timeout() {
     let pg = replica_with_short_sender_timeout();
@@ -578,7 +580,7 @@ fn the_ddl_wait_outlasts_wal_sender_timeout() {
         // times count the updates that the walsender read.
         let mut replies = BTreeSet::new();
         let window = Instant::now();
-        while window.elapsed() < Duration::from_secs(6) {
+        while window.elapsed() < Duration::from_secs(3) {
             replies.extend(
                 watch
                     .rows("SELECT reply_time::text FROM pg_stat_replication")
@@ -597,10 +599,10 @@ fn the_ddl_wait_outlasts_wal_sender_timeout() {
     apply_through(&mut writer, written, &wait);
     let (senders, replies) = release.join().unwrap();
     assert_eq!(senders, vec![vec![Some("1".to_owned())]]);
-    // About one update each second of the 6 s: some, but not a tight loop.
+    // About one update each second of the 3 s: some, but not a tight loop.
     assert!(
-        (3..=10).contains(&replies),
-        "{replies} status updates in 6 s"
+        (2..=5).contains(&replies),
+        "{replies} status updates in 3 s"
     );
     alter.join().unwrap();
 }
@@ -632,9 +634,9 @@ fn the_ddl_wait_still_ends_after_ten_seconds() {
 }
 
 /// PostgreSQL at `wal_level = replica` that ends a stream with no reply
-/// for 4 s.
+/// for 2 s.
 fn replica_with_short_sender_timeout() -> PostgresContainer {
-    plain(image(&tag()).with_cmd(&["-c", "wal_level=replica", "-c", "wal_sender_timeout=4s"]))
+    plain(image(&tag()).with_cmd(&["-c", "wal_level=replica", "-c", "wal_sender_timeout=2s"]))
 }
 
 /// Commits an `ALTER TABLE` that a synchronous standby that doesn't
