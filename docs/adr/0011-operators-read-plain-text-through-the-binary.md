@@ -1,6 +1,6 @@
 # ADR-0011: Operators read plain text through the binary
 
-Status: Accepted 2026-11-10; revised 2026-11-24
+Status: Accepted 2026-11-10; revised 2026-11-26
 
 ## Context
 
@@ -17,6 +17,8 @@ was one block printed on every argument error.
 A DSN never comes from an argument. `straum plan` and `straum run`
 read `STRAUM_DSN` or `--dsn-file`. When neither is set, they read
 libpq's variables, `PGHOST` and the rest. A set `STRAUM_DSN` wins.
+`straum run` also takes the file from `STRAUM_DSN_FILE`, after
+`--dsn-file` and before `STRAUM_DSN` (ADR-0019).
 Arguments are read by hand, as getopt reads long options: a flag takes
 the next word or the text after `=`.
 `straum plan` makes the DSN's user the role, with its password as a

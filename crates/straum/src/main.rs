@@ -36,7 +36,9 @@ use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, PgEnv, Postgres, Replication};
 
 use crate::client::{ClientError, Server};
-use crate::command_line::{Command, Environment, Plan, Printed, ROLE, Run, URL_VARIABLE, command};
+use crate::command_line::{
+    Command, Environment, Plan, Printed, ROLE, RUN_VARIABLES, Run, URL_VARIABLE, command,
+};
 use crate::help::HELP;
 use crate::memory::MemoryError;
 use crate::shell::PipeError;
@@ -157,8 +159,15 @@ impl From<DsnError> for Failure {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    let mut variables = Vec::new();
+    for (_, variable) in RUN_VARIABLES {
+        if let Ok(value) = env::var(variable) {
+            variables.push((variable.to_owned(), value));
+        }
+    }
     let environment = Environment {
         url: env::var(URL_VARIABLE).ok(),
+        variables,
     };
     let command = match command(&args, &environment) {
         Ok(command) => command,

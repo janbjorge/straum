@@ -119,7 +119,9 @@ stream](how-it-works.md#the-physical-stream) says why.
 ## 2. Connect
 
 Straum reads its data source name (DSN) from the file `--dsn-file`
-names, else from `STRAUM_DSN`, never from the command line:
+names, else from `STRAUM_DSN`, never from the command line.
+`straum run` also takes the file from `STRAUM_DSN_FILE` when the line
+has no `--dsn-file` ([Flags](cli.md#flags)):
 
 ```text
 postgres://straum:PASSWORD@db.example.com:5432/app

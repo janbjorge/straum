@@ -42,6 +42,12 @@ whether it is loaded and within `--max-lag` of PostgreSQL, `GET /livez`
 whether the process serves ([endpoints](asks.md#endpoints)). A Straum
 that lags still answers asks, each with its `as_of` ([States](#states)).
 
+An orchestrator can set each flag of `straum run` as a variable
+instead, as `STRAUM_MAX_MEMORY` for `--max-memory`
+([Flags](cli.md#flags)). A Kubernetes ConfigMap with `envFrom`, a
+Compose `environment` and an ECS `environment` can each hold them. The
+spec stays an argument.
+
 ## Who can ask
 
 Straum has no authentication and no TLS: anyone who reaches its port

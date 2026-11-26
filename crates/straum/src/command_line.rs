@@ -53,6 +53,24 @@ const URL_FLAG: &str = "--url";
 const TIMEOUT_FLAG: &str = "--timeout";
 /// The environment variable that names the URL when `--url` doesn't.
 pub(crate) const URL_VARIABLE: &str = "STRAUM_URL";
+/// Each flag of `straum run` and the variable that sets it when the line
+/// does not. Each name is `STRAUM_` and the flag in capitals, so that an
+/// orchestrator can set each flag in the environment.
+pub(crate) const RUN_VARIABLES: [(&str, &str); 13] = [
+    (LISTEN_FLAG, "STRAUM_LISTEN"),
+    (HEALTH_LISTEN_FLAG, "STRAUM_HEALTH_LISTEN"),
+    (ALLOW_HOSTS_FLAG, "STRAUM_ALLOW_HOSTS"),
+    (WAL_FLAG, "STRAUM_WAL"),
+    (PUBLICATION_FLAG, "STRAUM_PUBLICATION"),
+    (DSN_FILE_FLAG, "STRAUM_DSN_FILE"),
+    (MAX_LAG_FLAG, "STRAUM_MAX_LAG"),
+    (MAX_RETAINED_WAL_FLAG, "STRAUM_MAX_RETAINED_WAL"),
+    (MAX_TRANSACTION_ROWS_FLAG, "STRAUM_MAX_TRANSACTION_ROWS"),
+    (MAX_ANSWER_ROWS_FLAG, "STRAUM_MAX_ANSWER_ROWS"),
+    (MAX_PAGE_MEMORY_FLAG, "STRAUM_MAX_PAGE_MEMORY"),
+    (MAX_STREAM_MEMORY_FLAG, "STRAUM_MAX_STREAM_MEMORY"),
+    (MAX_MEMORY_FLAG, "STRAUM_MAX_MEMORY"),
+];
 const FOUR_GIBIBYTES: u64 = 4 << 30;
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
@@ -88,6 +106,8 @@ const TIMEOUT_TAKES: &str = "whole seconds from 1 to 86400";
 /// What `--max-retained-wal` and `--max-memory` take, as their errors
 /// say.
 const BYTE_LIMIT_TAKES: &str = "bytes above 0, as 4294967296 or 4Gi";
+/// What `--wal` takes, as its error says.
+const WAL_TAKES: &str = "logical or physical";
 /// What `--allow-hosts` takes, as its error says.
 const ALLOW_HOSTS_TAKES: &str = "names with their port, as localhost:8080,127.0.0.1:8080";
 
@@ -309,7 +329,6 @@ pub(crate) enum UsageError {
         flag: &'static str,
         other: &'static str,
     },
-    BadWal(String),
     /// `run`, or `plan` printing the setup, without `--wal`.
     NeedsWal(Name),
 }
@@ -355,9 +374,6 @@ impl Display for UsageError {
             UsageError::Together { flag, other } => {
                 write!(formatter, "{flag} and {other} don't go together")
             }
-            UsageError::BadWal(value) => {
-                write!(formatter, "--wal takes logical or physical, not {value:?}")
-            }
             UsageError::NeedsWal(command) => write!(
                 formatter,
                 "straum {} needs --wal logical or --wal physical",
@@ -372,6 +388,8 @@ impl Display for UsageError {
 pub(crate) struct Environment {
     /// `STRAUM_URL`, if set.
     pub(crate) url: Option<String>,
+    /// The variables of `RUN_VARIABLES` that are set, each with its value.
+    pub(crate) variables: Vec<(String, String)>,
 }
 
 impl Environment {
@@ -381,6 +399,16 @@ impl Environment {
             Some(url) if !url.is_empty() => url,
             _ => URL,
         }
+    }
+
+    /// The value of the variable `name`, unless it is unset or empty.
+    fn variable(&self, name: &str) -> Option<&str> {
+        for (set, value) in &self.variables {
+            if set == name && !value.is_empty() {
+                return Some(value);
+            }
+        }
+        None
     }
 }
 
@@ -400,7 +428,7 @@ pub(crate) fn command(args: &[String], environment: &Environment) -> Result<Comm
     };
     let name = Name::parse(first);
     let parsed = match name {
-        Some(name) => flags(name, rest, environment.url()),
+        Some(name) => flags(name, rest, environment),
         None => help_or_version(first, rest),
     };
     match parsed {
@@ -471,7 +499,8 @@ fn query_at(rest: &[String]) -> usize {
     at.min(rest.len())
 }
 
-fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> {
+fn flags(name: Name, rest: &[String], environment: &Environment) -> Result<Command, UsageError> {
+    let url = environment.url();
     // The query and its parameters are read as written, so a parameter
     // may be `-h` or a negative number. Everywhere else, -h anywhere
     // asks for help.
@@ -509,7 +538,11 @@ fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> 
             ask_command(&Flags::read(name, rest)?, query, url)
         }
         Name::Plan => plan_command(&Flags::read(name, rest)?),
-        Name::Run => run_command(&Flags::read(name, rest)?),
+        Name::Run => {
+            let mut flags = Flags::read(name, rest)?;
+            flags.add_variables(environment);
+            run_command(&flags)
+        }
     }
 }
 
@@ -575,7 +608,12 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     };
     let replication = flags.replication(Name::Run)?;
     let is_physical = matches!(replication, Replication::Physical { .. });
-    if flags.value(MAX_PAGE_MEMORY_FLAG).is_some() && !is_physical {
+    // Straum ignores the variable when it does not apply, so that one set
+    // of variables can serve both WALs. It refuses the flag.
+    let on_line = flags
+        .given(MAX_PAGE_MEMORY_FLAG)
+        .is_some_and(|given| given.variable.is_none());
+    if on_line && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
     let max_lag = flags.parsed(
@@ -654,10 +692,13 @@ impl Written<'_> {
     }
 }
 
-/// One flag on the line and the value after it.
+/// One flag on the line and the value after it, or a flag and the value
+/// of its variable.
 struct Given {
     flag: String,
     value: String,
+    /// The variable that gave the value, if the line did not.
+    variable: Option<&'static str>,
 }
 
 /// The flags on one command's line, each with its value, the switches,
@@ -726,18 +767,35 @@ impl Flags {
             flags.given.push(Given {
                 flag: flag.to_owned(),
                 value: value.to_owned(),
+                variable: None,
             });
         }
         Ok(flags)
     }
 
-    fn value(&self, flag: &str) -> Option<&str> {
-        for given in &self.given {
-            if given.flag == flag {
-                return Some(&given.value);
+    /// Adds the variable of each flag of `straum run` that the line
+    /// leaves out, so that a flag on the line wins.
+    fn add_variables(&mut self, environment: &Environment) {
+        for (flag, variable) in RUN_VARIABLES {
+            if self.value(flag).is_some() {
+                continue;
+            }
+            if let Some(value) = environment.variable(variable) {
+                self.given.push(Given {
+                    flag: flag.to_owned(),
+                    value: value.to_owned(),
+                    variable: Some(variable),
+                });
             }
         }
-        None
+    }
+
+    fn given(&self, flag: &str) -> Option<&Given> {
+        self.given.iter().find(|given| given.flag == flag)
+    }
+
+    fn value(&self, flag: &str) -> Option<&str> {
+        self.given(flag).map(|given| given.value.as_str())
     }
 
     fn text(&self, flag: &str) -> Option<String> {
@@ -775,12 +833,15 @@ impl Flags {
         parse: fn(&str) -> Option<T>,
         takes: &'static str,
     ) -> Result<Option<T>, UsageError> {
-        let Some(value) = self.value(flag) else {
+        let Some(given) = self.given(flag) else {
             return Ok(None);
         };
-        let Some(parsed) = parse(value) else {
-            let value = value.to_owned();
-            return Err(UsageError::BadValue { flag, takes, value });
+        let Some(parsed) = parse(&given.value) else {
+            return Err(UsageError::BadValue {
+                flag: given.variable.unwrap_or(flag),
+                takes,
+                value: given.value.clone(),
+            });
         };
         Ok(Some(parsed))
     }
@@ -818,10 +879,12 @@ impl Flags {
     }
 
     fn replication(&self, command: Name) -> Result<Replication, UsageError> {
-        match self.value(WAL_FLAG) {
-            None => Err(UsageError::NeedsWal(command)),
-            Some("logical") => Ok(Replication::Logical),
-            Some("physical") => {
+        let Some(given) = self.given(WAL_FLAG) else {
+            return Err(UsageError::NeedsWal(command));
+        };
+        match given.value.as_str() {
+            "logical" => Ok(Replication::Logical),
+            "physical" => {
                 let max_page_memory = self.parsed(
                     MAX_PAGE_MEMORY_FLAG,
                     MAX_PAGE_MEMORY,
@@ -830,7 +893,11 @@ impl Flags {
                 )?;
                 Ok(Replication::Physical { max_page_memory })
             }
-            Some(other) => Err(UsageError::BadWal(other.to_owned())),
+            other => Err(UsageError::BadValue {
+                flag: given.variable.unwrap_or(WAL_FLAG),
+                takes: WAL_TAKES,
+                value: other.to_owned(),
+            }),
         }
     }
 }

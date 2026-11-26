@@ -28,6 +28,23 @@ goes on the line at most once.
 A flag that takes seconds, rows or bytes takes a whole number above 0.
 A byte count may end in `Ki`, `Mi`, `Gi` or `Ti`, powers of 1024.
 
+`straum run` also reads each flag from a variable, for an orchestrator
+that sets the environment. The name is `STRAUM_` and the flag in
+capitals, with `_` for `-`: `--max-lag` reads `STRAUM_MAX_LAG`. These
+rules apply:
+
+- A flag on the line wins over its variable. Straum does not read the
+  variable then.
+- An empty variable is unset.
+- A bad value is a command line error that names the variable, as
+  `STRAUM_MAX_LAG takes whole seconds above 0, not "30s"`.
+- With `--wal logical`, Straum ignores `STRAUM_MAX_PAGE_MEMORY`. Thus
+  one set of variables can serve `--wal logical` and `--wal physical`.
+- Straum ignores each other `STRAUM_` name, such as `STRAUM_PORT`, which
+  a Kubernetes Service can add to a pod.
+- Only `straum run` reads these variables. `straum plan` reads only
+  `STRAUM_DSN`.
+
 ## Reaching a running Straum
 
 `status`, `views`, `ask` and `shell` take these flags.
@@ -83,7 +100,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--allow-hosts NAME:PORT,...` | On loopback its names, else any | The only `Host` names a request may name, each with the port the client writes, `localhost:8080` say; a name without one means port 80. Any other gets 421 ([Who can ask](deploy.md#who-can-ask)). |
 | `--wal logical\|physical` | Required | Logical decoding through the publication, or the [physical write-ahead log (WAL)](postgresql.md#physical-wal) that `wal_level = replica` writes. |
 | `--publication NAME` | `straum` | The publication `straum plan` made. |
-| `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [data source name (DSN)](postgresql.md#2-connect). |
+| `--dsn-file FILE` | `STRAUM_DSN_FILE`, else `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [data source name (DSN)](postgresql.md#2-connect). |
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | `4Gi` | WAL retained for the slot before Straum stops. The [watchdog](postgresql.md#what-straum-costs-the-server) checks it every second, during loads too. |
 | `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. A row counts once, however many views and dims read its table ([Large transactions](deploy.md#large-transactions)). |

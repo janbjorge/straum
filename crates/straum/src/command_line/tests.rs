@@ -15,7 +15,259 @@ fn command_of(args: &[String]) -> Result<Command, Usage> {
 fn with_url(url: &str) -> Environment {
     Environment {
         url: Some(url.to_owned()),
+        variables: Vec::new(),
     }
+}
+
+/// An environment that sets each `(name, value)` pair and no `STRAUM_URL`.
+fn with_variables(variables: &[(&str, &str)]) -> Environment {
+    let mut set = Vec::new();
+    for (name, value) in variables {
+        set.push(((*name).to_owned(), (*value).to_owned()));
+    }
+    Environment {
+        url: None,
+        variables: set,
+    }
+}
+
+/// The variable that `straum run` reads for `flag`, by the rule and not
+/// by the table in the code: `--max-lag` is `STRAUM_MAX_LAG`.
+fn variable_of(flag: &str) -> String {
+    let name = flag.trim_start_matches("--").to_uppercase();
+    format!("STRAUM_{}", name.replace('-', "_"))
+}
+
+/// Each flag of `straum run`, a value for it, and a different value. The
+/// line has `--wal physical`, so that `--max-page-memory` applies.
+const RUN_VALUES: [(&str, &str, &str); 13] = [
+    ("--listen", "0.0.0.0:8080", "127.0.0.1:9"),
+    ("--health-listen", "0.0.0.0:8081", "127.0.0.1:10"),
+    ("--allow-hosts", "straum:8080,localhost:8080", "straum"),
+    ("--wal", "physical", "logical"),
+    ("--publication", "p", "q"),
+    ("--dsn-file", "/run/secrets/dsn", "d"),
+    ("--max-lag", "5", "6"),
+    ("--max-retained-wal", "512Mi", "8589934592"),
+    ("--max-transaction-rows", "2500", "7"),
+    ("--max-answer-rows", "50", "8"),
+    ("--max-page-memory", "256Mi", "2Gi"),
+    ("--max-stream-memory", "512Mi", "3Gi"),
+    ("--max-memory", "2Gi", "4Ki"),
+];
+
+/// `run s`, with `flag` and its value, and with `--wal physical` unless
+/// `flag` is `--wal`.
+fn run_line(flag: Option<(&str, &str)>) -> Vec<String> {
+    let mut line = args("run s");
+    if flag.map(|(flag, _)| flag) != Some(WAL_FLAG) {
+        line.extend(args("--wal physical"));
+    }
+    if let Some((flag, value)) = flag {
+        line.push(flag.to_owned());
+        line.push(value.to_owned());
+    }
+    line
+}
+
+fn usage_with(line: &str, environment: &Environment) -> String {
+    match command(&args(line), environment) {
+        Err(Usage::Wrong { error, .. }) => error.to_string(),
+        other => panic!("{line}: {other:?}"),
+    }
+}
+
+/// Each flag of `straum run` has a variable. The variable sets the
+/// value that the flag sets, so the two lines give the same `Run`.
+#[test]
+fn each_run_flag_reads_its_variable() {
+    let mut flags: Vec<&str> = RUN_VALUES.iter().map(|(flag, ..)| *flag).collect();
+    let mut taken = Name::Run.flags().to_vec();
+    flags.sort_unstable();
+    taken.sort_unstable();
+    assert_eq!(flags, taken, "a run flag has no case here");
+    for (flag, value, _) in RUN_VALUES {
+        let variable = variable_of(flag);
+        let set = with_variables(&[(variable.as_str(), value)]);
+        let read = command(&run_line(None), &set);
+        let flagged = command_of(&run_line(Some((flag, value))));
+        assert!(flagged.is_ok(), "{flag}: {flagged:?}");
+        assert_eq!(read, flagged, "{variable}={value}");
+    }
+    assert!(Name::Run.help().contains(&variable_of(MAX_LAG_FLAG)));
+}
+
+/// A flag on the line wins over its variable, and Straum does not check
+/// the variable then.
+#[test]
+fn a_flag_wins_over_its_variable() {
+    for (flag, value, other) in RUN_VALUES {
+        let variable = variable_of(flag);
+        let set = with_variables(&[(variable.as_str(), other)]);
+        let line = run_line(Some((flag, value)));
+        assert_eq!(command(&line, &set), command_of(&line), "{variable}");
+    }
+    let set = with_variables(&[("STRAUM_MAX_MEMORY", "4XB")]);
+    let line = args("run s --wal logical --max-memory 1Gi");
+    let Ok(Command::Run(run)) = command(&line, &set) else {
+        panic!("{line:?}");
+    };
+    assert_eq!(run.max_memory, Some(1 << 30));
+}
+
+/// A bad value in a variable is a usage error, as on the line, and the
+/// error names the variable.
+#[test]
+fn a_bad_variable_is_a_usage_error_that_names_it() {
+    let cases = [
+        (
+            "STRAUM_MAX_MEMORY",
+            "4XB",
+            "STRAUM_MAX_MEMORY takes bytes above 0, as 4294967296 or 4Gi, not \"4XB\"",
+        ),
+        (
+            "STRAUM_MAX_RETAINED_WAL",
+            "0",
+            "STRAUM_MAX_RETAINED_WAL takes bytes above 0, as 4294967296 or 4Gi, not \"0\"",
+        ),
+        (
+            "STRAUM_MAX_STREAM_MEMORY",
+            "1G",
+            "STRAUM_MAX_STREAM_MEMORY takes bytes above 0, as 1073741824 or 1Gi, not \"1G\"",
+        ),
+        (
+            "STRAUM_MAX_PAGE_MEMORY",
+            "lots",
+            "STRAUM_MAX_PAGE_MEMORY takes bytes above 0, as 1073741824 or 1Gi, not \"lots\"",
+        ),
+        (
+            "STRAUM_MAX_LAG",
+            "30s",
+            "STRAUM_MAX_LAG takes whole seconds above 0, not \"30s\"",
+        ),
+        (
+            "STRAUM_MAX_TRANSACTION_ROWS",
+            "10k",
+            "STRAUM_MAX_TRANSACTION_ROWS takes a count of rows above 0, not \"10k\"",
+        ),
+        (
+            "STRAUM_MAX_ANSWER_ROWS",
+            "-1",
+            "STRAUM_MAX_ANSWER_ROWS takes a count of rows above 0, not \"-1\"",
+        ),
+        (
+            "STRAUM_ALLOW_HOSTS",
+            "localhost:8080,",
+            "STRAUM_ALLOW_HOSTS takes names with their port, as \
+             localhost:8080,127.0.0.1:8080, not \"localhost:8080,\"",
+        ),
+        (
+            "STRAUM_WAL",
+            "both",
+            "STRAUM_WAL takes logical or physical, not \"both\"",
+        ),
+    ];
+    for (variable, value, error) in cases {
+        let set = with_variables(&[(variable, value)]);
+        let line = if variable == "STRAUM_WAL" {
+            "run s"
+        } else {
+            "run s --wal physical"
+        };
+        assert_eq!(usage_with(line, &set), error, "{variable}");
+    }
+    let set = with_variables(&[("STRAUM_MAX_MEMORY", "4XB")]);
+    let usage = command(&args("run s --wal logical"), &set).unwrap_err();
+    assert_eq!(
+        usage.to_string(),
+        "straum: STRAUM_MAX_MEMORY takes bytes above 0, as 4294967296 or 4Gi, \
+         not \"4XB\"\ntry: straum run --help"
+    );
+}
+
+/// An empty variable is unset, as an empty `STRAUM_URL` is: an
+/// orchestrator often writes a variable that has no value.
+#[test]
+fn an_empty_variable_is_unset() {
+    let mut empty = Vec::new();
+    for (flag, ..) in RUN_VALUES {
+        empty.push(variable_of(flag));
+    }
+    let mut pairs = Vec::new();
+    for variable in &empty {
+        pairs.push((variable.as_str(), ""));
+    }
+    let set = with_variables(&pairs);
+    let line = args("run s --wal logical");
+    assert_eq!(command(&line, &set), command_of(&line));
+    assert_eq!(
+        usage_with("run s", &set),
+        "straum run needs --wal logical or --wal physical"
+    );
+}
+
+/// `STRAUM_MAX_PAGE_MEMORY` applies only with `--wal physical`. With
+/// `--wal logical` Straum ignores it and does not check it, so that one
+/// set of variables can serve both WALs. The flag is still refused.
+#[test]
+fn the_page_memory_variable_applies_only_to_the_physical_wal() {
+    for value in ["1Gi", "lots"] {
+        let set = with_variables(&[("STRAUM_MAX_PAGE_MEMORY", value)]);
+        let line = args("run s --wal logical");
+        assert_eq!(command(&line, &set), command_of(&line), "{value}");
+    }
+    let set = with_variables(&[("STRAUM_MAX_PAGE_MEMORY", "256Mi")]);
+    let Ok(Command::Run(run)) = command(&args("run s --wal physical"), &set) else {
+        panic!("physical");
+    };
+    let page = Replication::Physical {
+        max_page_memory: 256 << 20,
+    };
+    assert_eq!(run.replication, page);
+    let logical = with_variables(&[("STRAUM_WAL", "logical")]);
+    assert_eq!(
+        usage_with("run s --max-page-memory 1Gi", &logical),
+        "--max-page-memory takes --wal physical"
+    );
+    let physical = with_variables(&[("STRAUM_WAL", "physical")]);
+    let line = args("run s --max-page-memory 256Mi");
+    let Ok(Command::Run(run)) = command(&line, &physical) else {
+        panic!("{line:?}");
+    };
+    assert_eq!(run.replication, page);
+}
+
+/// Straum reads only the variables of the run flags. Kubernetes puts
+/// `STRAUM_PORT` and more in the environment of a pod, and the tests
+/// read `STRAUM_TEST_*`, so a different name is not an error.
+#[test]
+fn other_straum_variables_are_ignored() {
+    let set = with_variables(&[
+        ("STRAUM_MAX_MEMOREY", "lots"),
+        ("STRAUM_PORT", "tcp://10.0.0.1:8080"),
+        ("STRAUM_SERVICE_HOST", "10.0.0.1"),
+        ("STRAUM_TEST_POSTGRES", "18"),
+        ("STRAUM_max_memory", "lots"),
+        ("MAX_MEMORY", "lots"),
+    ]);
+    let line = args("run s --wal logical");
+    assert_eq!(command(&line, &set), command_of(&line));
+}
+
+/// Only `straum run` reads the variables of its flags.
+#[test]
+fn plan_does_not_read_the_run_variables() {
+    let set = with_variables(&[
+        ("STRAUM_WAL", "logical"),
+        ("STRAUM_PUBLICATION", "p"),
+        ("STRAUM_DSN_FILE", "d"),
+    ]);
+    assert_eq!(
+        usage_with("plan s", &set),
+        "straum plan needs --wal logical or --wal physical"
+    );
+    let line = args("plan s --wal logical");
+    assert_eq!(command(&line, &set), command_of(&line));
 }
 
 #[test]
@@ -922,7 +1174,12 @@ fn no_command_line_panics() {
         } else {
             Some(words.word())
         };
-        let environment = Environment { url };
+        let mut variables = Vec::new();
+        if words.below(2) == 0 {
+            let (flag, ..) = RUN_VALUES[words.below(RUN_VALUES.len())];
+            variables.push((variable_of(flag), words.word()));
+        }
+        let environment = Environment { url, variables };
         let read = std::panic::catch_unwind(|| read_all_of(&line, &environment));
         assert!(read.is_ok(), "panicked on {line:?} with {environment:?}");
     }

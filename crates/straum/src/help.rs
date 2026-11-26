@@ -31,6 +31,9 @@ Loads every table FILE names, follows their changes and answers asks over
 HTTP. SIGTERM or SIGINT stops it. FILE is the spec. Any failure to load
 or follow ends it with exit 1, for whatever runs it to start it again.
 
+Each flag also reads a variable: --max-lag reads STRAUM_MAX_LAG. A flag
+on the line wins, and an empty variable is unset.
+
   --listen ADDRESS             where to serve HTTP (127.0.0.1:8080)
   --health-listen ADDRESS      where to serve /livez, /readyz and /status
                                alone, apart from asks (off)
