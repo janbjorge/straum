@@ -875,6 +875,48 @@ fn a_long_chain_of_operators_is_refused_before_it_is_parsed() {
     }
 }
 
+/// No keyword of `sqlparser` makes a chain that overflows the 2 MiB stack
+/// an ask is read on. Each keyword goes between two keys, after a key, and
+/// before `OF (kind)`, 3,000 times. The thread has the keyword as its name,
+/// so an overflow names the keyword that caused it. One thread for each
+/// core reads at a time, because each long ask takes some milliseconds.
+#[test]
+fn no_chain_of_a_keyword_overflows_the_stack() {
+    let mut links = Vec::new();
+    for keyword in sqlparser::keywords::ALL_KEYWORDS {
+        for link in [
+            format!(" {keyword} kind"),
+            format!(" {keyword}"),
+            format!(" {keyword} OF (kind)"),
+        ] {
+            links.push((*keyword, link));
+        }
+    }
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    for batch in links.chunks(cores) {
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = batch
+                .iter()
+                .map(|(keyword, link)| {
+                    let read = || {
+                        let ask = format!("SELECT trips FROM t WHERE kind{}", link.repeat(3_000));
+                        parse_ask(&ask, &[]).is_err()
+                    };
+                    let thread = std::thread::Builder::new()
+                        .name((*keyword).to_owned())
+                        .stack_size(2 << 20)
+                        .spawn_scoped(scope, read)
+                        .unwrap();
+                    (keyword, thread)
+                })
+                .collect();
+            for (keyword, thread) in threads {
+                assert!(thread.join().unwrap(), "{keyword}");
+            }
+        });
+    }
+}
+
 /// An ask that names `$1` `times`, each on a key of its own: one IN list
 /// takes each value once.
 fn named(times: usize) -> String {

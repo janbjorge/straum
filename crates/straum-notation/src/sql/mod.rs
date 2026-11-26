@@ -132,6 +132,11 @@ fn is_operator(token: &Token) -> bool {
                 | Keyword::COLLATE
                 | Keyword::AT
                 | Keyword::OVERLAPS
+                | Keyword::MEMBER
+                | Keyword::NOTNULL
+                | Keyword::REGEXP
+                | Keyword::RLIKE
+                | Keyword::XOR
         ),
         Token::EOF
         | Token::Number(..)
