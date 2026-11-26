@@ -23,3 +23,4 @@ are never reused, so a dropped record leaves a gap.
 | [0016](0016-a-mysql-source-is-the-test-of-every-source-boundary.md) | The MySQL test for the source port |
 | [0018](0018-triggers-write-changes-to-an-outbox.md) | Trigger capture, its outbox, one Straum per outbox |
 | [0019](0019-orchestrators-control-straum-through-flags-environment-probes-and-signals.md) | Flags and variables, stop, probes, what orchestrators get |
+| [0020](0020-prose-follows-asd-ste100-simplified-technical-english.md) | Prose in ASD-STE100, its scope and exceptions |

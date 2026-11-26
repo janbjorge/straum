@@ -117,7 +117,7 @@ document describes the change, say so.
   short imperative subject. Do not use branches or PRs. Add code in the
   commit that first uses it. Do not make releases or tags (ADR-0012).
 - Use `git --no-pager`. Do not read `bench/data/` or `target/`.
-- Write prose in ASD-STE100 Simplified Technical English. This rule
+- Write prose in ASD-STE100 Simplified Technical English (ADR-0020). This rule
   applies to docs, ADRs, comments, error text, log lines and commit
   messages.
   - Write one topic in each sentence. An instruction has 20 words at
