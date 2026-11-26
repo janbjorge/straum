@@ -495,24 +495,23 @@ fn the_snapshot_and_the_stream_split_exactly() {
             "round {round}: the writer finished before the load"
         );
         let loaded = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
-        assert_ne!(
-            loaded.answer.rows[0].values[0],
-            Value::Int(0),
-            "round {round}"
+        // One step can apply many commits, so the trips in the load, not a
+        // count of steps, tell what came by the stream.
+        assert!(
+            matches!(loaded.answer.rows[0].values[0], Value::Int(trips) if (1..2_000).contains(&trips)),
+            "round {round}: {:?}",
+            loaded.answer.rows[0].values[0]
         );
         inserter.join().unwrap();
         db.run("INSERT INTO $S.trips VALUES (-1, now(), 'marker', 1, 1.00, 'ann', 2)");
         let marker = ask("trips", &["trips"], &["kind"]);
-        let mut streamed = 0;
         loop {
             applied(&mut writer);
-            streamed += 1;
             let answered = writer.app().ask(&marker).unwrap();
             if holds_the_marker(&answered.answer.rows) {
                 break;
             }
         }
-        assert!(streamed > 1, "round {round}: nothing was streamed");
         // The marker's commit time, by the server's clock, is now.
         let time = writer.app().status().committed.unwrap();
         let apart = match SystemTime::now().duration_since(time) {
