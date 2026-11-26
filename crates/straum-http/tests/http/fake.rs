@@ -100,9 +100,12 @@ impl Source for Fake {
         Ok(())
     }
 
-    fn next_commit(&mut self, _: Duration) -> Result<Option<Commit>, SourceError> {
+    /// Once the commits are out, a zero wait finds none queued, and a
+    /// wait finds the connection dropped.
+    fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         match self.commits.pop_front() {
             Some(commit) => Ok(Some(commit)),
+            None if wait.is_zero() => Ok(None),
             None => Err("connection dropped".into()),
         }
     }

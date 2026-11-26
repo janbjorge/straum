@@ -815,13 +815,13 @@ fn the_stream_outlasts_a_busy_writer() {
     applied(&mut writer);
     // More commits than the queue holds, then a pause past
     // wal_sender_timeout (4 s): the thread keeps answering.
-    for id in 1..101 {
+    for id in 1..100 {
         db.run(&rng.trip(id));
     }
+    let written = db.run_committed(&rng.trip(100));
     thread::sleep(Duration::from_secs(9));
-    for _ in 0..100 {
-        applied(&mut writer);
-    }
+    // One step can apply many commits, so the count of steps says nothing.
+    apply_through(&mut writer, written, &Wait::new("the queued commits"));
     // Commits made after the pause still arrive: the stream survived.
     for id in 101..111 {
         db.run(&rng.trip(id));

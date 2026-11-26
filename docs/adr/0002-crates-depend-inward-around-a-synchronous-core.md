@@ -1,6 +1,6 @@
 # ADR-0002: Crates depend inward around a synchronous core
 
-Status: Accepted 2026-11-10; revised 2026-11-21
+Status: Accepted 2026-11-10; revised 2026-11-26
 
 ## Context
 
@@ -42,7 +42,7 @@ macros.
 
 One store sits behind an `RwLock`. `App` is the store and how far it
 has followed the source, cheap to clone. The writer takes the write
-lock only to apply a commit it has already read, or to swap a table in
+lock only to apply commits it has already read, or to swap a table in
 or out: a load takes the table out and fills it outside the lock. How
 far it has followed, its lag and its WAL readings, sit behind a mutex
 of their own, so the status and the readings never wait on an ask. A
@@ -64,6 +64,10 @@ the last two are the next step if the lock ever matters.
   failed step ends it with exit 1 (ADR-0009).
 - A long ask delays the writer, which shows as lag: an ask over every
   15-minute bucket of the taxi month holds the lock 2.4 to 3.0 s.
+  After one wait for the lock, the writer applies every commit that
+  the stream has queued. Thus a long ask delays a batch, and not each
+  commit. A batch stops when the queue is empty, or when a reading of
+  the WAL is due, about once a second.
   `/readyz` and `/status` don't wait behind it. They read only the
   progress, which the writer never holds while it waits for the
   store's lock.

@@ -284,8 +284,15 @@ reading is due. With one in hand, it takes the write lock and applies
 it whole (`State::apply`): each change to its rollup or projection,
 tables the spec doesn't name skipped. Before its changes, the store
 advances to the commit's time, which moves each horizon on and drops
-the buckets before it. `Following` moves to the commit's LSN and time,
-and the lock is let go.
+the buckets before it. `Following` moves to the commit's LSN and time.
+
+Under the same lock, the writer asks `Source::next_commit` with a zero
+wait, and applies each commit that is already queued. Thus a long ask
+delays a batch, and not each commit. The batch stops when the queue is
+empty, or when a reading of the WAL is due. The reading never runs
+under the lock. The stream thread can queue more commits during a
+batch, so the time to the next reading bounds a long batch. Then the
+lock is let go.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The decoder ends the

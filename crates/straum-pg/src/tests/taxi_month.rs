@@ -8,8 +8,9 @@ use std::time::Instant;
 use straum_app::{App, Writer};
 
 use super::references::*;
+use super::streams::apply_through;
 use super::support::*;
-use crate::source::{Postgres, Replication};
+use crate::source::{Postgres, Replication, parse_lsn};
 use crate::wire::{Connection, ConnectionKind};
 
 /// The taxi month through straum: load, stream inserts and dim changes, read
@@ -44,19 +45,26 @@ fn taxi_month() {
 
     // Inserts in 200 transactions of 50, a day later than rows already there.
     let clock = Instant::now();
+    let mut written = None;
     for remainder in 0..200 {
-        sql.execute(&format!(
-            "INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
-                                      payment_type, fare_amount, tip_amount, trip_distance)
-             SELECT vendor_id, pickup_at + interval '1 day', pu_location_id, do_location_id,
-                    payment_type, fare_amount + 1, tip_amount, trip_distance
-               FROM yellow_trips WHERE id % 10007 = {remainder} LIMIT 50"
-        ))
-        .unwrap();
+        // Where WAL stands before each commit: the writer has applied the
+        // last one once it is past it.
+        let rows = sql
+            .rows(&format!(
+                "BEGIN;
+                 INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
+                                           payment_type, fare_amount, tip_amount, trip_distance)
+                 SELECT vendor_id, pickup_at + interval '1 day', pu_location_id, do_location_id,
+                        payment_type, fare_amount + 1, tip_amount, trip_distance
+                   FROM yellow_trips WHERE id % 10007 = {remainder} LIMIT 50;
+                 SELECT pg_current_wal_insert_lsn();"
+            ))
+            .unwrap();
+        sql.execute("COMMIT").unwrap();
+        written = parse_lsn(rows[0][0].as_deref().unwrap());
     }
-    for _ in 0..200 {
-        applied(&mut writer);
-    }
+    // One step can apply many commits, so the count of steps says nothing.
+    apply_through(&mut writer, written.unwrap(), &Wait::new("the 200 commits"));
     eprintln!("streamed 200 commits in {:.1?}", clock.elapsed());
     check_taxi_month(&mut sql, writer.app(), &references, "after the stream");
 

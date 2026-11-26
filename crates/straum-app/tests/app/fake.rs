@@ -2,6 +2,7 @@
 //! changes its tables and logs what pgoutput would send. The `Fake`
 //! source reads the database as a slot would: it loads the tables as of
 //! the stream's start, then hands out the logged commits one by one.
+//! Every commit logged and not handed out yet counts as queued.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -422,11 +423,11 @@ impl Source for Fake {
         let stream = self.stream.as_mut().expect("open first");
         // Every published table's changes, as pgoutput sends them; the
         // writer skips the ones outside the spec.
-        let commit = database
-            .log
-            .get(stream.next)
-            .expect("a commit is waiting")
-            .clone();
+        let Some(commit) = database.log.get(stream.next).cloned() else {
+            // A zero wait asks only for what is queued.
+            assert!(wait.is_zero(), "a commit is waiting");
+            return Ok(None);
+        };
         stream.next += 1;
         // The writer applies it before it reads the WAL again.
         stream.applied = commit.lsn;

@@ -1,11 +1,12 @@
 //! The write loop: `Writer` keeps an `App`'s store in step with the
-//! `Source`. It loads every table, then applies one commit at a time; it
-//! takes the store's lock only to apply what it has read, never while it
-//! waits on PostgreSQL, so asks never wait on the database. Its readings
-//! of the server's WAL go behind the progress's lock, so they never wait
-//! on an ask. The store is advanced to the snapshot's time before the
-//! load, and to each commit's time before its changes, so a width kept
-//! only for a time drops what falls behind it.
+//! `Source`. It loads every table, then applies the commits that the
+//! source has queued, all under one lock of the store. It takes the lock
+//! only to apply what it has read, never while it waits on PostgreSQL, so
+//! asks never wait on the database. Its readings of the server's WAL go
+//! behind the progress's lock, so they never wait on an ask. The store is
+//! advanced to the snapshot's time before the load, and to each commit's
+//! time before its changes, so a width kept only for a time drops what
+//! falls behind it.
 
 use std::fmt;
 use std::sync::atomic::Ordering;
@@ -67,7 +68,7 @@ fn report_nothing(_line: &str) {}
 pub enum Step {
     /// Loaded every table from a new stream that starts here.
     Started(Lsn),
-    /// Applied the commit that ends here.
+    /// Applied the commits queued, the last of which ends here.
     Applied(Lsn),
 }
 
@@ -171,7 +172,9 @@ impl<S: Source> Writer<S> {
     }
 
     /// Loads every table when nothing is loaded yet, else applies the next
-    /// commit, waiting for one and reading the server's WAL meanwhile.
+    /// commit, waiting for one and reading the server's WAL meanwhile. Under
+    /// the same lock, it applies each commit queued after it, until the
+    /// queue is empty or a reading of the WAL is due.
     /// After an error Straum is not ready and the writer is done: Straum
     /// starts again with a new app and writer, from a new stream.
     ///
@@ -267,15 +270,27 @@ impl<S: Source> Writer<S> {
                 self.take_wal_reading()?;
             }
             let wait = WAL_EVERY.saturating_sub(self.wal_read_at.elapsed());
-            if let Some(commit) = self.source.next_commit(wait)? {
+            if let Some(mut commit) = self.source.next_commit(wait)? {
+                // One wait for the lock applies every commit queued, so a
+                // long ask delays a batch and not each commit.
                 let mut state = self.app.write();
-                state.apply(&commit)?;
-                let mut progress = self.app.progress();
-                let following = progress.following();
-                following.applied = commit.lsn;
-                following.committed = Some(commit.committed);
-                following.applying.count(commit.changes.len());
-                return Ok(commit.lsn);
+                loop {
+                    state.apply(&commit)?;
+                    let mut progress = self.app.progress();
+                    let following = progress.following();
+                    following.applied = commit.lsn;
+                    following.committed = Some(commit.committed);
+                    following.applying.count(commit.changes.len());
+                    drop(progress);
+                    // The reading of the WAL never runs under the lock.
+                    if self.wal_read_at.elapsed() >= WAL_EVERY {
+                        return Ok(commit.lsn);
+                    }
+                    match self.source.next_commit(Duration::ZERO)? {
+                        Some(next) => commit = next,
+                        None => return Ok(commit.lsn),
+                    }
+                }
             }
         }
     }
@@ -380,13 +395,15 @@ pub fn format_mebibytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::mem;
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime};
 
     use straum_domain::{Datum, Identifier, Spec, Store, Value};
 
-    use super::{Change, Commit, Drift, Lsn, Step, Wal, Writer, unix_seconds};
+    use super::{Change, Commit, Drift, Lsn, Step, WAL_EVERY, Wal, Writer, unix_seconds};
     use crate::app::AnswerError;
     use crate::app::tests::{WAITING, app, count, follow, id};
     use crate::source::{Estimate, LoadCounts, Opened, Source, SourceError};
@@ -564,6 +581,150 @@ mod tests {
         fn wal(&mut self) -> Result<Wal, SourceError> {
             Err("connection refused".into())
         }
+    }
+
+    /// A source with a queue of commits, each of one insert into `trips`.
+    /// It counts the readings of the WAL, and keeps the wait of each ask
+    /// for a commit. An ask that finds the queue empty returns at once.
+    struct Queued {
+        commits: VecDeque<Commit>,
+        /// Asks that find no commit before the queue hands one out.
+        empty: usize,
+        /// How long the next ask with a wait takes before its commit.
+        pause: Duration,
+        asked: Vec<Duration>,
+        readings: usize,
+    }
+
+    impl Queued {
+        /// `count` commits at LSN 2 and on, each one second after the last.
+        fn of(count: u64) -> Queued {
+            let commits = (2..count + 2)
+                .map(|lsn| Commit {
+                    lsn: Lsn(lsn),
+                    committed: SystemTime::UNIX_EPOCH + Duration::from_secs(lsn),
+                    changes: vec![Change::Insert {
+                        table: id("trips"),
+                        row: vec![Datum::Int(0)],
+                    }],
+                })
+                .collect();
+            Queued {
+                commits,
+                empty: 0,
+                pause: Duration::ZERO,
+                asked: Vec::new(),
+                readings: 0,
+            }
+        }
+    }
+
+    impl Source for Queued {
+        fn open(&mut self, spec: &Spec) -> Result<Opened, SourceError> {
+            StandingStill.open(spec)
+        }
+
+        fn estimate(&mut self, tables: &[Identifier]) -> Result<Estimate, SourceError> {
+            StandingStill.estimate(tables)
+        }
+
+        fn load(
+            &mut self,
+            tables: &[Identifier],
+            store: &mut Store,
+            counts: &LoadCounts,
+        ) -> Result<(), SourceError> {
+            StandingStill.load(tables, store, counts)
+        }
+
+        fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
+            self.asked.push(wait);
+            if self.empty > 0 {
+                self.empty -= 1;
+                return Ok(None);
+            }
+            if !wait.is_zero() {
+                thread::sleep(mem::take(&mut self.pause));
+            }
+            Ok(self.commits.pop_front())
+        }
+
+        fn wal(&mut self) -> Result<Wal, SourceError> {
+            self.readings += 1;
+            StandingStill.wal()
+        }
+    }
+
+    /// The writer applies every queued commit after one wait for the
+    /// store's lock. Thus a long ask delays a batch, and not each commit.
+    #[test]
+    fn one_wait_for_the_lock_applies_every_queued_commit() {
+        const QUEUED: u64 = 50;
+        let app = app();
+        let mut writer = Writer::new(app.clone(), Queued::of(QUEUED));
+        assert_eq!(writer.step().unwrap(), Step::Started(Lsn(1)));
+        let (held, holding) = mpsc::channel();
+        let asker = {
+            let app = app.clone();
+            thread::spawn(move || {
+                let guard = app.read();
+                held.send(()).unwrap();
+                thread::sleep(WAITING / 5);
+                drop(guard);
+            })
+        };
+        holding.recv().unwrap();
+        let last = Lsn(QUEUED + 1);
+        assert_eq!(writer.step().unwrap(), Step::Applied(last));
+        asker.join().unwrap();
+
+        let status = app.status();
+        assert_eq!(status.applied, Some(last));
+        assert_eq!(
+            status.committed,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(last.0))
+        );
+        assert_eq!(app.ask(&count()).unwrap().applied, last);
+        // The interval began at the last reading. Closed one second after
+        // that, its counts are its rates.
+        let mut progress = app.progress();
+        let applying = &mut progress.following.as_mut().unwrap().applying;
+        applying.close(writer.wal_read_at + Duration::from_secs(1));
+        let rate = applying.rate.unwrap();
+        assert_eq!(rate.commits_per_second, QUEUED);
+        assert_eq!(rate.changes_per_second, QUEUED);
+    }
+
+    /// With no commit queued, the writer waits for one up to the next
+    /// reading of the WAL. It asks with a zero wait only after a commit.
+    #[test]
+    fn an_empty_queue_is_waited_for() {
+        let mut source = Queued::of(1);
+        source.empty = 1;
+        let mut writer = Writer::new(app(), source);
+        writer.step().unwrap();
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(2)));
+        let asked = &writer.source.asked;
+        assert!(asked.len() <= 3, "{asked:?}");
+        for wait in &asked[..2] {
+            assert!(*wait > WAL_EVERY / 2, "{asked:?}");
+        }
+    }
+
+    /// A reading of the WAL that falls due ends a batch: the reading
+    /// never runs under the store's lock, so a long batch delays it at
+    /// most one commit.
+    #[test]
+    fn a_due_reading_of_the_wal_ends_a_batch() {
+        let mut source = Queued::of(3);
+        source.pause = WAL_EVERY;
+        let mut writer = Writer::new(app(), source);
+        writer.step().unwrap();
+        let readings = writer.source.readings;
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(2)));
+        assert_eq!(writer.source.readings, readings);
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(4)));
+        assert_eq!(writer.source.readings, readings + 1);
     }
 
     /// A writer that steps clean steps on; one that failed is done, and

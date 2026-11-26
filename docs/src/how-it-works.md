@@ -110,8 +110,8 @@ one. A delete removes the old row. Both streams give the whole old row.
 ![Following and answering at once](diagrams/follow.svg)
 
 *The stream thread hands the writer whole commits and reports what it has
-read. The writer takes the write lock per commit; asks take the read
-lock.*
+read. The writer takes the write lock once for all commits queued; asks
+take the read lock.*
 
 A long ask delays the writer, which shows as lag. The stream reads up to
 64 commits, 200,000 changes or `--max-stream-memory` bytes of commits
