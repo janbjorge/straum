@@ -53,12 +53,12 @@ lint crates=changed: (_named crates)
 # Run the tests; args go to cargo test: just test straum-pg -- NAME
 [group('check')]
 test crates=changed *args: (_named crates)
-    cargo test {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} {{ args }}
+    cargo test --no-fail-fast {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} {{ args }}
 
 # Fail under 98% line coverage; name each crate whose tests run the code
 [group('check')]
 cov crates=changed: (_named crates)
-    cargo llvm-cov {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} --all-targets --fail-under-lines 98
+    cargo llvm-cov --no-fail-fast {{ if crates == "all" { "--workspace" } else { prepend("-p ", crates) } }} --all-targets --fail-under-lines 98
 
 # Run the checks in scripts/ and the tests of scripts/ and bench/
 [group('check')]
