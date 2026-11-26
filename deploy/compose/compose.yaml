@@ -21,6 +21,9 @@ services:
       # Only these Host names, so a page rebound to 127.0.0.1 can't ask.
       - --allow-hosts
       - localhost:8080,127.0.0.1:8080
+      # The health check reads this port, so a full 8080 cannot fail it.
+      - --health-listen
+      - 127.0.0.1:8081
     secrets:
       - dsn
     volumes:
@@ -44,7 +47,7 @@ services:
     # Compose 2.20.2. Compose only reports the check and never
     # restarts on it, so a long load or a lag stops nothing.
     healthcheck:
-      test: ["CMD", "/straum", "status", "--timeout", "3"]
+      test: ["CMD", "/straum", "status", "--url", "http://127.0.0.1:8081", "--timeout", "3"]
       interval: 10s
       timeout: 5s
       start_period: 1h

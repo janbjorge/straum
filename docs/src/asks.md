@@ -328,6 +328,6 @@ Every reply carries `Cache-Control: no-store`. Each `GET` endpoint
 also answers `HEAD`, with the status and headers of `GET` and no body.
 A path not listed here is 404, and a listed path asked with another
 method is 405, its `Allow` header naming the methods to use, as in
-`Allow: GET, HEAD`. The port of `--health-listen` serves `GET /livez`
-and `GET /readyz` alone, and gives 404 to every other path
-([Connections](deploy.md#connections)).
+`Allow: GET, HEAD`. The port of `--health-listen` serves `GET /livez`,
+`GET /readyz` and `GET /status` alone, and gives 404 to every other
+path ([Connections](deploy.md#connections)).

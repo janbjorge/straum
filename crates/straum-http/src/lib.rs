@@ -11,8 +11,8 @@
 //! On loopback a request whose `Host` names another machine or port gets
 //! 421 (see `host.rs`).
 //!
-//! A health listener, if `serve` is given one, serves `/livez` and
-//! `/readyz` alone, with [`MAX_HEALTH_CONNECTIONS`] of its own. Idle
+//! A health listener, if `serve` is given one, serves `/livez`, `/readyz`
+//! and `/status` alone, with [`MAX_HEALTH_CONNECTIONS`] of its own. Idle
 //! connections that fill the main listener then cannot fail a health check.
 //!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
@@ -110,7 +110,7 @@ pub const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_HEALTH_CONNECTIONS: usize = 16;
 
 /// Where `serve` listens: the main listener for every route, and, if
-/// given, a health listener for `/livez` and `/readyz` alone.
+/// given, a health listener for `/livez`, `/readyz` and `/status` alone.
 #[derive(Debug)]
 pub struct Listeners {
     pub main: net::TcpListener,
@@ -192,8 +192,8 @@ struct Served {
     /// One per byte of [`ServeLimits::max_answer_bytes`]: an answer holds
     /// one per byte of its body until hyper sends the last byte.
     answer_bytes: Arc<Semaphore>,
-    /// On the health listener: every route but `/livez` and `/readyz`
-    /// gets 404.
+    /// On the health listener: every route but `/livez`, `/readyz` and
+    /// `/status` gets 404.
     health_only: bool,
 }
 

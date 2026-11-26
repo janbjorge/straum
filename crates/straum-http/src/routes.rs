@@ -143,7 +143,7 @@ pub(crate) async fn handle(
         return Ok(text(StatusCode::MISDIRECTED_REQUEST, refusal));
     }
     let path = parts.uri.path();
-    if *health_only && !matches!(path, "/livez" | "/readyz") {
+    if *health_only && !matches!(path, "/livez" | "/readyz" | "/status") {
         return Ok(text(StatusCode::NOT_FOUND, format!("no {path} here\n")));
     }
     let accept = parts.headers.get(ACCEPT);

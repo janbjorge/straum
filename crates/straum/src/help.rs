@@ -32,8 +32,8 @@ HTTP. SIGTERM or SIGINT stops it. FILE is the spec. Any failure to load
 or follow ends it with exit 1, for whatever runs it to start it again.
 
   --listen ADDRESS             where to serve HTTP (127.0.0.1:8080)
-  --health-listen ADDRESS      where to serve /livez and /readyz alone,
-                               apart from asks (off)
+  --health-listen ADDRESS      where to serve /livez, /readyz and /status
+                               alone, apart from asks (off)
   --allow-hosts NAME:PORT,...  the only Host names requests may name (on
                                loopback its names, else any)
   --wal logical|physical       logical decoding through the publication, or

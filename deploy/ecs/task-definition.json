@@ -14,7 +14,7 @@
       "name": "straum",
       "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/straum:1",
       "essential": true,
-      "command": ["run", "/etc/straum/spec.sql", "--wal", "logical", "--listen", "0.0.0.0:8080"],
+      "command": ["run", "/etc/straum/spec.sql", "--wal", "logical", "--listen", "0.0.0.0:8080", "--health-listen", "127.0.0.1:8081"],
       "secrets": [
         {
           "name": "STRAUM_DSN",
@@ -35,7 +35,7 @@
         "capabilities": { "drop": ["ALL"] }
       },
       "healthCheck": {
-        "command": ["CMD", "/straum", "status", "--timeout", "3"],
+        "command": ["CMD", "/straum", "status", "--url", "http://127.0.0.1:8081", "--timeout", "3"],
         "interval": 60,
         "timeout": 5,
         "retries": 10,

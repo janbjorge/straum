@@ -97,15 +97,17 @@ its answer, or when its connection closes.
 A client that opens more than about 205 idle connections each second
 still holds the limit. Then a health check on that port gets no
 answer, and Kubernetes restarts the pod. `--health-listen ADDRESS`
-serves `/livez` and `/readyz` on a second port, with 16 connections of
-its own and the same 5 s cut. That port gives 404 to every other path.
+serves `/livez`, `/readyz` and `/status` on a second port, with 16
+connections of its own and the same 5 s cut. That port gives 404 to
+every other path.
 Its own address decides the `Host` names that it answers, as in
 [Who can ask](#who-can-ask); `--allow-hosts` does not apply to it.
 
 `--health-listen` is off by default, so `straum run` opens one port
-unless told. The chart gives it, and points its probes at that port.
-The main port serves `/livez` and `/readyz` too, so a check that
-reads them there keeps its answer.
+unless told. The chart, the Compose file and the ECS task give it, and
+point their health checks at that port. The main port serves `/livez`,
+`/readyz` and `/status` too, so a check that reads them there keeps
+its answer.
 
 5 minutes after a connection opens, Straum takes no more requests on it.
 The request in flight gets its whole reply, and then Straum closes the
@@ -259,8 +261,11 @@ user, must be able to read both. Straum listens on `0.0.0.0:8080`
 inside the container, and Compose publishes it on the host's
 `127.0.0.1:8080` only, so `--allow-hosts` names `localhost:8080` and
 `127.0.0.1:8080` ([Who can ask](#who-can-ask)). Compose restarts
-it unless it was stopped. The health check is `straum status`; a
-failed check does not restart it, since a load or a lag must not.
+it unless it was stopped. The health check is `straum status --url
+http://127.0.0.1:8081`, which reads the `--health-listen` port inside
+the container ([Connections](#connections)). A full port 8080 cannot
+fail it. A failed check does not restart Straum, since a load or a lag
+must not.
 
 ## Amazon ECS
 
@@ -272,9 +277,12 @@ built into an image on top of the release's. The DSN arrives as
 the old one stops: PostgreSQL then holds two slots only while both
 are up.
 
-ECS has one health check, `straum status`, and replaces a task that
-fails it. A load has about 15 minutes, and a lag about 10, before that
-happens, so a spec whose tables take longer to load cannot run there.
+ECS has one health check, `straum status --url
+http://127.0.0.1:8081`, and replaces a task that fails it. The check
+reads the `--health-listen` port inside the container, so a full port
+8080 cannot fail it ([Connections](#connections)). A load has about
+15 minutes, and a lag about 10, before that happens, so a spec whose
+tables take longer to load cannot run there.
 The task's security group decides who can ask ([Who can
 ask](#who-can-ask)).
 

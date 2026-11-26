@@ -79,7 +79,7 @@ changes and answers [asks](asks.md) over HTTP.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--listen ADDRESS` | `127.0.0.1:8080` | Where to serve HTTP. The default reaches this host only ([Who can ask](deploy.md#who-can-ask)). |
-| `--health-listen ADDRESS` | Off | Where to serve `/livez` and `/readyz` alone, with connections of their own. `--listen` serves them too ([Connections](deploy.md#connections)). |
+| `--health-listen ADDRESS` | Off | Where to serve `/livez`, `/readyz` and `/status` alone, with connections of their own. `--listen` serves them too ([Connections](deploy.md#connections)). |
 | `--allow-hosts NAME:PORT,...` | On loopback its names, else any | The only `Host` names a request may name, each with the port the client writes, `localhost:8080` say; a name without one means port 80. Any other gets 421 ([Who can ask](deploy.md#who-can-ask)). |
 | `--wal logical\|physical` | Required | Logical decoding through the publication, or the [physical write-ahead log (WAL)](postgresql.md#physical-wal) that `wal_level = replica` writes. |
 | `--publication NAME` | `straum` | The publication `straum plan` made. |

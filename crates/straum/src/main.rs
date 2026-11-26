@@ -480,7 +480,7 @@ fn run(
     // Before the writer, whose failure may end the process at once.
     log(&format!("listening on {address}"));
     if let Some(Bound { address, .. }) = &health {
-        log(&format!("serving /livez and /readyz alone on {address}"));
+        log(&format!("serving /livez, /readyz and /status on {address}"));
     }
     thread::Builder::new()
         .name("straum-writer".into())

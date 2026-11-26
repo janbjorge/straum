@@ -94,8 +94,9 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            # /livez and /readyz alone, with connections of their own:
-            # idle connections that fill the http port cannot fail a probe.
+            # /livez, /readyz and /status alone, with connections of
+            # their own: idle connections that fill the http port cannot
+            # fail a probe.
             - name: health
               containerPort: {{ .Values.healthPort }}
           # The hook finishes before SIGTERM, and the grace period is

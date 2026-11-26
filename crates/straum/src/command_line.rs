@@ -215,8 +215,8 @@ pub(crate) enum Command {
 pub(crate) struct Run {
     pub(crate) spec: String,
     pub(crate) listen: String,
-    /// Where to serve `/livez` and `/readyz` alone, apart from the asks;
-    /// `None`, the default, serves them on `listen` only.
+    /// Where to serve `/livez`, `/readyz` and `/status` alone, apart from
+    /// the asks; `None`, the default, serves them on `listen` only.
     pub(crate) health_listen: Option<String>,
     /// The `Host` names, each `NAME[:PORT]`, that requests may name;
     /// empty, the default, leaves it to the listen address.

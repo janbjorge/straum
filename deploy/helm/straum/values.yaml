@@ -89,10 +89,10 @@ maxMemory: ""
 # Service reaches.
 listenAddress: "0.0.0.0"
 
-# healthPort is the port within the pod where straum serves /livez and
-# /readyz alone, on listenAddress. The probes use it. It has its own
-# connections, so idle connections that fill port 8080 cannot fail a
-# probe and restart the pod. The Service does not expose it.
+# healthPort is the port within the pod where straum serves /livez,
+# /readyz and /status alone, on listenAddress. The probes use it. It has
+# its own connections, so idle connections that fill port 8080 cannot
+# fail a probe and restart the pod. The Service does not expose it.
 healthPort: 8081
 
 # publication is the publication straum reads, as `straum plan` made it.

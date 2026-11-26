@@ -261,8 +261,9 @@ and this glossary. The clashes at the end are open.
 - **Health check**: `/livez` and `/readyz`
   ([Endpoints](asks.md#endpoints)).
 - **Health listener** (`Listeners::health`): the second port that
-  `--health-listen` opens. It serves the health checks alone, with
-  connections of its own ([Connections](deploy.md#connections)).
+  `--health-listen` opens. It serves the health checks and `/status`
+  alone, with connections of its own
+  ([Connections](deploy.md#connections)).
 
 ## PostgreSQL
 

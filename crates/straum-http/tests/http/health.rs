@@ -69,11 +69,11 @@ fn routes() {
     server.stop();
 }
 
-/// The health listener answers `/livez` and `/readyz`, gives 404 to
-/// every other route, and stops with the server. The main listener still
-/// serves every route.
+/// The health listener answers `/livez`, `/readyz` and `/status`, gives
+/// 404 to every other route, and stops with the server. The main listener
+/// still serves every route.
 #[test]
-fn the_health_listener_serves_health_checks_alone() {
+fn the_health_listener_serves_health_checks_and_status_alone() {
     let (server, health) = serve_with_health(writer().app().clone(), SERVE_LIMITS);
     let reply = call(health, "GET", "/livez", "");
     assert_eq!((reply.status, reply.body.as_str()), (200, "live\n"));
@@ -82,10 +82,10 @@ fn the_health_listener_serves_health_checks_alone() {
         (reply.status, reply.body.as_str()),
         (503, "not ready: loading\n")
     );
+    assert_eq!(call(health, "GET", "/status", "").status, 200);
     assert_eq!(call(health, "POST", "/livez", "").status, 405);
     for (method, path) in [
         ("POST", "/ask"),
-        ("GET", "/status"),
         ("GET", "/views"),
         ("GET", "/views/trips/spec"),
         ("GET", "/openapi.json"),
@@ -98,6 +98,20 @@ fn the_health_listener_serves_health_checks_alone() {
     assert_eq!(call(server.address, "GET", "/livez", "").status, 200);
     server.stop();
     assert!(TcpStream::connect(health).is_err(), "still listening");
+}
+
+/// The health check of Compose and ECS is `straum status`, which reads
+/// the `straum-ready` header of `GET /status`. On the health listener, it
+/// finds a loaded Straum ready, so a full main listener cannot fail it.
+#[test]
+fn the_health_listener_says_in_status_that_straum_is_ready() {
+    let mut writer = writer();
+    let (server, health) = serve_with_health(writer.app().clone(), SERVE_LIMITS);
+    writer.step().unwrap();
+    let reply = call(health, "GET", "/status", "");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(header(&reply.head, "straum-ready"), Some("true".to_owned()));
+    server.stop();
 }
 
 /// HEAD on a GET route gets the head GET gets, and no body. The server
