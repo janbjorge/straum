@@ -832,7 +832,7 @@ pub(crate) fn scripted(parts: Vec<Part>) -> FakeServer {
 
 /// Plays `parts` to the first client of `listener` and returns what it
 /// sent.
-fn serve(listener: &TcpListener, parts: Vec<Part>) -> Vec<u8> {
+pub(super) fn serve(listener: &TcpListener, parts: Vec<Part>) -> Vec<u8> {
     let (mut socket, _) = listener.accept().unwrap();
     for Part { pause, bytes } in parts {
         thread::sleep(pause);

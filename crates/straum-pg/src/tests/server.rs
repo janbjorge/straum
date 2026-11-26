@@ -25,9 +25,9 @@ fn says_to_set_wal_level_logical() {
     }
 }
 
-/// PostgreSQL 16 lacks `transaction_timeout`, so Straum leaves it unset
-/// there and the check says the server is too old, not that a setting is
-/// unknown.
+/// PostgreSQL 16 lacks `transaction_timeout` and ends a startup that
+/// names it. Straum starts again without it, and the check says that the
+/// server is too old, not that a setting is unknown.
 #[test]
 fn says_postgresql_16_is_too_old() {
     let pg = postgres_at_replica("16");

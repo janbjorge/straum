@@ -28,8 +28,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// nothing would otherwise hang a start, the watchdog's own among them.
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_CHUNK: usize = 64 * 1024;
-/// The first major with `transaction_timeout`.
-const TRANSACTION_TIMEOUT_MAJOR: u32 = 17;
+/// SQLSTATE `undefined_object`: PostgreSQL 16 ends a startup with it when
+/// the startup names `transaction_timeout`.
+const UNDEFINED_OBJECT: &str = "42704";
 /// `CopyBothResponse`, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
 
@@ -112,11 +113,30 @@ impl Connection {
     /// replication commands as well as SQL. Every connection reads dates as
     /// ISO in UTC, which `value` expects.
     pub(crate) fn connect(dsn: &Dsn, kind: ConnectionKind) -> Result<Connection, Error> {
+        match Connection::open(dsn, kind, true) {
+            // PostgreSQL 16 lacks the setting. Without it, the setup check
+            // can say that the server is too old.
+            Err(Error::Server { code, message })
+                if code == UNDEFINED_OBJECT && message.contains("transaction_timeout") =>
+            {
+                Connection::open(dsn, kind, false)
+            }
+            other => other,
+        }
+    }
+
+    /// Connects once, with `transaction_timeout` off in the startup if
+    /// `transaction_timeout` is true.
+    fn open(
+        dsn: &Dsn,
+        kind: ConnectionKind,
+        transaction_timeout: bool,
+    ) -> Result<Connection, Error> {
         let tcp = connect_tcp(dsn)?;
         tcp.set_nodelay(true)?;
         tcp.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         tcp.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        let connection = match Connection::start(tcp, dsn, kind) {
+        let connection = match Connection::start(tcp, dsn, kind, transaction_timeout) {
             Ok(connection) => connection,
             Err(Error::Io(error)) if timed_out(&error) => {
                 return Err(Error::Io(io::Error::new(
@@ -138,7 +158,12 @@ impl Connection {
     }
 
     /// TLS if the DSN asks for it, then startup and sign-in on `tcp`.
-    fn start(tcp: TcpStream, dsn: &Dsn, kind: ConnectionKind) -> Result<Connection, Error> {
+    fn start(
+        tcp: TcpStream,
+        dsn: &Dsn,
+        kind: ConnectionKind,
+        transaction_timeout: bool,
+    ) -> Result<Connection, Error> {
         let socket = match &dsn.tls {
             Tls::Off => Socket::Plain(tcp),
             Tls::Verify { name, root_cert } => {
@@ -167,38 +192,30 @@ impl Connection {
             ("lock_timeout", "0"),
             ("idle_in_transaction_session_timeout", "0"),
         ];
+        // A `SET` after the sign-in is too late: the startup transaction
+        // and the transaction of the `SET` can already reach the timeout.
+        if transaction_timeout {
+            parameters.push(("transaction_timeout", "0"));
+        }
         if kind == ConnectionKind::Replication {
             parameters.push(("replication", "database"));
         }
         frontend::startup_message(parameters, &mut connection.output)?;
         connection.flush()?;
-        let major = connection.authenticate(dsn)?;
-        // PostgreSQL 16 ends a startup that names a setting it lacks, so
-        // the setup check could never say the server is too old.
-        // PostgreSQL reports `server_version` at every startup.
-        if let Some(major) = major
-            && major >= TRANSACTION_TIMEOUT_MAJOR
-        {
-            connection.execute("SET transaction_timeout = 0")?;
-        }
+        connection.authenticate(dsn)?;
         Ok(connection)
     }
 
-    /// Signs in and returns the major version the server reports, if it
-    /// reads as one.
-    fn authenticate(&mut self, dsn: &Dsn) -> Result<Option<u32>, Error> {
+    /// Signs in.
+    fn authenticate(&mut self, dsn: &Dsn) -> Result<(), Error> {
         let mut scram: Option<ScramSha256> = None;
         let mut sign_in = SignIn::Waiting;
-        let mut major = None;
         loop {
             match self.read()? {
                 Message::AuthenticationOk if sign_in == SignIn::ScramBegun => {
                     return Err(Error::Protocol(Unexpected::ScramUnproven));
                 }
                 Message::AuthenticationOk => sign_in = SignIn::SignedIn,
-                Message::ParameterStatus(body) if body.name()? == "server_version" => {
-                    major = leading_number(body.value()?);
-                }
                 Message::ParameterStatus(_)
                 | Message::BackendKeyData(_)
                 | Message::NoticeResponse(_) => {}
@@ -236,7 +253,7 @@ impl Connection {
                     state.finish(body.data())?;
                     sign_in = SignIn::ScramProven;
                 }
-                Message::ReadyForQuery(_) if sign_in == SignIn::SignedIn => return Ok(major),
+                Message::ReadyForQuery(_) if sign_in == SignIn::SignedIn => return Ok(()),
                 Message::ReadyForQuery(_) => {
                     return Err(Error::Protocol(Unexpected::ReadyBeforeSignIn));
                 }
@@ -548,19 +565,6 @@ pub(crate) fn server_error(body: &ErrorResponseBody) -> Error {
         message = format!("{message}: {detail}");
     }
     Error::Server { code, message }
-}
-
-/// The digits `text` starts with, as a number: 16 of `16.9`, 19 of
-/// `19rc2`. `None` if it starts with none.
-fn leading_number(text: &str) -> Option<u32> {
-    let mut end = 0;
-    for character in text.chars() {
-        if !character.is_ascii_digit() {
-            break;
-        }
-        end += 1;
-    }
-    text[..end].parse().ok()
 }
 
 /// The SASL mechanism names, copied out of the message they borrow from.

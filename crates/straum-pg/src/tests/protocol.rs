@@ -182,29 +182,63 @@ fn sign_in_errors() {
     assert!(connect(vec![now(chatty)], ConnectionKind::Replication).is_ok());
 }
 
-/// From 17 on, a connection turns `transaction_timeout` off once signed
-/// in; PostgreSQL 16, which lacks it, never hears of it.
+/// Each startup turns `transaction_timeout` off, so a setting on the
+/// database or the role never ends the connection before that.
 #[test]
-fn the_transaction_timeout_goes_to_17_and_newer() {
-    for (version, sent) in [("17.2", true), ("18beta1", true), ("16.9", false)] {
-        let mut start = message(b'R', &0_i32.to_be_bytes());
-        start.extend(message(
-            b'S',
-            format!("server_version\0{version}\0").as_bytes(),
-        ));
-        start.extend(message(b'Z', b"I"));
-        let mut done = message(b'C', b"SET\0");
-        done.extend(message(b'Z', b"I"));
-        let server = scripted(vec![now(start), now(done)]);
-        drop(Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap());
-        let received = String::from_utf8_lossy(&server.received.join().unwrap()).into_owned();
-        assert_eq!(
-            received.contains("SET transaction_timeout = 0"),
-            sent,
-            "{version}"
-        );
-        assert!(!received.contains("transaction_timeout\0"), "{version}");
-    }
+fn the_startup_turns_the_transaction_timeout_off() {
+    let server = scripted(vec![now(signed_in())]);
+    drop(Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap());
+    let received = String::from_utf8_lossy(&server.received.join().unwrap()).into_owned();
+    assert!(
+        received.contains("transaction_timeout\u{0}0\u{0}"),
+        "{received:?}"
+    );
+    assert!(
+        !received.contains("SET transaction_timeout"),
+        "{received:?}"
+    );
+}
+
+/// PostgreSQL 16 lacks `transaction_timeout` and ends a startup that names
+/// it. Straum then starts again without it, so the setup check can say
+/// that the server is too old. Another unknown name fails the start.
+#[test]
+fn a_server_without_the_transaction_timeout_gets_a_second_startup() {
+    let unknown = error_response(
+        "42704",
+        "unrecognized configuration parameter \"transaction_timeout\"",
+    );
+    let (dsn, received) = served_twice(vec![now(unknown)], vec![now(signed_in())]);
+    drop(Connection::connect(&dsn, ConnectionKind::Sql).unwrap());
+    let [first, second] = received
+        .join()
+        .unwrap()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    assert!(first.contains("transaction_timeout\0"), "{first:?}");
+    assert!(!second.contains("transaction_timeout"), "{second:?}");
+    assert!(
+        second.contains("statement_timeout\u{0}0\u{0}"),
+        "{second:?}"
+    );
+
+    let other = error_response("42704", "unrecognized configuration parameter \"nope\"");
+    let error = connect(vec![now(other)], ConnectionKind::Sql)
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.to_string(),
+        "PostgreSQL: unrecognized configuration parameter \"nope\" (42704)"
+    );
+}
+
+/// A fake server that plays `first` to its first client and `second` to
+/// the next, and returns what each sent.
+fn served_twice(first: Vec<Part>, second: Vec<Part>) -> (Dsn, thread::JoinHandle<[Vec<u8>; 2]>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received = thread::spawn(move || [serve(&listener, first), serve(&listener, second)]);
+    let dsn = format!("postgres://straum@127.0.0.1:{port}/straum?sslmode=disable");
+    (Dsn::parse(&dsn).unwrap(), received)
 }
 
 /// A server that takes the socket and then says nothing fails the start
