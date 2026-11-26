@@ -188,6 +188,31 @@ pub const SPREAD_PLACES: u32 = 4;
 /// merge or formula can't agree with it by sharing it. Rounded half to
 /// even at [`SPREAD_PLACES`]; null for no value, or a sample of one.
 pub fn spread(aggregate: &Aggregate, values: &[i128]) -> Value {
+    let Some(parts) = spread_parts(aggregate, values) else {
+        return Value::Null;
+    };
+    let factor = 10_i128.pow(SPREAD_PLACES);
+    if parts.root {
+        Value::Int(nearest_root(
+            parts.squared * factor * factor,
+            parts.denominator,
+        ))
+    } else {
+        Value::Int(nearest(parts.squared * factor, parts.denominator))
+    }
+}
+
+/// A variance by its definition, exact: `squared / denominator` in the
+/// column's units, squared. A deviation is the root of that.
+pub struct SpreadParts {
+    pub squared: i128,
+    pub denominator: i128,
+    pub root: bool,
+}
+
+/// The exact [`SpreadParts`] that [`spread`] rounds; `None` for no
+/// value, or a sample of one.
+pub fn spread_parts(aggregate: &Aggregate, values: &[i128]) -> Option<SpreadParts> {
     let count = values.len() as i128;
     let mut sum = 0;
     for value in values {
@@ -206,14 +231,13 @@ pub fn spread(aggregate: &Aggregate, values: &[i128]) -> Value {
         other => panic!("{other:?} is no variance or deviation"),
     };
     if denominator <= 0 {
-        return Value::Null;
+        return None;
     }
-    let factor = 10_i128.pow(SPREAD_PLACES);
-    if root {
-        Value::Int(nearest_root(squared * factor * factor, denominator))
-    } else {
-        Value::Int(nearest(squared * factor, denominator))
-    }
+    Some(SpreadParts {
+        squared,
+        denominator,
+        root,
+    })
 }
 
 /// `numerator / denominator`, both at least zero, rounded half to even.

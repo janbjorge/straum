@@ -244,8 +244,8 @@ fn scaled_up(units: i128, places: u32) -> Option<i128> {
 /// A fraction with a positive denominator.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Ratio {
-    numerator: i128,
-    denominator: i128,
+    pub(crate) numerator: i128,
+    pub(crate) denominator: i128,
 }
 
 impl Ratio {

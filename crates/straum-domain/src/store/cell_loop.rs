@@ -198,7 +198,7 @@ impl<'s> CellLoop<'s> {
             for group in kept {
                 let place = group as usize;
                 finish_where(&mut measures, &checked, Which::Checked, place, &mut values);
-                if meets(&values, having) {
+                if meets(&measures, place, &values, having) {
                     meeting.push(group);
                     for &position in &checked_positions {
                         kept_values.push(mem::replace(&mut values[position], Value::Null));

@@ -1,15 +1,16 @@
 //! HAVING on hand-made groups: each comparison keeps the groups it holds
 //! for and drops the rest, a null measure meets no comparison, an average
-//! compares exactly, and every wrong condition says what is wrong. A
+//! and a variance or deviation compare exactly, and every wrong condition
+//! says what is wrong. A
 //! window of the rows HAVING keeps builds those rows alone.
 
-use crate::common::id;
+use crate::common::{id, measure};
 use crate::rows::base_trip_with;
-use crate::views::{spec, trip_types, typed};
+use crate::views::{spec, trip_types, trips_by_pay, typed};
 use crate::{AT, FARE, PAY, START, TIP, TOLLED, trips_ask};
 use straum_domain::{
-    Ask, AskError, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Literal,
-    MeasureCondition, Start, Store, Window,
+    Aggregate, Ask, AskError, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Literal,
+    MeasureCondition, Spec, Start, Store, Window,
 };
 
 /// The measures each ask here selects.
@@ -168,6 +169,131 @@ fn a_comparison_is_exact_past_a_float_and_an_i128() {
         let shown = format!("{conditions:?}");
         assert_eq!(pays_kept(&store, conditions), kept, "{shown}");
     }
+}
+
+/// The spread measures of [`spread_store`], each of the fare.
+const SPREADS: [&str; 4] = ["var_samp", "var_pop", "sd_samp", "sd_pop"];
+
+/// Integer fares in five groups by pay, and the first 6 places of each
+/// spread; the answer gives each at 4 places:
+///
+/// | pay | fares      | var_samp | var_pop  | sd_samp  | sd_pop   |
+/// | --- | ---------- | -------- | -------- | -------- | -------- |
+/// | 1   | 1, 2       | 0.5      | 0.25     | 0.707106 | 0.5      |
+/// | 2   | 0, 0, 1    | 0.333333 | 0.222222 | 0.577350 | 0.471404 |
+/// | 3   | 0, 0, 2    | 1.333333 | 0.888888 | 1.154700 | 0.942809 |
+/// | 4   | 0, 0, 1, 2 | 0.916666 | 0.6875   | 0.957427 | 0.829156 |
+/// | 5   | 5          | null     | 0        | null     | 0        |
+fn spread_store() -> Store {
+    let trips = trips_by_pay(vec![
+        measure("var_samp", Aggregate::VarSamp(id("fare"))),
+        measure("var_pop", Aggregate::VarPop(id("fare"))),
+        measure("sd_samp", Aggregate::StddevSamp(id("fare"))),
+        measure("sd_pop", Aggregate::StddevPop(id("fare"))),
+    ]);
+    let mut store = Store::new(Spec::new(vec![], vec![trips]).unwrap());
+    let groups: [(i64, &[i64]); 5] = [
+        (1, &[1, 2]),
+        (2, &[0, 0, 1]),
+        (3, &[0, 0, 2]),
+        (4, &[0, 0, 1, 2]),
+        (5, &[5]),
+    ];
+    for (pay, fares) in groups {
+        for &fare in fares {
+            let row = [Datum::Int(START), Datum::Int(pay), Datum::Int(fare)];
+            store.add_row("trips", &row).unwrap();
+        }
+    }
+    store
+}
+
+/// A variance or deviation compares exactly, as PostgreSQL compares it,
+/// not as its answer rounds it to 4 places. A rounded value drops a group
+/// whose spread is a little above it, and keeps a group whose spread is
+/// a little below it.
+#[test]
+fn a_spread_compares_exactly_not_as_rounded() {
+    use Comparison::{Equal, Greater, GreaterOrEqual, LessOrEqual};
+    let store = spread_store();
+    let cases = [
+        // Rounded down to the value: `>` keeps the group.
+        ("var_samp", Greater, decimal(3_333, 4), vec![1, 2, 3, 4]),
+        ("var_pop", Greater, decimal(2_222, 4), vec![1, 2, 3, 4]),
+        ("sd_samp", Greater, decimal(7_071, 4), vec![1, 3, 4]),
+        ("sd_pop", Greater, decimal(4_714, 4), vec![1, 2, 3, 4]),
+        ("sd_samp", LessOrEqual, decimal(7_071, 4), vec![2]),
+        // Rounded up to the value: `>=` and `=` drop the group.
+        ("var_samp", GreaterOrEqual, decimal(9_167, 4), vec![3]),
+        ("var_pop", Equal, decimal(8_889, 4), vec![]),
+        ("sd_samp", GreaterOrEqual, decimal(5_774, 4), vec![1, 3, 4]),
+        ("sd_pop", Equal, decimal(8_292, 4), vec![]),
+        // More places than the answer: sd_samp of pay 1 is 0.707106781...
+        ("sd_samp", Greater, decimal(70_710_678, 8), vec![1, 3, 4]),
+        ("sd_samp", Greater, decimal(70_710_679, 8), vec![3, 4]),
+    ];
+    for (name, comparison, value, kept) in cases {
+        let shown = format!("{name} {comparison:?} {value:?}");
+        let conditions = vec![having(name, comparison, value)];
+        assert_eq!(spread_pays_kept(&store, conditions), kept, "{shown}");
+    }
+}
+
+/// A value clearly apart from each spread keeps the same groups as a
+/// rounded comparison: below zero, at zero, past an `i128` and between
+/// the groups. A null spread meets no comparison.
+#[test]
+fn a_spread_apart_from_the_value_keeps_what_rounded_keeps() {
+    use Comparison::{Equal, Greater, GreaterOrEqual, Less};
+    let store = spread_store();
+    let cases = [
+        ("var_samp", Greater, decimal(3, 1), vec![1, 2, 3, 4]),
+        ("sd_pop", Less, decimal(5, 1), vec![2, 5]),
+        ("sd_pop", Equal, decimal(5, 1), vec![1]),
+        ("var_pop", Equal, Literal::Int(0), vec![5]),
+        ("sd_samp", Greater, Literal::Int(-1), vec![1, 2, 3, 4]),
+        (
+            "var_pop",
+            GreaterOrEqual,
+            Literal::Int(0),
+            vec![1, 2, 3, 4, 5],
+        ),
+        ("var_samp", Less, Literal::Int(i64::MAX), vec![1, 2, 3, 4]),
+        ("sd_samp", Less, Literal::Int(i64::MAX), vec![1, 2, 3, 4]),
+        (
+            "sd_pop",
+            Greater,
+            Literal::Int(i64::MIN),
+            vec![1, 2, 3, 4, 5],
+        ),
+        (
+            "var_pop",
+            Greater,
+            Literal::Int(i64::MIN),
+            vec![1, 2, 3, 4, 5],
+        ),
+    ];
+    for (name, comparison, value, kept) in cases {
+        let shown = format!("{name} {comparison:?} {value:?}");
+        let conditions = vec![having(name, comparison, value)];
+        assert_eq!(spread_pays_kept(&store, conditions), kept, "{shown}");
+    }
+}
+
+/// The pays of the groups of [`spread_store`] kept by `conditions`.
+fn spread_pays_kept(store: &Store, conditions: Vec<MeasureCondition>) -> Vec<i64> {
+    let by_pay = Ask {
+        having: conditions,
+        ..trips_ask(&SPREADS, vec![AskKey::Key(id("pay"))])
+    };
+    let mut pays = Vec::new();
+    for row in store.ask(&by_pay).unwrap().rows {
+        let Datum::Int(pay) = row.keys[0] else {
+            panic!("pay is an integer: {:?}", row.keys)
+        };
+        pays.push(pay);
+    }
+    pays
 }
 
 #[test]

@@ -430,11 +430,23 @@ fn having_checks(ask: &Ask, columns: &[AnswerColumn]) -> Vec<HavingCheck> {
     checks
 }
 
-/// Whether a group's measure `values` meet every check. The values a
-/// check doesn't read may not be finished yet.
-pub(super) fn meets(values: &[Value], checks: &[HavingCheck]) -> bool {
+/// Whether group `group`, with its measure `values`, meets every check.
+/// The values a check doesn't read may not be finished yet. A variance
+/// or deviation compares exactly from its `measures`' partials, not as
+/// its value rounds it.
+pub(super) fn meets(
+    measures: &[Asked<'_>],
+    group: usize,
+    values: &[Value],
+    checks: &[HavingCheck],
+) -> bool {
     for check in checks {
-        let Some(order) = values[check.position].order_against(check.threshold) else {
+        let partials = &measures[check.position].partials;
+        let order = match partials.spread() {
+            Some(spread) => spread.order_against(partials.moments(group), check.threshold),
+            None => values[check.position].order_against(check.threshold),
+        };
+        let Some(order) = order else {
             return false;
         };
         if !check.comparison.holds(order) {

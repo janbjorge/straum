@@ -1,6 +1,6 @@
 # ADR-0005: Asks are Straum SQL with parameters
 
-Status: Accepted 2026-11-10; revised 2026-11-25
+Status: Accepted 2026-11-10; revised 2026-11-26
 
 ## Context
 
@@ -40,8 +40,10 @@ boolean of its column, else `AskError::WrongType`. A JSON number with
 a fraction or exponent is read from its digits (`serde_json`'s
 `arbitrary_precision`), up to 38 after the point, and compares with
 measures only. `HAVING` runs on finished groups after the cell loop,
-without floats: a sum at either scale, an avg as sum over count. A null
-meets no comparison; a boolean takes `=` and `<>`.
+without floats: a sum at either scale, an avg as sum over count, a
+variance or standard deviation from its exact count, sum and sum of
+squares, never from its rounded answer. A null meets no comparison; a
+boolean takes `=` and `<>`.
 
 An answer is `{"as_of", "rows"}`, each row keyed by its `SELECT`
 names. `as_of` is when Straum last had applied all WAL the server had

@@ -742,32 +742,25 @@ impl<'s> Partials<'s> {
 
     /// The answer of group `group`, from its partials.
     pub(crate) fn finish(&mut self, group: usize) -> Value {
+        if let Some(spread) = self.spread() {
+            return spread.answer(self.moments(group));
+        }
         let lanes = group * LANES..(group + 1) * LANES;
         match self {
             Partials::Count(counts) => Value::Int(counts[lanes].iter().sum::<u64>().into()),
             Partials::Sum {
                 sums,
                 counts,
-                squares,
                 finish,
+                ..
             } => {
                 let count: u64 = counts[lanes.clone()].iter().sum();
-                let sum: i128 = sums[lanes.clone()].iter().sum();
+                let sum: i128 = sums[lanes].iter().sum();
                 match finish {
                     _ if count == 0 => Value::Null,
                     Finish::Sum => Value::Int(sum),
                     Finish::Avg => Value::Avg { sum, count },
-                    Finish::Spread(spread) => {
-                        let mut total = U256::ZERO;
-                        for &square in &squares[lanes] {
-                            total = total.wrapping_add(square);
-                        }
-                        spread.answer(Moments {
-                            count,
-                            sum,
-                            squares: total,
-                        })
-                    }
+                    Finish::Spread(_) => unreachable!("a spread answers before the match"),
                 }
             }
             Partials::Min { seen, .. } | Partials::Max { seen, .. }
@@ -803,6 +796,41 @@ impl<'s> Partials<'s> {
                     _ => Value::Bool(any_true),
                 }
             }
+        }
+    }
+
+    /// The variance or deviation that the measure gives, if it gives one.
+    pub(crate) fn spread(&self) -> Option<Spread> {
+        match self {
+            Partials::Sum {
+                finish: Finish::Spread(spread),
+                ..
+            } => Some(*spread),
+            _ => None,
+        }
+    }
+
+    /// What the cells of group `group` merged into, for a measure that
+    /// [`Partials::spread`] names.
+    pub(crate) fn moments(&self, group: usize) -> Moments {
+        let Partials::Sum {
+            sums,
+            counts,
+            squares,
+            ..
+        } = self
+        else {
+            panic!("only a variance or deviation keeps moments")
+        };
+        let lanes = group * LANES..(group + 1) * LANES;
+        let mut total = U256::ZERO;
+        for &square in &squares[lanes.clone()] {
+            total = total.wrapping_add(square);
+        }
+        Moments {
+            count: counts[lanes.clone()].iter().sum(),
+            sum: sums[lanes].iter().sum(),
+            squares: total,
         }
     }
 }

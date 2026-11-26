@@ -14,11 +14,12 @@
 //! is never below zero (Cauchy-Schwarz) and takes up to 254 bits, so it is
 //! a [`U256`]. The answer is rounded half to even at [`SPREAD_PLACES`]
 //! past the variance's scale, twice the column's, or the deviation's, the
-//! column's.
+//! column's. A HAVING value compares with the exact spread, as PostgreSQL
+//! compares it, not with the rounded answer.
 
 use std::cmp::Ordering;
 
-use crate::value::Value;
+use crate::value::{Threshold, Value};
 use crate::wide::U256;
 
 /// Places past its scale a variance or standard deviation is given to,
@@ -54,11 +55,7 @@ impl Spread {
     /// The answer for a group, null where PostgreSQL's is: no value, or a
     /// sample of one.
     pub(crate) fn answer(self, moments: Moments) -> Value {
-        let count = u128::from(moments.count);
-        let divisor = match self {
-            Spread::VarSamp | Spread::StddevSamp => count * count.saturating_sub(1),
-            Spread::VarPop | Spread::StddevPop => count * count,
-        };
+        let divisor = self.divisor(moments.count);
         if divisor == 0 {
             return Value::Null;
         }
@@ -68,6 +65,85 @@ impl Spread {
             Spread::StddevSamp | Spread::StddevPop => root(deviation, divisor),
         }
     }
+
+    /// How the exact spread of a group orders against `threshold`, both
+    /// in units of the answer's scale. `None` for a null spread, which no
+    /// comparison meets, and for a boolean, which the ask's checks rule
+    /// out.
+    ///
+    /// The variance is `deviation * 10^4 / divisor` units. A threshold of
+    /// `units * 10^shift / 10^places` units orders as
+    /// `deviation * 10^(4 + places) / divisor` against `units * 10^shift`.
+    /// A deviation and a threshold not below zero order as their squares
+    /// do, so a deviation compares the two squares.
+    pub(crate) fn order_against(self, moments: Moments, threshold: Threshold) -> Option<Ordering> {
+        let divisor = self.divisor(moments.count);
+        let (units, shift, places) = match threshold {
+            _ if divisor == 0 => return None,
+            Threshold::Boolean(_) => return None,
+            // `Threshold::new` makes the denominator a power of ten.
+            Threshold::Number(ratio) => (ratio.numerator, 0, ratio.denominator.ilog10()),
+            Threshold::Beyond { units, shift } => (units, shift, 0),
+        };
+        // A spread is never below zero.
+        let Ok(units) = u128::try_from(units) else {
+            return Some(Ordering::Greater);
+        };
+        let power = match self {
+            Spread::VarSamp | Spread::VarPop => 1,
+            Spread::StddevSamp | Spread::StddevPop => 2,
+        };
+        let mut wanted = if power == 1 {
+            U256::from(units)
+        } else {
+            U256::product(units, units)
+        };
+        for _ in 0..shift * power {
+            let (scaled, overflowed) = wanted.overflowing_mul(10);
+            if overflowed {
+                // Past 2^256, and a spread at its scale is below 2^154.
+                return Some(Ordering::Less);
+            }
+            wanted = scaled;
+        }
+        let places = (SPREAD_PLACES + places) * power;
+        let Some((whole, rest)) = shifted_quotient(deviation(moments), divisor, places) else {
+            return Some(Ordering::Greater);
+        };
+        Some(whole.cmp(&wanted).then((rest > 0).cmp(&false)))
+    }
+
+    /// What the deviation `n * s2 - s1^2` is divided by: `n * n` for a
+    /// population, `n * (n - 1)` for a sample.
+    fn divisor(self, count: u64) -> u128 {
+        let count = u128::from(count);
+        match self {
+            Spread::VarSamp | Spread::StddevSamp => count * count.saturating_sub(1),
+            Spread::VarPop | Spread::StddevPop => count * count,
+        }
+    }
+}
+
+/// The whole part of `deviation * 10^places / divisor`, and the rest of
+/// `divisor` past it. `None` past 2^256.
+fn shifted_quotient(deviation: U256, divisor: u128, places: u32) -> Option<(U256, u128)> {
+    let (mut whole, mut rest) = deviation.div_rem(divisor);
+    let mut left = places;
+    while left > 0 {
+        // 10^19 is the largest power of ten that a u64 holds.
+        let step = left.min(19);
+        let factor = 10u64.pow(step);
+        let (shifted, overflowed) = whole.overflowing_mul(factor);
+        let (part, next) = U256::product(rest, factor.into()).div_rem(divisor);
+        let sum = shifted.wrapping_add(part);
+        if overflowed || sum < shifted {
+            return None;
+        }
+        whole = sum;
+        rest = next;
+        left -= step;
+    }
+    Some((whole, rest))
 }
 
 /// `n * s2 - s1^2`. Below zero, or past 2^256, only for cells whose rows
@@ -143,6 +219,7 @@ fn value_of(units: U256) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::Literal;
     use crate::test_rng::Rng;
 
     fn moments(values: &[i64]) -> Moments {
@@ -291,6 +368,144 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// How the spread of `values` orders against `units / 10^places`, by
+    /// the definition: a variance as `squared / divisor`, a deviation as
+    /// the root of that.
+    fn expected_order(
+        spread: Spread,
+        values: &[i64],
+        units: i128,
+        places: u32,
+    ) -> Option<Ordering> {
+        let count = values.len() as i128;
+        let divisor = match spread {
+            Spread::VarSamp | Spread::StddevSamp => count * count * (count - 1),
+            Spread::VarPop | Spread::StddevPop => count * count * count,
+        };
+        if divisor <= 0 {
+            return None;
+        }
+        let squared = squared_by_definition(values);
+        let ten = 10_i128.pow(places);
+        match spread {
+            Spread::VarSamp | Spread::VarPop => Some((squared * ten).cmp(&(units * divisor))),
+            Spread::StddevSamp | Spread::StddevPop if units < 0 => Some(Ordering::Greater),
+            Spread::StddevSamp | Spread::StddevPop => {
+                Some((squared * ten * ten).cmp(&(units * units * divisor)))
+            }
+        }
+    }
+
+    /// A HAVING value orders against the exact spread, as the definition
+    /// does: at, just past and far from the rounded answer, at more and
+    /// fewer places than the answer has.
+    #[test]
+    fn a_spread_orders_against_a_having_value_exactly() {
+        let mut rng = Rng::new(12);
+        for _ in 0..3_000 {
+            let magnitude: u64 = [10, 1_000, 100_000][rng.position_below(3)];
+            let mut values = Vec::new();
+            for _ in 0..rng.below(12) {
+                let drawn = i64::try_from(rng.below(2 * magnitude)).unwrap();
+                values.push(drawn - i64::try_from(magnitude).unwrap());
+            }
+            let total = moments(&values);
+            for spread in SPREADS {
+                let (units, places) = match spread.answer(total) {
+                    // Near the rounded answer, where rounding errs.
+                    Value::Int(answer) if rng.below(2) == 0 => {
+                        let step = i128::from(rng.below(3)) - 1;
+                        (answer + step, SPREAD_PLACES)
+                    }
+                    _ => {
+                        let places = u32::try_from(rng.below(9)).unwrap();
+                        let range = 10u64.pow(places) * 1_000_000;
+                        (i128::from(rng.below(range)) - 100, places)
+                    }
+                };
+                let literal = Literal::Decimal {
+                    units,
+                    scale: places,
+                };
+                let threshold = Threshold::new(SPREAD_PLACES, &literal).unwrap();
+                assert_eq!(
+                    spread.order_against(total, threshold),
+                    expected_order(spread, &values, units, places),
+                    "{spread:?} {values:?} against {units}e-{places}"
+                );
+            }
+        }
+    }
+
+    /// A HAVING value past what an `i128` holds at the answer's scale, a
+    /// boolean, and a null spread.
+    #[test]
+    fn a_spread_orders_against_a_value_past_an_i128() {
+        // Two values at the ends of `bigint`: a variance of
+        // (2^64 - 1)^2 / 2 = 1.701...e38, at 4 places in the answer.
+        let ends = moments(&[i64::MIN, i64::MAX]);
+        let below = 170_141_183_460_469_231_713_240_559_642_174_554_112;
+        let zero = Threshold::new(4, &Literal::Int(0)).unwrap();
+        let wide = Threshold::new(
+            4,
+            &Literal::Decimal {
+                units: below,
+                scale: 0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(wide, Threshold::Beyond { .. }));
+        assert_eq!(
+            Spread::VarSamp.order_against(ends, wide),
+            Some(Ordering::Greater)
+        );
+        let above = Threshold::new(
+            4,
+            &Literal::Decimal {
+                units: below + 1,
+                scale: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            Spread::VarSamp.order_against(ends, above),
+            Some(Ordering::Less)
+        );
+        // Past 2^256 once squared: above every deviation.
+        let far = Threshold::new(38, &Literal::Int(i64::MAX)).unwrap();
+        assert_eq!(
+            Spread::StddevSamp.order_against(ends, far),
+            Some(Ordering::Less)
+        );
+        let negative = Threshold::new(38, &Literal::Int(i64::MIN)).unwrap();
+        assert_eq!(
+            Spread::StddevSamp.order_against(ends, negative),
+            Some(Ordering::Greater)
+        );
+        // At 38 places the scaled deviation passes 2^256, so it is above.
+        let fine = Threshold::new(
+            0,
+            &Literal::Decimal {
+                units: 1,
+                scale: 38,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            Spread::StddevSamp.order_against(ends, fine),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            Spread::VarPop.order_against(ends, Threshold::Boolean(true)),
+            None
+        );
+        assert_eq!(Spread::VarSamp.order_against(moments(&[5]), zero), None);
+        assert_eq!(
+            Spread::VarPop.order_against(moments(&[5]), zero),
+            Some(Ordering::Equal)
+        );
     }
 
     #[test]

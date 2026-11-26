@@ -148,7 +148,9 @@ only if it meets every comparison; otherwise none.
 `bool_and` and `bool_or` compare with a boolean, by `=` or `<>` only.
 Every other measure, `DISTINCT` ones included, answers a number and
 compares exactly with a number parameter: `avg_amount > 44.27` is true
-of 44.273058, and `amount = 1875.7` of 1875.70.
+of 44.273058, and `amount = 1875.7` of 1875.70. A variance or a
+standard deviation compares before the answer rounds it:
+`amount_sd > 0.7071` is true of 0.70710678..., which prints as 0.7071.
 
 ## Parameters
 

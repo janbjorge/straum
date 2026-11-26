@@ -5,7 +5,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{GroupInputs, SPREAD_PLACES, aggregate_value, bucket_key, holds, in_range};
+use crate::common::{
+    GroupInputs, SPREAD_PLACES, aggregate_value, bucket_key, holds, in_range, spread_parts,
+};
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
 use straum_domain::{
@@ -103,7 +105,7 @@ pub(crate) fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims
             values.push(measure(fact.measure(name.as_str()).unwrap(), &rows, dims));
         }
         let row = AnswerRow { keys, values };
-        if meets_having(ask, &columns, &row) {
+        if meets_having(ask, fact, &columns, &row, &rows, dims) {
             answer_rows.push(row);
         }
     }
@@ -114,15 +116,37 @@ pub(crate) fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims
 }
 
 /// Whether the row's measures meet every HAVING condition, by
-/// cross-multiplying, which the small values here never overflow.
-fn meets_having(ask: &Ask, columns: &[AnswerColumn], row: &AnswerRow) -> bool {
+/// cross-multiplying, which the small values here never overflow. A
+/// variance or deviation compares exactly, from the group's `rows`, not
+/// as its answer rounds it.
+fn meets_having(
+    ask: &Ask,
+    fact: &Fact,
+    columns: &[AnswerColumn],
+    row: &AnswerRow,
+    rows: &[&[Datum]],
+    dims: &Dims,
+) -> bool {
     for condition in &ask.having {
         let mut position = 0;
         while ask.measures[position] != condition.measure {
             position += 1;
         }
         let scale = columns[ask.keys.len() + position].scale;
-        let Some(order) = order(&row.values[position], scale, &condition.value) else {
+        let measure = fact.measure(condition.measure.as_str()).unwrap();
+        let order = match &measure.aggregate {
+            Aggregate::VarSamp(_)
+            | Aggregate::VarPop(_)
+            | Aggregate::StddevSamp(_)
+            | Aggregate::StddevPop(_) => spread_order(
+                &measure.aggregate,
+                &inputs(measure, rows, dims).ints,
+                scale,
+                &condition.value,
+            ),
+            _ => order(&row.values[position], scale, &condition.value),
+        };
+        let Some(order) = order else {
             return false;
         };
         let holds = match condition.comparison {
@@ -178,6 +202,46 @@ fn order(value: &Value, scale: u32, wanted: &Literal) -> Option<Ordering> {
         return Some(0.cmp(&units));
     };
     Some(held.cmp(&asked))
+}
+
+/// The variance or deviation of `values`, at `scale`, against `wanted`,
+/// exactly as PostgreSQL compares them. A variance is
+/// `squared * 10^4 / denominator` units, which [`order`] compares as an
+/// average. A deviation and a value not below zero order as their
+/// squares do. None for a null spread.
+fn spread_order(
+    aggregate: &Aggregate,
+    values: &[i128],
+    scale: u32,
+    wanted: &Literal,
+) -> Option<Ordering> {
+    let parts = spread_parts(aggregate, values)?;
+    let factor = 10_i128.pow(SPREAD_PLACES);
+    let count = u64::try_from(parts.denominator).unwrap();
+    if !parts.root {
+        let variance = Value::Avg {
+            sum: parts.squared * factor,
+            count,
+        };
+        return order(&variance, scale, wanted);
+    }
+    let (units, wanted_scale) = match wanted {
+        Literal::Int(integer) => (i128::from(*integer), 0),
+        Literal::Decimal { units, scale } => (*units, *scale),
+        other => panic!("a deviation is compared with a number, not {other:?}"),
+    };
+    if units < 0 {
+        return Some(Ordering::Greater);
+    }
+    let squared = Value::Avg {
+        sum: parts.squared * factor * factor,
+        count,
+    };
+    let square = Literal::Decimal {
+        units: units * units,
+        scale: 2 * wanted_scale,
+    };
+    order(&squared, 2 * scale, &square)
 }
 
 /// The rows the ask reads, grouped by the values of its keys. Without
@@ -280,6 +344,12 @@ pub(crate) fn measure_scale(aggregate: &Aggregate) -> u32 {
 
 /// The measure over the rows of one group that pass its own filter.
 fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
+    aggregate_value(&measure.aggregate, inputs(measure, rows, dims))
+}
+
+/// The inputs of a measure from the rows of one group that pass its own
+/// filter.
+fn inputs(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> GroupInputs {
     let mut kept = Vec::with_capacity(rows.len());
     for row in rows {
         if passes(row, &measure.filter, dims) {
@@ -287,28 +357,26 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
         }
     }
     let Some(input) = measure.aggregate.input() else {
-        let group = GroupInputs {
+        return GroupInputs {
             rows: kept.len(),
             ints: Vec::new(),
             bools: Vec::new(),
             not_null: 0,
             distinct: 0,
         };
-        return aggregate_value(&measure.aggregate, group);
     };
     let not_null = not_null_in(&kept, input);
     let mut distinct = HashSet::new();
     for value in &not_null {
         distinct.insert(*value);
     }
-    let group = GroupInputs {
+    GroupInputs {
         rows: kept.len(),
         ints: ints_in(&kept, input),
         bools: bools_in(&kept, input),
         not_null: not_null.len(),
         distinct: distinct.len(),
-    };
-    aggregate_value(&measure.aggregate, group)
+    }
 }
 
 /// The values of a column that are not null, one per row that has one.
