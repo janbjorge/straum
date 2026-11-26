@@ -61,6 +61,8 @@ spec:
             - /etc/straum/spec.sql
             - --listen
             - {{ printf "%s:8080" .Values.listenAddress | quote }}
+            - --health-listen
+            - {{ printf "%s:%d" .Values.listenAddress (.Values.healthPort | int) | quote }}
             - --publication
             - {{ .Values.publication | quote }}
             - --max-lag
@@ -92,6 +94,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            # /livez and /readyz alone, with connections of their own:
+            # idle connections that fill the http port cannot fail a probe.
+            - name: health
+              containerPort: {{ .Values.healthPort }}
           # The hook finishes before SIGTERM, and the grace period is
           # already counting. The Service marks the pod not ready as
           # shutdown starts, while straum is still serving; the sleep
@@ -105,14 +111,14 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http
+              port: health
             periodSeconds: 5
             timeoutSeconds: 3
           # The process only: a slow load or lag never restarts the pod.
           livenessProbe:
             httpGet:
               path: /livez
-              port: http
+              port: health
             periodSeconds: 10
             timeoutSeconds: 3
           {{- with .Values.resources }}

@@ -1,6 +1,7 @@
 //! The route handlers: `handle` takes one request from the server loop in
-//! `lib.rs`, refuses it if its `Host` is not one `host.rs` allows, picks
-//! the handler by method and path, and returns the reply.
+//! `lib.rs`, refuses it if its `Host` is not one `host.rs` allows, gives
+//! 404 on the health listener to a route that is not a health check,
+//! picks the handler by method and path, and returns the reply.
 //! An ask sent as JSON goes body, then `ask.rs`, then the `AskSyntax`, then
 //! the app on a blocking thread, then `answer.rs`; the other routes read the app and
 //! hand what they read to `status.rs` or `views.rs`, or reply with a
@@ -132,6 +133,7 @@ pub(crate) async fn handle(
         hosts,
         max_answer_rows,
         turns,
+        health_only,
     } = &*served;
     let (parts, body) = request.into_parts();
     // 421, as for a name this server does not serve: the request was not
@@ -139,6 +141,10 @@ pub(crate) async fn handle(
     let host = parts.headers.get(HOST).map(HeaderValue::as_bytes);
     if let Some(refusal) = hosts.refusal(host) {
         return Ok(text(StatusCode::MISDIRECTED_REQUEST, refusal));
+    }
+    let path = parts.uri.path();
+    if *health_only && !matches!(path, "/livez" | "/readyz") {
+        return Ok(text(StatusCode::NOT_FOUND, format!("no {path} here\n")));
     }
     let accept = parts.headers.get(ACCEPT);
     // hyper sends no body in reply to HEAD, so each GET route answers it

@@ -57,6 +57,7 @@ fn reads_run_and_plan() {
         Ok(Command::Run(Run {
             spec: "s.sql".into(),
             listen: LISTEN.into(),
+            health_listen: None,
             allow_hosts: Vec::new(),
             replication: Replication::Logical,
             publication: PUBLICATION.into(),
@@ -70,6 +71,7 @@ fn reads_run_and_plan() {
     assert_eq!(
         command_of(&args(
             "run --dsn-file d --listen 127.0.0.1:9 s --publication p \
+             --health-listen 127.0.0.1:10 \
              --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
              --max-page-memory 256Mi --max-memory 2Gi --max-answer-rows 50 \
              --max-stream-memory 512Mi"
@@ -77,6 +79,7 @@ fn reads_run_and_plan() {
         Ok(Command::Run(Run {
             spec: "s".into(),
             listen: "127.0.0.1:9".into(),
+            health_listen: Some("127.0.0.1:10".into()),
             allow_hosts: Vec::new(),
             replication: Replication::Physical {
                 max_page_memory: 256 << 20,

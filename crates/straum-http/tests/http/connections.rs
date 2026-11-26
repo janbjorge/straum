@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use straum_http::{HEADER_TIMEOUT, ServeLimits};
 
 use crate::fake::{loaded, writer};
-use crate::{SERVE_LIMITS, STATUS_CODE, first_hour, read_reply, serve_limited};
+use crate::{SERVE_LIMITS, STATUS_CODE, first_hour, read_reply, serve_limited, serve_with_health};
 
 /// Fires only if the server stalls: every wait below ends far sooner.
 const HANG_GUARD: Duration = Duration::from_secs(20);
@@ -89,6 +89,34 @@ fn a_connection_past_the_limit_waits_until_one_closes() {
     second.set_read_timeout(Some(HANG_GUARD)).unwrap();
     drop(first);
     assert_eq!(read_reply(&mut second).status, 200);
+    server.stop();
+}
+
+/// The `timeoutSeconds` of the chart's probes.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// With every connection of the main listener held, the main listener
+/// answers no more, and the health listener still answers a probe within
+/// its timeout.
+#[test]
+fn a_health_check_answers_while_the_main_listener_is_full() {
+    let (server, health) = serve_with_health(writer().app().clone(), ONE_CONNECTION);
+    let mut held = TcpStream::connect(server.address).unwrap();
+    assert_eq!(livez_kept_open(&mut held, server.address), 200);
+    let mut waiting = TcpStream::connect(server.address).unwrap();
+    waiting
+        .write_all(livez(server.address, "close").as_bytes())
+        .unwrap();
+
+    let mut probe = TcpStream::connect(health).unwrap();
+    probe.set_read_timeout(Some(PROBE_TIMEOUT)).unwrap();
+    probe.write_all(livez(health, "close").as_bytes()).unwrap();
+    assert_eq!(read_reply(&mut probe).status, 200);
+
+    waiting.set_nonblocking(true).unwrap();
+    let mut byte = [0; 1];
+    let unanswered = waiting.read(&mut byte).unwrap_err();
+    assert_eq!(unanswered.kind(), ErrorKind::WouldBlock);
     server.stop();
 }
 

@@ -29,6 +29,8 @@ tests:
             - /etc/straum/spec.sql
             - --listen
             - 0.0.0.0:8080
+            - --health-listen
+            - 0.0.0.0:8081
             - --publication
             - straum
             - --max-lag
@@ -82,6 +84,8 @@ tests:
             - /etc/straum/spec.sql
             - --listen
             - 0.0.0.0:8080
+            - --health-listen
+            - 0.0.0.0:8081
             - --publication
             - trips
             - --max-lag
@@ -145,6 +149,25 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: "[::]:8080"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "[::]:8081"
+
+  - it: serves the health checks on a port of their own
+    template: deployment.yaml
+    set:
+      healthPort: 9000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: 0.0.0.0:9000
+      - equal:
+          path: spec.template.spec.containers[0].ports
+          value:
+            - name: http
+              containerPort: 8080
+            - name: health
+              containerPort: 9000
 
   - it: passes a million rows and a day of lag as whole numbers
     template: deployment.yaml
@@ -175,6 +198,8 @@ tests:
             - /etc/straum/spec.sql
             - --listen
             - 0.0.0.0:8080
+            - --health-listen
+            - 0.0.0.0:8081
             - --publication
             - straum
             - --max-lag
@@ -211,6 +236,8 @@ tests:
             - /etc/straum/spec.sql
             - --listen
             - 0.0.0.0:8080
+            - --health-listen
+            - 0.0.0.0:8081
             - --publication
             - straum
             - --max-lag
@@ -261,11 +288,15 @@ tests:
               maxSurge: 1
               maxUnavailable: 0
       - equal:
-          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
-          value: /readyz
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value:
+            path: /readyz
+            port: health
       - equal:
-          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
-          value: /livez
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value:
+            path: /livez
+            port: health
 
   - it: gives a new pod an hour to load, and a stopping one time to drain
     template: deployment.yaml

@@ -32,6 +32,14 @@ tests:
       - failedTemplate:
           errorPattern: "listenAddress"
 
+  - it: refuses a health port that is the http port
+    template: deployment.yaml
+    set:
+      healthPort: 8080
+    asserts:
+      - failedTemplate:
+          errorPattern: "healthPort"
+
   - it: takes the values straum takes
     template: deployment.yaml
     set:

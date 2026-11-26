@@ -1,6 +1,7 @@
 //! The routes besides asks and views, end to end: `/livez`, `/readyz`,
 //! `/status`, HEAD on each GET route, the replies to a wrong method or
-//! path, caching, and a shutdown with requests still in flight.
+//! path, caching, the health listener, and a shutdown with requests still
+//! in flight.
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
@@ -10,7 +11,10 @@ use std::time::Duration;
 use straum_app::{Limits, Lsn, Memory};
 
 use crate::fake::{LIMITS, START, fake, writer, writer_with};
-use crate::{JSON, call, first_hour, header, read_reply, request, serve, started};
+use crate::{
+    JSON, SERVE_LIMITS, call, first_hour, header, read_reply, request, serve, serve_with_health,
+    started,
+};
 
 #[test]
 fn no_reply_may_be_cached() {
@@ -63,6 +67,37 @@ fn routes() {
         assert_eq!(reply.body, body);
     }
     server.stop();
+}
+
+/// The health listener answers `/livez` and `/readyz`, gives 404 to
+/// every other route, and stops with the server. The main listener still
+/// serves every route.
+#[test]
+fn the_health_listener_serves_health_checks_alone() {
+    let (server, health) = serve_with_health(writer().app().clone(), SERVE_LIMITS);
+    let reply = call(health, "GET", "/livez", "");
+    assert_eq!((reply.status, reply.body.as_str()), (200, "live\n"));
+    let reply = call(health, "GET", "/readyz", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, "not ready: loading\n")
+    );
+    assert_eq!(call(health, "POST", "/livez", "").status, 405);
+    for (method, path) in [
+        ("POST", "/ask"),
+        ("GET", "/status"),
+        ("GET", "/views"),
+        ("GET", "/views/trips/spec"),
+        ("GET", "/openapi.json"),
+    ] {
+        let reply = call(health, method, path, "");
+        let expected = (404, format!("no {path} here\n"));
+        assert_eq!((reply.status, reply.body), expected, "{method} {path}");
+    }
+    assert_eq!(call(server.address, "GET", "/status", "").status, 200);
+    assert_eq!(call(server.address, "GET", "/livez", "").status, 200);
+    server.stop();
+    assert!(TcpStream::connect(health).is_err(), "still listening");
 }
 
 /// HEAD on a GET route gets the head GET gets, and no body. The server

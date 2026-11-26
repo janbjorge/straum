@@ -82,10 +82,22 @@ runs, a rebound page in a browser on that machine can read it.
 Straum serves at most 1024 connections at once. It does not accept a
 connection past that limit. The connection waits in the listen backlog
 until another connection closes. Straum cuts a connection that sends no
-request head for 5 s, from when it opens or from its last reply. So
-idle connections cannot hold the limit and keep `/livez` from an
-answer. Each connection can also hold an ask body of up to 1 MiB in
-memory while Straum reads it.
+request head for 5 s, from when it opens or from its last reply. Each
+connection can also hold an ask body of up to 1 MiB in memory while
+Straum reads it.
+
+A client that opens more than about 205 idle connections each second
+still holds the limit. Then a health check on that port gets no
+answer, and Kubernetes restarts the pod. `--health-listen ADDRESS`
+serves `/livez` and `/readyz` on a second port, with 16 connections of
+its own and the same 5 s cut. That port gives 404 to every other path.
+Its own address decides the `Host` names that it answers, as in
+[Who can ask](#who-can-ask); `--allow-hosts` does not apply to it.
+
+`--health-listen` is off by default, so `straum run` opens one port
+unless told. The chart gives it, and points its probes at that port.
+The main port serves `/livez` and `/readyz` too, so a check that
+reads them there keeps its answer.
 
 5 minutes after a connection opens, Straum takes no more requests on it.
 The request in flight gets its whole reply, and then Straum closes the
@@ -181,7 +193,9 @@ documents every value.
 It runs one pod. The spec is a ConfigMap; the data source name (DSN)
 comes from a Secret the chart never holds. Readiness is `/readyz` and
 liveness `/livez`, so a load or a lag takes the pod out of the Service
-and never restarts it. Each replica holds its own slot and loads every
+and never restarts it. The probes read port 8081 (`healthPort`), which
+`--health-listen` serves ([Connections](#connections)). The Service
+does not expose that port. Each replica holds its own slot and loads every
 table.
 
 A new spec rolls the pod. The new pod loads every table before the old

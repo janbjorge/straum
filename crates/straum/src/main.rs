@@ -31,7 +31,7 @@ use std::thread;
 use rustyline::error::ReadlineError;
 use straum_app::{App, MemoryReadings, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
-use straum_http::{AskSyntax, QueryError};
+use straum_http::{AskSyntax, Listeners, QueryError};
 use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, PgEnv, Postgres, Replication};
 
@@ -434,6 +434,7 @@ fn run(
     Run {
         spec,
         listen,
+        health_listen,
         allow_hosts,
         replication,
         publication,
@@ -448,12 +449,10 @@ fn run(
     let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
         return Err(Failure::NoDsn);
     };
-    let Bound { listener, address } = match bind(&listen) {
-        Ok(bound) => bound,
-        Err(error) => {
-            let address = listen;
-            return Err(Failure::Listening { address, error });
-        }
+    let Bound { listener, address } = bind(listen)?;
+    let health = match health_listen {
+        Some(listen) => Some(bind(listen)?),
+        None => None,
     };
 
     // After a panic the store may be half written, or nothing writes it
@@ -480,6 +479,9 @@ fn run(
     .reporting(log);
     // Before the writer, whose failure may end the process at once.
     log(&format!("listening on {address}"));
+    if let Some(Bound { address, .. }) = &health {
+        log(&format!("serving /livez and /readyz alone on {address}"));
+    }
     thread::Builder::new()
         .name("straum-writer".into())
         .spawn(move || run_writer(writer))
@@ -490,8 +492,12 @@ fn run(
         read: read_ask,
         describe: straum_notation::describe_ask_error,
     };
+    let listeners = Listeners {
+        main: listener,
+        health: health.map(|bound| bound.listener),
+    };
     straum_http::serve_until_signal(
-        listener,
+        listeners,
         app,
         syntax,
         definitions,
@@ -513,7 +519,17 @@ struct Bound {
     address: SocketAddr,
 }
 
-fn bind(listen: &str) -> io::Result<Bound> {
+fn bind(listen: String) -> Result<Bound, Failure> {
+    match bound(&listen) {
+        Ok(bound) => Ok(bound),
+        Err(error) => Err(Failure::Listening {
+            address: listen,
+            error,
+        }),
+    }
+}
+
+fn bound(listen: &str) -> io::Result<Bound> {
     let listener = TcpListener::bind(listen)?;
     let address = listener.local_addr()?;
     Ok(Bound { listener, address })

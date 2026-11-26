@@ -31,6 +31,11 @@ always passes `--listen`: on its own straum listens on `127.0.0.1`,
 which no probe or Service reaches. straum has no authentication or
 TLS, so any pod that reaches the Service can ask.
 
+The probes read `/livez` and `/readyz` on `healthPort`, 8081 by
+default, which the chart passes as `--health-listen`. That port has
+connections of its own, so idle connections that fill port 8080 cannot
+fail a probe and restart the pod. The Service does not expose it.
+
 With `wal: physical`, set `maxPageMemory` well under
 `resources.limits.memory`. The rows it bounds come on top of the
 cells, and at the defaults, both `1Gi`, the pod is killed for its

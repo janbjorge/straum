@@ -11,6 +11,10 @@
 //! On loopback a request whose `Host` names another machine or port gets
 //! 421 (see `host.rs`).
 //!
+//! A health listener, if `serve` is given one, serves `/livez` and
+//! `/readyz` alone, with [`MAX_HEALTH_CONNECTIONS`] of its own. Idle
+//! connections that fill the main listener then cannot fail a health check.
+//!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
 //!   query read by the `AskSyntax` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
@@ -98,6 +102,18 @@ pub const CONNECTION_GRACE: Duration = Duration::from_secs(60);
 /// and after each reply. hyper's own 30 s let idle connections fill
 /// [`MAX_CONNECTIONS`] and hold `/livez` past a health check's timeout.
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+/// The connections the health listener serves at once: a few probes, and
+/// apart from [`MAX_CONNECTIONS`], so a flood of the main listener does
+/// not reach them.
+pub const MAX_HEALTH_CONNECTIONS: usize = 16;
+
+/// Where `serve` listens: the main listener for every route, and, if
+/// given, a health listener for `/livez` and `/readyz` alone.
+#[derive(Debug)]
+pub struct Listeners {
+    pub main: net::TcpListener,
+    pub health: Option<net::TcpListener>,
+}
 
 /// What one client may hold of the server, and for how long.
 #[derive(Debug, Clone, Copy)]
@@ -167,18 +183,22 @@ struct Served {
     /// done, so asks without end can't keep the writer from the store's
     /// lock, which a waiting writer would hold every new reader behind.
     turns: Arc<Semaphore>,
+    /// On the health listener: every route but `/livez` and `/readyz`
+    /// gets 404.
+    health_only: bool,
 }
 
-/// Serves `app` on `listener`, and each view's `definitions`, until
+/// Serves `app` on `listeners`, and each view's `definitions`, until
 /// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
 /// time enabled. With `named_hosts`, each `NAME[:PORT]`, a request whose
-/// `Host` is none of them gets 421; with none, the address decides.
+/// `Host` is none of them gets 421; with none, the address decides. On
+/// the health listener its address always decides.
 /// `limits` caps each answer's rows, the connections served at once and
 /// how long each stays open.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 pub async fn serve(
-    listener: net::TcpListener,
+    listeners: Listeners,
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
@@ -186,31 +206,95 @@ pub async fn serve(
     limits: ServeLimits,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    let hosts = Hosts::of(listener.local_addr()?, named_hosts);
-    listener.set_nonblocking(true)?;
-    let listener = TcpListener::from_std(listener)?;
+    let Listeners { main, health } = listeners;
+    let hosts = Hosts::of(main.local_addr()?, named_hosts);
+    let main = to_tokio(main)?;
     // A core count unknown is taken as one: asks queue, but none fails.
     let cores = thread::available_parallelism().map_or(1, NonZero::get);
-    let served = Arc::new(Served {
+    let served = Served {
         app,
         syntax,
         definitions,
         hosts,
         max_answer_rows: limits.max_answer_rows,
         turns: Arc::new(Semaphore::new(cores)),
-    });
+        health_only: false,
+    };
     let (stop, stopping) = watch::channel(false);
+    let health_connections = Arc::new(Semaphore::new(MAX_HEALTH_CONNECTIONS));
+    if let Some(health) = health {
+        // Probes name the pod's address, not the names told for asks.
+        let health_served = Served {
+            app: served.app.clone(),
+            definitions: Vec::new(),
+            hosts: Hosts::of(health.local_addr()?, Vec::new()),
+            turns: Arc::clone(&served.turns),
+            health_only: true,
+            ..served
+        };
+        let mut stopped = stopping.clone();
+        let accepting = accept_until(
+            to_tokio(health)?,
+            Arc::clone(&health_connections),
+            Arc::new(health_served),
+            limits,
+            stopping.clone(),
+            async move {
+                stopped.wait_for(is_true).await.ok();
+            },
+        );
+        tokio::spawn(accepting);
+    }
     let connections = Arc::new(Semaphore::new(limits.max_connections));
+    let accepting = accept_until(
+        main,
+        Arc::clone(&connections),
+        Arc::new(served),
+        limits,
+        stopping,
+        shutdown,
+    );
+    accepting.await;
+    stop.send_replace(true);
+    // Each connection holds a permit until it closes, so all of them free
+    // means none is open. A stop waits for none past the deadline.
+    let every_connection_closed = async {
+        let held = [
+            (&connections, limits.max_connections),
+            (&health_connections, MAX_HEALTH_CONNECTIONS),
+        ];
+        for (permits, count) in held {
+            let count = u32::try_from(count).unwrap_or(u32::MAX);
+            permits.acquire_many(count).await.ok();
+        }
+    };
+    tokio::time::timeout(DRAIN_DEADLINE, every_connection_closed)
+        .await
+        .ok();
+    Ok(())
+}
+
+/// Accepts connections on `listener` until `shutdown` completes, each
+/// served from `served` while it holds one of `connections`' permits.
+// `impl Future`: each caller passes an `async` block, whose type has no name.
+async fn accept_until(
+    listener: TcpListener,
+    connections: Arc<Semaphore>,
+    served: Arc<Served>,
+    limits: ServeLimits,
+    stopping: watch::Receiver<bool>,
+    shutdown: impl Future<Output = ()>,
+) {
     let mut shutdown = pin!(shutdown);
     loop {
         // Past the limit nothing is accepted: the listen backlog holds the
         // next connections until one closes.
         let free = Arc::clone(&connections).acquire_owned();
         let Some(Ok(permit)) = before_shutdown(shutdown.as_mut(), free).await else {
-            break;
+            return;
         };
         let Some(accepted) = before_shutdown(shutdown.as_mut(), listener.accept()).await else {
-            break;
+            return;
         };
         match accepted {
             Ok((stream, _)) => {
@@ -226,25 +310,22 @@ pub async fn serve(
             Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
     }
-    drop(listener);
-    stop.send_replace(true);
-    // Each connection holds a permit until it closes, so all of them free
-    // means none is open. A stop waits for none past the deadline.
-    let every_permit = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
-    tokio::time::timeout(DRAIN_DEADLINE, connections.acquire_many(every_permit))
-        .await
-        .ok();
-    Ok(())
 }
 
-/// Serves `app` on `listener` on a tokio runtime of its own until SIGTERM
+/// `listener` as tokio takes it. Needs the runtime entered.
+fn to_tokio(listener: net::TcpListener) -> io::Result<TcpListener> {
+    listener.set_nonblocking(true)?;
+    TcpListener::from_std(listener)
+}
+
+/// Serves `app` on `listeners` on a tokio runtime of its own until SIGTERM
 /// or SIGINT, then finishes the requests in flight, for at most
 /// [`DRAIN_DEADLINE`], and returns; a second signal returns at once. The
 /// caller stays synchronous, since only this crate runs tokio (ADR-0002).
 /// `stopping` runs when the first signal arrives; `named_hosts` and
 /// `max_answer_rows` as for [`serve`].
 pub fn serve_until_signal(
-    listener: net::TcpListener,
+    listeners: Listeners,
     app: App,
     syntax: AskSyntax,
     definitions: Vec<Definition>,
@@ -282,7 +363,7 @@ pub fn serve_until_signal(
         connection_grace: CONNECTION_GRACE,
     };
     let served = serve(
-        listener,
+        listeners,
         app,
         syntax,
         definitions,

@@ -23,7 +23,7 @@ use std::thread::{self, JoinHandle};
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Literal};
-use straum_http::{AskSyntax, QueryError, ReadAsk, ServeLimits};
+use straum_http::{AskSyntax, Listeners, QueryError, ReadAsk, ServeLimits};
 use straum_notation::SqlError;
 use tokio::sync::oneshot;
 
@@ -105,25 +105,44 @@ fn serve_at_most(app: App, max_answer_rows: usize) -> Server {
 
 /// Serves `app` on loopback within `limits`.
 fn serve_limited(app: App, limits: ServeLimits) -> Server {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    serve_listening(app, notation(), listener, Vec::new(), limits)
+    let listeners = Listeners {
+        main: TcpListener::bind("127.0.0.1:0").unwrap(),
+        health: None,
+    };
+    serve_listening(app, notation(), listeners, Vec::new(), limits)
+}
+
+/// Serves `app` on loopback within `limits`, and serves `/livez` and
+/// `/readyz` on a health listener too; that listener's address.
+fn serve_with_health(app: App, limits: ServeLimits) -> (Server, SocketAddr) {
+    let health = TcpListener::bind("127.0.0.1:0").unwrap();
+    let health_address = health.local_addr().unwrap();
+    let listeners = Listeners {
+        main: TcpListener::bind("127.0.0.1:0").unwrap(),
+        health: Some(health),
+    };
+    let server = serve_listening(app, notation(), listeners, Vec::new(), limits);
+    (server, health_address)
 }
 
 /// Serves `app` on `listen`, answering `named_hosts` if any, reached
 /// through loopback whatever address it listens on.
 fn serve_on(app: App, syntax: AskSyntax, listen: &str, named_hosts: Vec<String>) -> Server {
-    let listener = TcpListener::bind(listen).unwrap();
-    serve_listening(app, syntax, listener, named_hosts, SERVE_LIMITS)
+    let listeners = Listeners {
+        main: TcpListener::bind(listen).unwrap(),
+        health: None,
+    };
+    serve_listening(app, syntax, listeners, named_hosts, SERVE_LIMITS)
 }
 
 fn serve_listening(
     app: App,
     syntax: AskSyntax,
-    listener: TcpListener,
+    listeners: Listeners,
     named_hosts: Vec<String>,
     limits: ServeLimits,
 ) -> Server {
-    let port = listener.local_addr().unwrap().port();
+    let port = listeners.main.local_addr().unwrap().port();
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let (stop, stopped) = oneshot::channel::<()>();
     let thread = thread::spawn(move || {
@@ -133,7 +152,7 @@ fn serve_listening(
         let spec = straum_notation::parse(SPEC).unwrap();
         let definitions = straum_notation::definitions(SPEC, &spec);
         runtime.block_on(straum_http::serve(
-            listener,
+            listeners,
             app,
             syntax,
             definitions,

@@ -99,6 +99,11 @@ fn says_what_is_wrong() {
             Some("postgres://straum:secret@db/straum"),
             format!("straum: listening on {taken}: Address already in use"),
         ),
+        (
+            &["run", "--wal", "logical", &spec, "--health-listen", &taken],
+            Some("postgres://straum@db/straum"),
+            format!("straum: listening on {taken}: Address already in use"),
+        ),
     ];
     for (args, dsn, error) in cases {
         let mut command = straum(args);

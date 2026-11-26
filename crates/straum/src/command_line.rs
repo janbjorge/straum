@@ -36,6 +36,7 @@ const OUT_FLAG: &str = "--out";
 // Each flag is written once, here: a misspelt name at a read site
 // fails to compile, where a literal would silently take the default.
 const LISTEN_FLAG: &str = "--listen";
+const HEALTH_LISTEN_FLAG: &str = "--health-listen";
 const ALLOW_HOSTS_FLAG: &str = "--allow-hosts";
 const WAL_FLAG: &str = "--wal";
 const PUBLICATION_FLAG: &str = "--publication";
@@ -147,6 +148,7 @@ impl Name {
         match self {
             Name::Run => &[
                 LISTEN_FLAG,
+                HEALTH_LISTEN_FLAG,
                 ALLOW_HOSTS_FLAG,
                 WAL_FLAG,
                 PUBLICATION_FLAG,
@@ -213,6 +215,9 @@ pub(crate) enum Command {
 pub(crate) struct Run {
     pub(crate) spec: String,
     pub(crate) listen: String,
+    /// Where to serve `/livez` and `/readyz` alone, apart from the asks;
+    /// `None`, the default, serves them on `listen` only.
+    pub(crate) health_listen: Option<String>,
     /// The `Host` names, each `NAME[:PORT]`, that requests may name;
     /// empty, the default, leaves it to the listen address.
     pub(crate) allow_hosts: Vec<String>,
@@ -606,6 +611,7 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     Ok(Command::Run(Run {
         spec,
         listen: flags.text_or(LISTEN_FLAG, LISTEN),
+        health_listen: flags.text(HEALTH_LISTEN_FLAG),
         allow_hosts: flags
             .parsed_if_given(ALLOW_HOSTS_FLAG, host_names, ALLOW_HOSTS_TAKES)?
             .unwrap_or_default(),
