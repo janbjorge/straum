@@ -480,7 +480,7 @@ a property test.
 | Invariant | Held by |
 | --- | --- |
 | A commit applies whole. | The decoder holds a transaction until its Commit message (`Decoder`), and the store takes it under one write lock (`State::apply`). An answer never sees half of one. |
-| No commit is missed or applied twice. | The snapshot is at the slot's consistent point L, and the stream starts at L (`Source::open`). `the_snapshot_and_the_stream_split_exactly` races 2,000 commits against it. |
+| No commit is missed or applied twice. | The snapshot is at the slot's consistent point L, and the stream starts at L (`Source::open`). `the_snapshot_and_the_stream_split_exactly` races commits against it, until a commit comes after the load. |
 | Only the writer writes. | Asks reach the store through `App::read`, the writer alone through `App::write`. |
 | A row removed was added. | `RowError::Missing` from a cell, a value count or a projection entry ends the step (`Rollup::remove`, `Projection::remove`), and Straum exits. |
 | A row turned away changes nothing. | Each row is checked before a cell or a projection entry changes (`Rollup::check`, `Projection::check`). An update checks its new row before its old row leaves (`Store::update_row`). |

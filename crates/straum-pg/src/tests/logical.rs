@@ -483,26 +483,32 @@ fn the_snapshot_and_the_stream_split_exactly() {
     for round in 0..3 {
         db.run("TRUNCATE $S.trips");
         let written = Arc::new(AtomicUsize::new(0));
-        let done = Arc::new(AtomicBool::new(false));
-        let inserter = insert_trips_in_turn(db.another_connection(), &written, &done);
+        let stop = Arc::new(AtomicBool::new(false));
+        let inserter = insert_trips_in_turn(db.another_connection(), &written, &stop);
         while written.load(Ordering::Acquire) < 50 {
             thread::sleep(Duration::from_millis(1));
         }
         let mut writer = db.writer(SPEC);
         started(&mut writer);
-        assert!(
-            !done.load(Ordering::Acquire),
-            "round {round}: the writer finished before the load"
-        );
         let loaded = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
+        let Value::Int(loaded) = loaded.answer.rows[0].values[0] else {
+            panic!("round {round}: {:?}", loaded.answer.rows[0].values[0]);
+        };
+        // A slow start can let more trips into the load. The inserter goes
+        // on until a commit after the load, so the stream must carry one.
+        let wait = Wait::new("a trip after the load");
+        while i128::try_from(written.load(Ordering::Acquire)).unwrap() <= loaded {
+            wait.poll();
+        }
+        stop.store(true, Ordering::Release);
+        inserter.join().unwrap();
+        let total = i128::try_from(written.load(Ordering::Acquire)).unwrap();
         // One step can apply many commits, so the trips in the load, not a
         // count of steps, tell what came by the stream.
         assert!(
-            matches!(loaded.answer.rows[0].values[0], Value::Int(trips) if (1..2_000).contains(&trips)),
-            "round {round}: {:?}",
-            loaded.answer.rows[0].values[0]
+            (1..total).contains(&loaded),
+            "round {round}: {loaded} of {total}"
         );
-        inserter.join().unwrap();
         db.run("INSERT INTO $S.trips VALUES (-1, now(), 'marker', 1, 1.00, 'ann', 2)");
         let marker = ask("trips", &["trips"], &["kind"]);
         loop {
@@ -523,23 +529,24 @@ fn the_snapshot_and_the_stream_split_exactly() {
     }
 }
 
-/// A thread inserting 2000 trips into `db`'s schema, one commit each,
-/// counting them in `written` and setting `done` at the end.
+/// A thread inserting trips into `db`'s schema, one commit each,
+/// counting them in `written`, until `stop` is set.
 fn insert_trips_in_turn(
     mut db: Db,
     written: &Arc<AtomicUsize>,
-    done: &Arc<AtomicBool>,
+    stop: &Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
-    let (written, done) = (Arc::clone(written), Arc::clone(done));
+    let (written, stop) = (Arc::clone(written), Arc::clone(stop));
     thread::spawn(move || {
-        for id in 0..2_000 {
+        let mut id = 0;
+        while !stop.load(Ordering::Acquire) {
             db.run(&format!(
                 "INSERT INTO $S.trips VALUES ({id}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
                 START + id
             ));
             written.fetch_add(1, Ordering::Release);
+            id += 1;
         }
-        done.store(true, Ordering::Release);
     })
 }
 
