@@ -563,7 +563,7 @@ impl Walker {
     /// same key, operator and value twice is one condition spelled twice.
     // Borrows the parts from the tree, which outlives the walk.
     fn without_repeats<'tree>(&mut self, parts: Vec<&'tree sql::Expr>) -> Vec<&'tree sql::Expr> {
-        let mut seen: Vec<String> = Vec::with_capacity(parts.len());
+        let mut seen: HashSet<String> = HashSet::with_capacity(parts.len());
         let mut kept = Vec::with_capacity(parts.len());
         for part in parts {
             let written = part.to_string();
@@ -571,7 +571,7 @@ impl Walker {
                 self.error(line(part), format!("{written} given twice"));
                 continue;
             }
-            seen.push(written);
+            seen.insert(written);
             kept.push(part);
         }
         kept
