@@ -92,8 +92,7 @@ impl Store {
                 if let Some(expander) = &mut expander {
                     cell_loop.ask_expanded(ask, expander);
                 } else {
-                    let cells = cells_in(rollup, ask, cell_loop.cover);
-                    cell_loop.ask_once(&mut self.join_checks(fact, rollup, cells), ask);
+                    cell_loop.ask_once(&mut self.join_checks(fact, rollup, cell_loop.cells), ask);
                 }
             }
         }
@@ -137,12 +136,11 @@ impl Store {
     ) -> CellLoop<'s> {
         let rollup = read.rollup();
         let cover = cover_of(fact, ask);
-        let buckets = buckets(rollup, ask, cover).count();
         let cells = cells_in(rollup, ask, cover);
         let mut by = Vec::with_capacity(ask.keys.len());
         for key in &ask.keys {
             by.push(match fact.time_width(key) {
-                Some(width) => Grouping::time(width, buckets),
+                Some(width) => Grouping::time(width),
                 None => {
                     Grouping::lookup(self.lookup(fact, read, key.name(), cells, expanded), rollup)
                 }
@@ -165,6 +163,7 @@ impl Store {
         CellLoop {
             rollup,
             cover,
+            cells,
             by,
             groups,
             filter,

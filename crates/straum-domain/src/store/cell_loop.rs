@@ -27,6 +27,8 @@ pub(super) struct CellLoop<'s> {
     pub(super) rollup: &'s Rollup,
     /// Which buckets the ask reads.
     pub(super) cover: Cover,
+    /// The cells the ask reads.
+    pub(super) cells: usize,
     pub(super) by: Vec<Grouping<'s>>,
     pub(super) groups: Groups,
     pub(super) filter: Vec<ConditionCheck<'s>>,

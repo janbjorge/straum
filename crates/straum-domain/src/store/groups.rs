@@ -36,8 +36,6 @@ pub(super) enum Grouping<'s> {
         width: Width,
         /// The start of each time-key bucket met so far, the one at hand last.
         bucket_starts: Vec<i64>,
-        /// The buckets the ask covers, the most it can meet.
-        bound: usize,
     },
 }
 
@@ -50,19 +48,11 @@ impl<'s> Grouping<'s> {
         }
     }
 
-    /// The bucket key, of `width`, over an ask that covers `buckets`.
-    pub(super) fn time(width: Width, buckets: usize) -> Grouping<'s> {
+    /// The bucket key, of `width`.
+    pub(super) fn time(width: Width) -> Grouping<'s> {
         Grouping::Time {
             width,
             bucket_starts: Vec::new(),
-            bound: buckets,
-        }
-    }
-
-    /// Numbers the key's values have.
-    fn bound(&self) -> usize {
-        match self {
-            Grouping::Lookup { bound, .. } | Grouping::Time { bound, .. } => *bound,
         }
     }
 
@@ -240,9 +230,9 @@ impl Groups {
             if let Some(so_far) = size {
                 match grouping {
                     Grouping::Time { .. } => strides.push(0),
-                    Grouping::Lookup { .. } => {
+                    Grouping::Lookup { bound, .. } => {
                         strides.push(so_far);
-                        size = so_far.checked_mul(grouping.bound());
+                        size = so_far.checked_mul(*bound);
                     }
                 }
             }
