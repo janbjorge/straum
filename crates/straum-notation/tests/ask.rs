@@ -794,6 +794,33 @@ fn having_takes_one_spelling() {
     );
 }
 
+/// PostgreSQL has no `==`, and `NOTNULL` is its second spelling of `IS
+/// NOT NULL`: an ask that writes either is refused before it is read,
+/// naming the one to write.
+#[test]
+fn an_operator_has_one_spelling() {
+    let three = [Literal::Int(JAN), Literal::Int(FEB), Literal::Int(7)];
+    let range = "bucket >= $1 AND bucket < $2";
+    for (written, error) in [
+        (
+            format!("SELECT trips FROM t WHERE kind == $3 AND {range}"),
+            "line 1: write = for equal, not ==",
+        ),
+        (
+            format!("SELECT trips FROM t WHERE {range} HAVING trips == $3"),
+            "line 1: write = for equal, not ==",
+        ),
+        (
+            format!("SELECT trips FROM t WHERE done_at NOTNULL AND {range}"),
+            "line 1: write IS NOT NULL, not NOTNULL",
+        ),
+    ] {
+        assert_eq!(errors(&written, &three), [error], "{written}");
+        let one = written.replace("==", "=");
+        assert!(one == written || parse_ask(&one, &three).is_ok(), "{one}");
+    }
+}
+
 /// A refused ask names only what is wrong with it: a parameter it never
 /// reached is not reported unused, and a comment is refused as itself,
 /// whatever it holds.

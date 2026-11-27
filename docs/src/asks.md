@@ -141,7 +141,8 @@ value a group was kept for. A key goes in `WHERE`, a measure in
 `HAVING`; each refuses the other and says where it goes. Comparisons
 join by `AND`. Not equal is `<>`, SQL's standard spelling. PostgreSQL
 reads `!=` as an alias of it, but Straum SQL keeps one spelling per
-meaning, so `!=` is refused.
+meaning, so `!=` is refused. PostgreSQL has no `==`, so `WHERE` and
+`HAVING` refuse it.
 
 A null measure meets no comparison, `<>` included, as in PostgreSQL,
 so its group is left out. An ask without keys answers its one row

@@ -611,6 +611,52 @@ fn one_condition_spelling() {
     ]);
 }
 
+/// PostgreSQL has no `==`, and `NOTNULL` is its second spelling of `IS
+/// NOT NULL`: each is refused before the view is read, naming the one
+/// to write. After a `.` or `AS`, `notnull` is a name.
+#[test]
+fn an_operator_has_one_spelling() {
+    for (from, to, error) in [
+        (
+            "FILTER (WHERE orders.status = 'paid')",
+            "FILTER (WHERE orders.status == 'paid')",
+            "line 9: write = for equal, not ==",
+        ),
+        (
+            "ON customers.id = orders.customer_id",
+            "ON customers.id == orders.customer_id",
+            "line 12: write = for equal, not ==",
+        ),
+        (
+            "GROUP BY",
+            "WHERE orders.status == 'paid'\nGROUP BY",
+            "line 13: write = for equal, not ==",
+        ),
+        (
+            "(orders.shipped_at IS NOT NULL) AS shipped",
+            "(orders.shipped_at NOTNULL) AS shipped",
+            "line 5: write IS NOT NULL, not NOTNULL",
+        ),
+        (
+            "WHERE orders.shipped_at IS NOT NULL AND",
+            "WHERE orders.shipped_at NOTNULL AND",
+            "line 10: write IS NOT NULL, not NOTNULL",
+        ),
+        (
+            "count(*) AS orders",
+            "count(*) AS notnull",
+            "line 7: notnull is a word SQL reserves, so no ask could name it; name it otherwise",
+        ),
+    ] {
+        assert_eq!(error_lines(&canon(from, to)), [error], "{to}");
+    }
+    let column = canon(
+        "orders.customer_id AS customer_id",
+        "orders.notnull AS customer_id",
+    );
+    assert!(parse(&column).is_ok(), "{:?}", parse(&column));
+}
+
 /// A parenthesis is written where the canon has one, around a null-ness
 /// key, and nowhere else: AND needs none, and neither does a column.
 #[test]

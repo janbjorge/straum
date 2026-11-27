@@ -72,6 +72,7 @@ What the synopsis can't show:
 | `IN` | Two values or more; for one, write `=`. |
 | `EXISTS` | In the view's `WHERE` only, not in a `FILTER`. |
 | Parentheses | Only where the synopsis has them: around a null-ness key, never around a condition or a column. |
+| Operators | `=` for equal: PostgreSQL has no `==`. `IS NOT NULL`, never `NOTNULL`, PostgreSQL's second spelling. |
 | Identifiers | Unquoted and lowercase: a letter or `_`, then letters, digits and `_`, at most 63 bytes. Function names too: `count`, not `COUNT`. Keywords such as `SELECT`, `AS` and `GROUP BY` take any case. |
 | Numbers, widths | One spelling each: `GROUP BY 1`, never `01`; `'1 hour'`, never `'60 minutes'`. |
 | Names | The time, a key or a measure needs a name an ask can say, so not a word SQL reserves, such as `user`, `all` or `from`. |

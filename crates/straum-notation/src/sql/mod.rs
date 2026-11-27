@@ -75,6 +75,9 @@ fn statements(text: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
     if let Some(error) = too_many_operators(&tokens) {
         return Err(vec![error]);
     }
+    if let Some(error) = other_operator_spelling(&tokens) {
+        return Err(vec![error]);
+    }
     let mut parser = Parser::new(&dialect).with_tokens_with_locations(tokens);
     match parser.parse_statements() {
         Ok(statements) => Ok(statements),
@@ -109,6 +112,36 @@ fn too_many_operators(tokens: &[TokenWithSpan]) -> Option<SqlError> {
                 ),
             });
         }
+    }
+    None
+}
+
+/// The error for the first `==` or `NOTNULL` of `tokens`, naming the one
+/// spelling. `sqlparser` reads `==` as `=`, but PostgreSQL has no `==`.
+/// `NOTNULL` is PostgreSQL's second spelling of `IS NOT NULL`.
+fn other_operator_spelling(tokens: &[TokenWithSpan]) -> Option<SqlError> {
+    // After a `.` or `AS`, PostgreSQL reads `notnull` as a name.
+    let mut names_next = false;
+    for token in tokens {
+        let message = match &token.token {
+            Token::Whitespace(_) => continue,
+            Token::DoubleEq => "write = for equal, not ==",
+            Token::Word(word) if word.keyword == Keyword::NOTNULL && !names_next => {
+                "write IS NOT NULL, not NOTNULL"
+            }
+            Token::Word(word) => {
+                names_next = word.keyword == Keyword::AS;
+                continue;
+            }
+            other => {
+                names_next = *other == Token::Period;
+                continue;
+            }
+        };
+        return Some(SqlError {
+            line: Some(token.span.start.line),
+            message: message.into(),
+        });
     }
     None
 }
