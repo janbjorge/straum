@@ -176,8 +176,8 @@ table's cells or projection.
 
 Straum stops when the publication drops a spec table, and on `ALTER
 COLUMN .. TYPE`, for which logical decoding sends no rows. `VACUUM
-FULL`, `CLUSTER`, a column `GRANT`, `SET STATISTICS`, `SET STORAGE` and
-`SET DEFAULT` stop nothing.
+FULL`, `CLUSTER`, a column `GRANT`, `SET STATISTICS`, `SET STORAGE`,
+`SET DEFAULT`, `SET NOT NULL` and `DROP NOT NULL` stop nothing.
 
 ## The physical stream
 

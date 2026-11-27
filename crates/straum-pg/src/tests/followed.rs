@@ -390,9 +390,10 @@ fn a_column_altered_to_its_own_type_stops_the_logical_stream() {
     );
 }
 
-/// A grant on a column, its statistics target, its storage and a first
-/// default write its catalog row anew and leave its values and type as
-/// they were: none stops Straum. A type of another width does.
+/// A grant on a column, its statistics target, its storage, a first
+/// default and a NOT NULL set or dropped write its catalog row anew and
+/// leave its values and type as they were: none stops Straum. A type of
+/// another width does.
 #[test]
 fn a_column_granted_keeps_the_logical_stream_and_one_retyped_stops_it() {
     let pg = postgres();
@@ -407,6 +408,8 @@ fn a_column_granted_keeps_the_logical_stream_and_one_retyped_stops_it() {
         "ALTER TABLE $S.trips ALTER COLUMN fare SET STATISTICS 500",
         "ALTER TABLE $S.trips ALTER COLUMN rider SET STORAGE EXTERNAL",
         "ALTER TABLE $S.trips ALTER COLUMN tip SET DEFAULT 0",
+        "ALTER TABLE $S.trips ALTER COLUMN at SET NOT NULL",
+        "ALTER TABLE $S.trips ALTER COLUMN at DROP NOT NULL",
     ] {
         db.run(kept);
         source
