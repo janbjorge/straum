@@ -150,7 +150,7 @@ with the columns both read.
 | `--wal logical\|physical` | Required for the SQL | The setup for that stream: the physical one needs no publication or `REPLICA IDENTITY FULL`. |
 | `--publication NAME` | `straum` | The publication to make; give `straum run` the same name. |
 | `--role NAME` | The DSN's user, else `straum` | The role `straum run` connects as. |
-| `--dsn-file FILE` | As for `straum run` | With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |
+| `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |
 | `--copy DIR` | | Write `export.sql` and `load.sql` into `DIR` instead of the SQL. No DSN is read. |
 | `--tables` | | Print the tables the specs name instead of the SQL: one per line, quoted, in the order the setup lists them, for `pg_dump -t`. No DSN is read. |
 | `--out FILE` | stdout | Write the SQL, or the tables, to this file. |
