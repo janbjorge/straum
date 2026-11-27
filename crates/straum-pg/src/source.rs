@@ -749,10 +749,11 @@ impl Postgres {
 
     /// The stream's error, if the stream thread failed.
     fn stream_error(&mut self) -> Option<Error> {
-        let State::Streaming(stream) = &mut self.state else {
-            return None;
-        };
-        stream.check().err()
+        match &mut self.state {
+            State::Loading(snapshot) => snapshot.stream.check().err(),
+            State::Streaming(stream) => stream.check().err(),
+            State::Closed => None,
+        }
     }
 }
 

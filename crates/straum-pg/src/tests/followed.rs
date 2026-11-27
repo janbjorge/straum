@@ -488,16 +488,31 @@ fn a_table_left_out_under_a_lock_stops_the_stream_once_the_lock_goes() {
 /// temporary slot. The next reading then gives the stream's reason.
 #[test]
 fn a_reading_after_the_stream_failed_says_why() {
+    reading_after_the_stream_failed("slot_gone", true);
+}
+
+/// As [`a_reading_after_the_stream_failed_says_why`], after the last load
+/// and before the first commit. Straum reads the WAL there once.
+#[test]
+fn a_reading_after_the_stream_failed_before_the_first_commit_says_why() {
+    reading_after_the_stream_failed("slot_gone_loaded", false);
+}
+
+/// Fails the stream after the load, and checks the reasons that the
+/// readings give. The first commit is asked for when `committed`.
+fn reading_after_the_stream_failed(schema: &str, committed: bool) {
     let pg = postgres();
-    let mut db = Db::new(&pg, "slot_gone", TABLES);
+    let mut db = Db::new(&pg, schema, TABLES);
     db.run(&Rng::new(3).trip(1));
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
     load_all(&mut source, &spec).unwrap();
-    // The first call starts the stream. The query of its walsender names
-    // the publication, and the publication has the name of the schema.
-    assert_eq!(source.next_commit(Duration::ZERO).unwrap(), None);
+    if committed {
+        assert_eq!(source.next_commit(Duration::ZERO).unwrap(), None);
+    }
+    // The query of the stream's walsender names the publication, and the
+    // publication has the name of the schema.
     let slot = db.rows(
         "SELECT s.slot_name FROM pg_replication_slots s
            JOIN pg_stat_activity a ON a.pid = s.active_pid
