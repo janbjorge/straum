@@ -24,8 +24,8 @@ const STARTED: &str = "the writer applies commits only to a started stream";
 
 const FAILED: &str = "a writer that failed takes no more steps: start a new one";
 
-/// How often the writer reads the server's WAL while it waits for commits.
-/// The lag can look up to this much longer than it is.
+/// How long after a reading of the server's WAL ends the writer reads it
+/// again. The lag can look up to this much longer than it is.
 const WAL_EVERY: Duration = Duration::from_secs(1);
 
 const BYTES_PER_MIB: u32 = 1 << 20;
@@ -39,8 +39,11 @@ pub struct Writer<S> {
     source: S,
     app: App,
     phase: Phase,
-    /// When the server's WAL was last read.
+    /// When the server's WAL was last read: the time before the reading.
     wal_read_at: Instant,
+    /// When the next reading of the WAL falls due: `WAL_EVERY` after the
+    /// last reading ended, so a slow reading leaves time to apply.
+    wal_due_at: Instant,
     /// Where the start says what it is doing, line by line.
     report: Report,
 }
@@ -155,6 +158,7 @@ impl<S: Source> Writer<S> {
             app,
             phase: Phase::Loading,
             wal_read_at: Instant::now(),
+            wal_due_at: Instant::now(),
             report: report_nothing,
         }
     }
@@ -266,10 +270,10 @@ impl<S: Source> Writer<S> {
 
     fn apply_next(&mut self) -> Result<Lsn, Error> {
         loop {
-            if self.wal_read_at.elapsed() >= WAL_EVERY {
+            if Instant::now() >= self.wal_due_at {
                 self.take_wal_reading()?;
             }
-            let wait = WAL_EVERY.saturating_sub(self.wal_read_at.elapsed());
+            let wait = self.wal_due_at.saturating_duration_since(Instant::now());
             if let Some(mut commit) = self.source.next_commit(wait)? {
                 // One wait for the lock applies every commit queued, so a
                 // long ask delays a batch and not each commit.
@@ -283,7 +287,7 @@ impl<S: Source> Writer<S> {
                     following.applying.count(commit.changes.len());
                     drop(progress);
                     // The reading of the WAL never runs under the lock.
-                    if self.wal_read_at.elapsed() >= WAL_EVERY {
+                    if Instant::now() >= self.wal_due_at {
                         return Ok(commit.lsn);
                     }
                     match self.source.next_commit(Duration::ZERO)? {
@@ -313,6 +317,7 @@ impl<S: Source> Writer<S> {
         let at = Instant::now();
         let wal = self.source.wal()?;
         self.wal_read_at = at;
+        self.wal_due_at = Instant::now() + WAL_EVERY;
         let retained = wal.retained();
         let limit = self.app.limits.max_retained_wal;
         if retained > limit {
@@ -594,6 +599,8 @@ mod tests {
         pause: Duration,
         asked: Vec<Duration>,
         readings: usize,
+        /// How long each reading of the WAL takes.
+        reading: Duration,
     }
 
     impl Queued {
@@ -615,6 +622,7 @@ mod tests {
                 pause: Duration::ZERO,
                 asked: Vec::new(),
                 readings: 0,
+                reading: Duration::ZERO,
             }
         }
     }
@@ -651,6 +659,7 @@ mod tests {
 
         fn wal(&mut self) -> Result<Wal, SourceError> {
             self.readings += 1;
+            thread::sleep(self.reading);
             StandingStill.wal()
         }
     }
@@ -725,6 +734,21 @@ mod tests {
         assert_eq!(writer.source.readings, readings);
         assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(4)));
         assert_eq!(writer.source.readings, readings + 1);
+    }
+
+    /// The next reading of the WAL falls due a second after the last one
+    /// ends, not after it starts. Thus a reading slower than a second
+    /// leaves time to apply a batch, and not only one commit.
+    #[test]
+    fn a_slow_reading_of_the_wal_leaves_time_for_a_batch() {
+        const QUEUED: u64 = 5;
+        let mut source = Queued::of(QUEUED);
+        source.reading = WAL_EVERY + WAL_EVERY / 5;
+        let mut writer = Writer::new(app(), source);
+        writer.step().unwrap();
+        let readings = writer.source.readings;
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(QUEUED + 1)));
+        assert_eq!(writer.source.readings, readings);
     }
 
     /// A writer that steps clean steps on; one that failed is done, and

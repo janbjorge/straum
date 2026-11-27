@@ -271,12 +271,14 @@ the rest again (`Store::reclaim_codes`), so a value's code can change.
 ## Applying a commit
 
 Once ready, the writer loops on `Writer::apply_next`. Each turn first
-asks whether a second has passed since it last read the WAL. If so, it
-reads the server's position on the plain connection, feeds the `Lag`,
-fails past `--max-retained-wal` and checks that each spec table is
-still the one it follows (`catalog::still_followed`), trying once more
-on a new connection before it gives up. If that try also fails and the
-stream thread failed, the reading gives the stream's error. PostgreSQL
+asks whether a second has passed since the last reading of the WAL
+ended, not since it started, so a slow reading leaves time to apply a
+batch. If a second has passed, it reads the server's position on the
+plain connection, feeds the `Lag`, fails past `--max-retained-wal` and
+checks that each spec table is still the one it follows
+(`catalog::still_followed`), trying once more on a new connection
+before it gives up. If that try also fails and the stream thread
+failed, the reading gives the stream's error. PostgreSQL
 dropped the slot when the stream's connection closed, and the stream's
 error gives the cause. The check runs under a 200 ms
 `lock_timeout`, because `pg_publication_tables` locks each published
