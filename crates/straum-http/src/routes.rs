@@ -637,9 +637,15 @@ fn answered_reply(
 fn answer_error(error: &Unwritten, describe: DescribeAskError, format: Format) -> Reply {
     match error {
         Unwritten::App(AnswerError::Invalid(invalid)) => {
-            let mut lines = Vec::with_capacity(invalid.len());
-            for ask_error in invalid {
+            // An IN list of 100,000 wrong values gives as many errors.
+            let kept = invalid.len().min(ask::MAX_ERRORS);
+            let mut lines = Vec::with_capacity(kept + 1);
+            for ask_error in &invalid[..kept] {
                 lines.push(describe(ask_error));
+            }
+            let more = invalid.len() - kept;
+            if more > 0 {
+                lines.push(format!("and {more} more errors"));
             }
             format.errors(StatusCode::BAD_REQUEST, &lines)
         }

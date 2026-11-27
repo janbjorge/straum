@@ -482,6 +482,37 @@ fn a_body_of_many_errors_gets_a_short_reply() {
     server.stop();
 }
 
+/// One ask of 1,000 wrong values in an IN list made 1,000 lines; the
+/// reply says the first 50 and counts the rest, as for a body.
+#[test]
+fn an_ask_of_many_wrong_values_gets_a_short_reply() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    writer.step().unwrap();
+    let mut items = Vec::new();
+    let mut parameters = Vec::new();
+    for number in 1..=1000 {
+        items.push(format!("${number}"));
+        parameters.push(r#""1""#);
+    }
+    parameters.extend(["0", "3600"]);
+    let query = format!(
+        "SELECT trips FROM trips WHERE kind IN ({}) AND bucket >= $1001 AND bucket < $1002",
+        items.join(", ")
+    );
+    let body = ask(&query, &format!("[{}]", parameters.join(", ")));
+    let reply = call(server.address, "POST", "/ask", &body);
+    assert_eq!(reply.status, 400);
+    let wrong = reply.body.matches("so it can't be the text").count();
+    assert_eq!(wrong, 50, "{} bytes", reply.body.len());
+    assert!(
+        reply.body.ends_with(r#","and 950 more errors"]}"#),
+        "{}",
+        reply.body
+    );
+    server.stop();
+}
+
 /// An ask sent without `Content-Type`, or with `content_type`, and read
 /// back in `accept`.
 fn ask_sent_as(address: SocketAddr, content_type: Option<&str>, accept: Option<&str>) -> Reply {

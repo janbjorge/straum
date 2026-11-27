@@ -93,9 +93,10 @@ impl fmt::Display for BodyError {
     }
 }
 
-/// The most errors a body keeps. A 1 MiB body of nulls holds half a
-/// million, and printing each made a 17 MB reply; the rest are counted.
-const MAX_ERRORS: usize = 50;
+/// The most errors a body keeps, and the most errors of the app that a
+/// reply says. A 1 MiB body of nulls holds half a million, and printing
+/// each made a 17 MB reply; the rest are counted.
+pub(crate) const MAX_ERRORS: usize = 50;
 
 /// A body's first [`MAX_ERRORS`] errors in the order met, and how many
 /// came after them.
