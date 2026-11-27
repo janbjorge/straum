@@ -241,6 +241,7 @@ fn loads_whatever_timeouts_the_database_sets() {
         "statement_timeout",
         "lock_timeout",
         "idle_in_transaction_session_timeout",
+        "idle_session_timeout",
         "transaction_timeout",
     ] {
         db.run(&format!("ALTER DATABASE postgres SET {setting} = '1ms'"));

@@ -191,6 +191,8 @@ impl Connection {
             ("statement_timeout", "0"),
             ("lock_timeout", "0"),
             ("idle_in_transaction_session_timeout", "0"),
+            // The connection that reads the layouts idles until the next DDL.
+            ("idle_session_timeout", "0"),
         ];
         // A `SET` after the sign-in is too late: the startup transaction
         // and the transaction of the `SET` can already reach the timeout.

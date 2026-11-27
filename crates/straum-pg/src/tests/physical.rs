@@ -272,6 +272,29 @@ fn an_enum_column_added_while_streaming_reads_as_its_labels() {
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
+/// The connection that reads the layouts idles until the next DDL. An
+/// `idle_session_timeout` that the database sets does not close it: each
+/// connection turns the timeout off. The commits keep the other
+/// connections busy, which read once a second.
+#[test]
+fn ddl_after_the_idle_session_timeout_keeps_the_physical_stream() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "idle", TABLES);
+    db.run("ALTER DATABASE postgres SET idle_session_timeout = '3s'");
+    let mut rng = Rng::new(29);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    db.run(&rng.trip(1));
+    let mut writer = db.physical_writer(SPEC);
+    started(&mut writer);
+    let mut next = 1;
+    let idle = Instant::now();
+    while idle.elapsed() < Duration::from_secs(5) {
+        catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    }
+    db.run("ALTER TABLE $S.trips ADD note text");
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
 /// The layouts are read again after a commit that changes an enum, as a
 /// label added does, and not after one that changes another catalog in
 /// the same database, as a table Straum doesn't read made or analyzed,
