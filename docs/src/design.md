@@ -275,7 +275,8 @@ asks whether a second has passed since the last reading of the WAL
 ended, not since it started, so a slow reading leaves time to apply a
 batch. If a second has passed, it reads the server's position on the
 plain connection, feeds the `Lag`, fails past `--max-retained-wal` and
-checks that each spec table is still the one it follows
+checks that each spec table is still the one it follows and that
+`synchronous_standby_names` does not name Straum
 (`catalog::still_followed`), trying once more on a new connection
 before it gives up. If that try also fails and the stream thread
 failed, the reading gives the stream's error. PostgreSQL

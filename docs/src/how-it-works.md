@@ -141,9 +141,11 @@ set, resident memory past `--max-memory`
 or replaced by another table under its name, on a spec table that
 another table now inherits from, and, on logical decoding, on a
 publication altered to leave a spec table out, filter its rows or stop
-sending inserts, updates, deletes or truncates. It checks for these
-once a second. The check waits at most 200 ms for a lock on a
-published table. While another session holds a lock that blocks a
+sending inserts, updates, deletes or truncates. It also stops on a
+`synchronous_standby_names` reloaded to name its connection
+([What Straum checks at start](postgresql.md#what-straum-checks-at-start)).
+It checks for these once a second. The check waits at most 200 ms for
+a lock on a published table. While another session holds a lock that blocks a
 read, as `ALTER TABLE` does until it commits, Straum skips the check
 and keeps the lag.
 

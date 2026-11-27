@@ -1,7 +1,10 @@
 //! The server's part of the setup check: its version, its `wal_level`,
 //! whether it is a standby and whether `synchronous_standby_names` could
 //! name Straum, from the catalog Straum reads at each start, and the
-//! timeouts each connection turns off.
+//! timeouts each connection turns off. Each reading of the WAL checks
+//! `synchronous_standby_names` again.
+
+use std::time::{Duration, Instant};
 
 use straum_app::Source;
 use straum_domain::Spec;
@@ -51,20 +54,7 @@ fn refuses_synchronous_standby_names_that_name_straum() {
                  application_name straum: a commit only Straum confirmed could be lost on \
                  failover; name your standbys there, not * or straum";
     for (setting, expected) in [("ANY 1 (*)", Some(named)), ("FIRST 1 (replica1)", None)] {
-        db.run(&format!(
-            "ALTER SYSTEM SET synchronous_standby_names = '{setting}'"
-        ));
-        db.run("SELECT pg_reload_conf()");
-        let wait = Wait::new("the reloaded setting");
-        let shown = Some(setting.to_owned());
-        while db
-            .connection
-            .rows("SHOW synchronous_standby_names")
-            .unwrap()[0][0]
-            != shown
-        {
-            wait.poll();
-        }
+        reload_standby_names(&mut db, setting);
         let catalog = catalog::query(&mut db.connection, &spec, &db.name).unwrap();
         let lines = check_lines(&spec, &catalog, &db.name, Replication::Logical);
         assert_eq!(
@@ -72,6 +62,71 @@ fn refuses_synchronous_standby_names_that_name_straum() {
             expected.map(|line| vec![line.to_owned()]),
             "{setting}"
         );
+    }
+}
+
+/// A `synchronous_standby_names` reloaded while Straum streams could
+/// name its connection too: the reading of the WAL finds it, and either
+/// stream stops. One that names other standbys keeps the stream. The
+/// test's commits wait for no standby.
+#[test]
+fn a_synchronous_standby_names_reloaded_stops_the_stream() {
+    let named = "synchronous_standby_names is '*', which names Straum's connection, \
+                 application_name straum: a commit only Straum confirmed could be lost on \
+                 failover; name your standbys there, not * or straum";
+    for physical in [false, true] {
+        let pg = if physical {
+            postgres_at_replica(&tag())
+        } else {
+            postgres()
+        };
+        let mut db = Db::new(&pg, "syncreload", TABLES);
+        let mut writer = if physical {
+            db.physical_writer(SPEC)
+        } else {
+            db.writer(SPEC)
+        };
+        started(&mut writer);
+        db.run("SET synchronous_commit = local");
+        let mut rng = Rng::new(5);
+        let mut trip = 0;
+        reload_standby_names(&mut db, "FIRST 1 (replica1)");
+        let kept = Instant::now();
+        while kept.elapsed() < Duration::from_secs(2) {
+            trip += 1;
+            db.run(&rng.trip(trip));
+            applied(&mut writer);
+        }
+        reload_standby_names(&mut db, "*");
+        let wait = Wait::new("the writer to stop");
+        let error = loop {
+            wait.check();
+            trip += 1;
+            db.run(&rng.trip(trip));
+            if let Err(error) = writer.step() {
+                break error.to_string();
+            }
+        };
+        assert_eq!(error, named, "physical {physical}");
+    }
+}
+
+/// Sets `synchronous_standby_names` to `setting` and returns once a
+/// session shows it.
+fn reload_standby_names(db: &mut Db, setting: &str) {
+    db.run(&format!(
+        "ALTER SYSTEM SET synchronous_standby_names = '{setting}'"
+    ));
+    db.run("SELECT pg_reload_conf()");
+    let wait = Wait::new("the reloaded setting");
+    let shown = Some(setting.to_owned());
+    while db
+        .connection
+        .rows("SHOW synchronous_standby_names")
+        .unwrap()[0][0]
+        != shown
+    {
+        wait.poll();
     }
 }
 

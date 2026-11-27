@@ -3,18 +3,20 @@
 //! under its name, another is there, a table inherits from it, the
 //! publication left it out, filters its rows or leaves out an action, a
 //! label of an enum it reads was renamed, or a column it reads was
-//! altered.
+//! altered. A `synchronous_standby_names` reloaded since the start
+//! names Straum's connection.
 
 use std::collections::HashMap;
 
 use postgres_protocol::escape::escape_literal;
 
+use super::standby::names_standby;
 use super::{Checked, EnumLabel, is_true, shape};
 use crate::error::Error;
 use crate::problem::{Problem, ServerProblem, TableProblem};
 use crate::source::Replication;
 use crate::value::Oid;
-use crate::wire::{Connection, Row};
+use crate::wire::{APPLICATION_NAME, Connection, Row};
 
 /// The spec's tables a stream follows, as loaded.
 #[derive(Debug, Clone, Default)]
@@ -33,8 +35,8 @@ pub(crate) struct Followed {
 /// it out, filters its rows or leaves out an action, or a label of an
 /// enum it reads was renamed or dropped: none of it sends a message the
 /// stream reads, and a renamed label leaves the rows loaded with the old
-/// one. The setup check of the
-/// next start says what is wrong.
+/// one. It fails too once `synchronous_standby_names` names Straum's
+/// connection. The setup check of the next start says what is wrong.
 pub(crate) fn still_followed(
     connection: &mut Connection,
     followed: &Followed,
@@ -89,6 +91,7 @@ pub(crate) fn still_followed(
     }
     relabelled(connection, followed, &mut problems)?;
     altered(connection, followed, &mut problems)?;
+    standby_named(connection, &mut problems)?;
     if problems.is_empty() {
         return Ok(());
     }
@@ -126,6 +129,22 @@ fn publication_rows(
         publication = escape_literal(publication)
     ))?;
     Ok(rows)
+}
+
+/// A problem when `synchronous_standby_names` names Straum's connection:
+/// a reload changes it while Straum runs.
+fn standby_named(connection: &mut Connection, problems: &mut Vec<Problem>) -> Result<(), Error> {
+    let rows = connection.rows("SHOW synchronous_standby_names")?;
+    let Some(Ok([setting])) = rows.into_iter().next().map(<[Option<String>; 1]>::try_from) else {
+        return Err(shape("synchronous_standby_names"));
+    };
+    let setting = setting.unwrap_or_default();
+    if names_standby(&setting, APPLICATION_NAME) {
+        problems.push(Problem::Server(ServerProblem::SynchronousStandby {
+            setting,
+        }));
+    }
+    Ok(())
 }
 
 /// A problem for each table whose enum has a label loaded that is now

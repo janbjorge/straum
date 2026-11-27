@@ -177,8 +177,8 @@ Straum connects with `application_name` `straum` and confirms each
 commit it reads. A `synchronous_standby_names` holding `*` or `straum`
 could count it as a synchronous standby: a commit only Straum
 confirmed is then lost on failover, and a Straum stopped holds up
-commits. Straum refuses to start under one; list your standbys by
-name instead.
+commits. Straum refuses to start under one, and stops when a reload
+sets one. List your standbys by name instead.
 
 ```text
 the server is a standby in recovery; give Straum the primary's DSN
