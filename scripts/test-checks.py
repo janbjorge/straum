@@ -759,12 +759,15 @@ class ChangedCrates(unittest.TestCase):
 
 def filter_errors(call: str) -> list[str]:
     """The test filter check's errors over a justfile holding `call`, and
-    a straum-pg with one test in `tests::decoding`."""
+    a straum-pg with three tests in `tests::decoding`: two ignored and
+    one not."""
     files = {
         "lib.rs": "#[cfg(test)]\nmod tests;\n",
         "tests/mod.rs": "mod decoding;\n",
         "tests/decoding.rs": (
             '#[test]\n#[ignore = "slow"]\nfn follows_at_random() {}\n'
+            "#[ignore]\n#[test]\nfn skips_at_random() {}\n"
+            "#[test]\nfn decodes_in_order() {}\n"
             "fn helper_at_random() {}\n"
             "// #[test] fn commented_at_random() {}\n"
         ),
@@ -785,7 +788,7 @@ class TestFilterCheck(unittest.TestCase):
         self.assertIn(words, errors[0])
 
     def test_a_module_path_to_a_test_passes(self):
-        call = '(test "straum-pg" "--" "tests::decoding::follows_at_random")'
+        call = '(test "straum-pg" "--" "tests::decoding::decodes_in_order")'
         self.assertEqual(filter_errors(call), [])
 
     def test_part_of_a_test_name_passes_as_cargo_matches(self):
@@ -812,6 +815,36 @@ class TestFilterCheck(unittest.TestCase):
 
     def test_flags_and_their_values_are_no_filters(self):
         call = '(test "straum-pg" "--release" "--test" "cost" "--" "--ignored")'
+        self.assertEqual(filter_errors(call), [])
+
+    def test_an_ignored_test_without_ignored_fails(self):
+        call = '(test "straum-pg" "--" "follows_at_random")'
+        self.assert_refused(
+            call, "'follows_at_random' selects no test that is not ignored"
+        )
+
+    def test_an_ignore_before_the_test_attribute_counts(self):
+        call = '(test "straum-pg" "--" "skips_at_random")'
+        self.assert_refused(
+            call, "'skips_at_random' selects no test that is not ignored"
+        )
+
+    def test_an_ignored_test_with_ignored_passes(self):
+        call = (
+            '(test "straum-pg" "--" "follows_at_random" "skips_at_random"'
+            ' "--ignored")'
+        )
+        self.assertEqual(filter_errors(call), [])
+
+    def test_a_test_not_ignored_with_ignored_fails(self):
+        call = '(test "straum-pg" "decodes_in_order" "--" "--ignored")'
+        self.assert_refused(call, "'decodes_in_order' selects no ignored test")
+
+    def test_include_ignored_takes_both(self):
+        call = (
+            '(test "straum-pg" "--" "follows_at_random" "decodes_in_order"'
+            ' "--include-ignored")'
+        )
         self.assertEqual(filter_errors(call), [])
 
     def test_the_justfile_passes(self):

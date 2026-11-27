@@ -11,9 +11,12 @@ green when cargo's filter matches nothing. This reads each `(test
 flag as a filter, and lists the crate's tests without building it: each
 `#[test] fn` under its `src`, named by the module path its file gives.
 A filter passes when it is part of one of those names, as cargo's
-filter is. A test in an inline module is named without that module, and
-the crate's `tests` and `benches` folders are not read, so a filter
-naming one fails here though cargo would find it.
+filter is, and that test runs under the recipe's flags: an ignored test
+runs only with `--ignored`, and a test that is not ignored runs only
+without it. `--include-ignored` runs both. A test in an inline module
+is named without that module, and the crate's `tests` and `benches`
+folders are not read, so a filter naming one fails here though cargo
+would find it.
 """
 
 import pathlib
@@ -26,10 +29,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 TEST_CALL = re.compile(r'\(test\s+"([^"]*)"([^)]*)\)')
 ARGUMENT = re.compile(r'"([^"]*)"')
-TEST_FUNCTION = re.compile(
-    r"#\s*\[\s*test\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*"
+FUNCTION = re.compile(
+    r"((?:#\s*\[[^\]]*\]\s*)*)"
     r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)"
 )
+TEST_ATTRIBUTE = re.compile(r"#\s*\[\s*test\s*\]")
+IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\b")
 # Cargo's options whose next argument is their value, not a filter.
 OPTIONS_WITH_VALUE = {"--test", "--bench", "--bin", "--example", "--features", "-F"}
 
@@ -42,16 +47,18 @@ def module_path(file: pathlib.Path, source_root: pathlib.Path) -> list[str]:
     return parts
 
 
-def test_names(crate: pathlib.Path) -> list[str]:
+def test_names(crate: pathlib.Path) -> list[tuple[str, bool]]:
     """The path of each `#[test] fn` under the crate's `src`, as cargo
-    lists it."""
+    lists it, and whether the test is ignored."""
     source_root = crate / "src"
     names = []
     for file in sorted(source_root.rglob("*.rs")):
         code = rust_source.lex(file.read_text()).code
         modules = module_path(file, source_root)
-        for name in TEST_FUNCTION.findall(code):
-            names.append("::".join([*modules, name]))
+        for attributes, name in FUNCTION.findall(code):
+            if TEST_ATTRIBUTE.search(attributes):
+                ignored = bool(IGNORE_ATTRIBUTE.search(attributes))
+                names.append(("::".join([*modules, name]), ignored))
     return names
 
 
@@ -62,7 +69,8 @@ def check(justfile: str, root: pathlib.Path) -> list[str]:
         crate = call.group(1)
         filters = []
         previous = ""
-        for argument in ARGUMENT.findall(call.group(2)):
+        arguments = ARGUMENT.findall(call.group(2))
+        for argument in arguments:
             if not argument.startswith("-") and previous not in OPTIONS_WITH_VALUE:
                 filters.append(argument)
             previous = argument
@@ -73,9 +81,17 @@ def check(justfile: str, root: pathlib.Path) -> list[str]:
             errors.append(f"test {crate!r}: no crate folder {folder.relative_to(root)}")
             continue
         names = test_names(folder)
+        both = "--include-ignored" in arguments
+        runs_ignored = "--ignored" in arguments
+        kind = "test"
+        if not both:
+            kind = "ignored test" if runs_ignored else "test that is not ignored"
         for wanted in filters:
-            if not any(wanted in name for name in names):
-                errors.append(f"test {crate!r}: filter {wanted!r} selects no test")
+            if not any(
+                wanted in name and (both or ignored == runs_ignored)
+                for name, ignored in names
+            ):
+                errors.append(f"test {crate!r}: filter {wanted!r} selects no {kind}")
     return errors
 
 
@@ -88,6 +104,7 @@ def main() -> int:
             "name a test as cargo test -- --list does: module::path::name",
             file=sys.stderr,
         )
+        print("pass --ignored only to run ignored tests", file=sys.stderr)
         return 1
     print("test filter check passed")
     return 0

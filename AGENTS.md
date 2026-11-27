@@ -46,7 +46,8 @@ Rules for the justfile:
   short one-line comment. `just` lists the recipes in file order.
 - Keep recipes thin. Put the logic in the script or the test.
 - A recipe that runs a cargo test calls `test`. Each test filter names
-  a test in the form that `cargo test -- --list` shows.
+  a test in the form that `cargo test -- --list` shows. Give
+  `--ignored` only to a recipe that runs ignored tests.
 - A recipe that runs a script gives it all its arguments with `"$@"`.
   Then `just RECIPE --help` shows the flags of the script.
 - When you remove a tool, remove its recipe. Then fix each doc that
