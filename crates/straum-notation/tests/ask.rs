@@ -869,17 +869,30 @@ fn a_long_chain_of_operators_is_refused_before_it_is_parsed() {
         ),
         format!("SELECT trips FROM t WHERE kind{}", " IS NULL".repeat(3_000)),
         format!("SELECT trips FROM t WHERE kind{}", "::text".repeat(3_000)),
+        format!(
+            "SELECT trips FROM t WHERE kind{}",
+            " OPERATOR(kind) kind".repeat(3_000)
+        ),
     ] {
         let found = errors(&deep, &[text("cab")]);
         assert_eq!(found, [format!("line 1: {refused}")], "{}", &deep[..60]);
     }
+    // One OPERATOR is one operator: the walker refuses it by name.
+    let one = errors("SELECT trips FROM t WHERE kind OPERATOR(kind) kind", &[]);
+    assert_eq!(
+        one,
+        ["line 1: filter condition, write = or IN joined by AND, \
+          `kind OPERATOR(kind) kind` is not in Straum SQL, \
+          the PostgreSQL subset made only for Straum"]
+    );
 }
 
 /// No keyword of `sqlparser` makes a chain that overflows the 2 MiB stack
-/// an ask is read on. Each keyword goes between two keys, after a key, and
-/// before `OF (kind)`, 3,000 times. The thread has the keyword as its name,
-/// so an overflow names the keyword that caused it. One thread for each
-/// core reads at a time, because each long ask takes some milliseconds.
+/// an ask is read on. Each keyword goes between two keys, after a key,
+/// before `OF (kind)`, and before `(kind) kind`, 3,000 times. The thread
+/// has the keyword as its name, so an overflow names the keyword that
+/// caused it. One thread for each core reads at a time, because each long
+/// ask takes some milliseconds.
 #[test]
 fn no_chain_of_a_keyword_overflows_the_stack() {
     let mut links = Vec::new();
@@ -888,6 +901,7 @@ fn no_chain_of_a_keyword_overflows_the_stack() {
             format!(" {keyword} kind"),
             format!(" {keyword}"),
             format!(" {keyword} OF (kind)"),
+            format!(" {keyword}(kind) kind"),
         ] {
             links.push((*keyword, link));
         }

@@ -115,7 +115,8 @@ fn too_many_operators(tokens: &[TokenWithSpan]) -> Option<SqlError> {
 
 /// A token that can join or follow an expression and so deepen its tree:
 /// a symbol other than a comma, a parenthesis or a period, or a keyword
-/// such as `AND`, `IS` or `IN`. Literals, names and parameters are not.
+/// such as `AND`, `IS`, `IN` or `OPERATOR`. Literals, names and parameters
+/// are not.
 fn is_operator(token: &Token) -> bool {
     match token {
         Token::Word(word) => matches!(
@@ -134,6 +135,7 @@ fn is_operator(token: &Token) -> bool {
                 | Keyword::OVERLAPS
                 | Keyword::MEMBER
                 | Keyword::NOTNULL
+                | Keyword::OPERATOR
                 | Keyword::REGEXP
                 | Keyword::RLIKE
                 | Keyword::XOR
