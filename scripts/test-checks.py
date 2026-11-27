@@ -256,6 +256,8 @@ class LayerCheck(unittest.TestCase):
             'fn f() { let _ = std :: env :: var("X"); }',
             "extern crate std as s;",
             "use std::{collections::{HashMap, HashSet}, fs};",
+            'use std::*;\nfn f() { fs::read("x"); }',
+            'use std::{self as s};\nfn f() { s::fs::read("x"); }',
         ]:
             with self.subTest(text=text):
                 self.write("crates/straum-domain/src/lib.rs", text)
@@ -265,7 +267,8 @@ class LayerCheck(unittest.TestCase):
         self.write(
             "crates/straum-domain/src/lib.rs",
             "use std::{mem, panic, thread};\n// std::fs\n"
-            "use std::{collections::{HashMap, HashSet}, sync::mpsc};\n",
+            "use std::{collections::{HashMap, HashSet}, sync::mpsc};\n"
+            "use std::collections::*;\nuse std::fmt::{self as f};\n",
         )
         self.write("crates/straum-pg/src/lib.rs", "use std::net::TcpStream;\n")
         self.assert_passes()

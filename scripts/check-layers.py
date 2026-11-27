@@ -18,7 +18,7 @@ path. A crate:
 - builds each target from its own folder, and its library, binaries and
   build script from outside `tests/`, `benches/` and `examples/`;
 - reaches no outside crate if it is in PURE, by any feature, and names
-  no `std` module that does I/O;
+  no `std` module that does I/O, nor globs or renames `std`;
 - reaches an async runtime only through straum-http, its tests too;
 - resolves no package from a path outside the workspace, by a path
   dependency or a `[patch]`;
@@ -80,8 +80,10 @@ INCLUDE = re.compile(r"\binclude(_str|_bytes)?\s*!\s*[\(\[\{]\s*(\S)")
 TRAIT = re.compile(r"\btrait\s+(?:r#)?(\w+)")
 INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*\{")
 # A use group runs to its ";", so a nested group cannot hide a module.
+# A glob or a new name for std hides the module that a later path names.
+HIDES = rf"\b(?:{IO_MODULES})\b|\*|\bself\s+as\b"
 IO_PATH = re.compile(
-    rf"\bstd\s*::\s*(?:(?:{IO_MODULES})\b|\{{[^;]*?\b(?:{IO_MODULES})\b)"
+    rf"\bstd\s*::\s*(?:{HIDES}|\{{[^;]*?(?:{HIDES}))"
     r"|\bextern\s+crate\b|\bstd\s+as\b"
 )
 
