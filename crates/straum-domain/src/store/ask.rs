@@ -79,14 +79,18 @@ impl Store {
         for name in &ask.measures {
             asked.push(fact.measure(name.as_str()).expect(CHECKED));
         }
-        let mut cell_loop = self.cell_loop(fact, read, ask, &asked);
+        let mut expander = match read {
+            Read::Bound(_) => None,
+            Read::Keyed(_) => self.expander(fact),
+        };
+        let mut cell_loop = self.cell_loop(fact, read, ask, &asked, expander.is_some());
         let columns = answer_columns(ask, rollup, &cell_loop.by, &asked);
         match read {
             // The bound cells hold only what the joins keep.
             Read::Bound(_) => cell_loop.ask_once(&mut Vec::new(), ask),
             Read::Keyed(_) => {
-                if let Some(mut expander) = self.expander(fact) {
-                    cell_loop.ask_expanded(ask, &mut expander);
+                if let Some(expander) = &mut expander {
+                    cell_loop.ask_expanded(ask, expander);
                 } else {
                     let cells = cells_in(rollup, ask, cell_loop.cover);
                     cell_loop.ask_once(&mut self.join_checks(fact, rollup, cells), ask);
@@ -122,13 +126,14 @@ impl Store {
     }
 
     /// The cell loop of an ask before it meets a cell: its groupings,
-    /// filters and measures.
+    /// filters and measures. `expanded` tells that the joins repeat a cell.
     fn cell_loop<'s>(
         &'s self,
         fact: &Fact,
         read: Read<'s>,
         ask: &Ask,
         asked: &[&Measure],
+        expanded: bool,
     ) -> CellLoop<'s> {
         let rollup = read.rollup();
         let cover = cover_of(fact, ask);
@@ -138,18 +143,20 @@ impl Store {
         for key in &ask.keys {
             by.push(match fact.time_width(key) {
                 Some(width) => Grouping::time(width, buckets),
-                None => Grouping::lookup(self.lookup(fact, read, key.name(), cells), rollup),
+                None => {
+                    Grouping::lookup(self.lookup(fact, read, key.name(), cells, expanded), rollup)
+                }
             });
         }
         let groups = Groups::new(&by);
-        let mut filter = self.condition_checks(fact, read, &fact.filter, cells);
-        filter.extend(self.condition_checks(fact, read, &ask.filter, cells));
+        let mut filter = self.condition_checks(fact, read, &fact.filter, cells, expanded);
+        filter.extend(self.condition_checks(fact, read, &ask.filter, cells, expanded));
         let mut measures = Vec::with_capacity(asked.len());
         for (position, measure) in asked.iter().enumerate() {
             let mut next = Asked {
                 partials: Partials::new(&measure.aggregate),
                 state: rollup.state_of(&measure.aggregate),
-                filter: self.condition_checks(fact, read, &measure.filter, cells),
+                filter: self.condition_checks(fact, read, &measure.filter, cells, expanded),
                 shares: None,
             };
             next.share_tally(&mut measures, asked, position);
@@ -244,7 +251,7 @@ impl Store {
                 continue;
             }
             checks.push(JoinCheck {
-                joined: self.joined(fact, reference, rollup, cells),
+                joined: self.joined(fact, reference, rollup, cells, false),
                 keeps: JoinKeeps::of(reference.kind),
             });
         }
@@ -253,12 +260,14 @@ impl Store {
 
     /// How a cell's key finds a ref's dim rows, through the rollup-key
     /// parts of its fact-side via columns, for an ask of `cells` cells.
+    /// When `expanded`, the cell loop reads the join rows and not the memo.
     fn joined<'s>(
         &'s self,
         fact: &Fact,
         reference: &Ref,
         rollup: &Rollup,
         cells: usize,
+        expanded: bool,
     ) -> Joined<'s> {
         let mut via = Vec::with_capacity(reference.via.len());
         for column in &reference.via {
@@ -269,7 +278,9 @@ impl Store {
         // A memo of every code costs per id ever seen: only an ask that
         // reads as many cells as there are codes pays for one.
         let memo = match via[..] {
-            [part] if rollup.codes(part) <= cells => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
+            [part] if !expanded && rollup.codes(part) <= cells => {
+                Memo::Dense(vec![UNKNOWN; rollup.codes(part)])
+            }
             _ => Memo::Sparse(FastMap::default()),
         };
         Joined {
@@ -283,13 +294,14 @@ impl Store {
 
     /// Where a key's values come from: a part of the cells read, or a
     /// dim's projection reached through a ref, for an ask of `cells`
-    /// cells.
+    /// cells, `expanded` as [`Store::joined`] says.
     fn lookup<'s>(
         &'s self,
         fact: &Fact,
         read: Read<'s>,
         name: &Identifier,
         cells: usize,
+        expanded: bool,
     ) -> Lookup<'s> {
         let rollup = match read {
             Read::Bound(_) => return Lookup::KeyPart(bound_part_of(fact, name)),
@@ -300,7 +312,7 @@ impl Store {
             Key::Attribute(reference, attribute) => Lookup::Attribute(AttributeLookup {
                 reference: ref_position(fact, reference),
                 attribute: self.attribute_index(reference, &attribute.column),
-                joined: self.joined(fact, reference, rollup, cells),
+                joined: self.joined(fact, reference, rollup, cells, expanded),
             }),
         }
     }
@@ -311,6 +323,7 @@ impl Store {
         read: Read<'s>,
         filter: &[Condition],
         cells: usize,
+        expanded: bool,
     ) -> Vec<ConditionCheck<'s>> {
         // Conditions on one key fold into one check, of the values they
         // share: each check keeps a memo of its key's codes, and
@@ -324,7 +337,7 @@ impl Store {
                 continue;
             }
             keys.push(&condition.key);
-            let lookup = self.lookup(fact, read, &condition.key, cells);
+            let lookup = self.lookup(fact, read, &condition.key, cells, expanded);
             checks.push(ConditionCheck {
                 memo: KnownMemo::new(lookup.bound(read.rollup()), cells),
                 lookup,
