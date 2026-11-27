@@ -694,25 +694,68 @@ fn all_digits(text: &str) -> bool {
     true
 }
 
-/// Where `location` is in `text`, as a byte offset; the end of `text` for
-/// a location past it. Lines and columns count from 1, as `sqlparser`
-/// counts them, and columns in characters, not bytes.
-// Seeks only as far as the location's line: a scan of the whole text per
-// call made reading a long ask quadratic.
-fn byte_offset(text: &str, location: Location) -> usize {
-    let mut line_start = 0;
-    let mut line = 1;
-    while line < location.line {
-        let Some(newline) = text[line_start..].find('\n') else {
-            return text.len();
-        };
-        line_start += newline + 1;
-        line += 1;
+/// The byte offset of each `sqlparser` location in a text. Lines and
+/// columns count from 1, as `sqlparser` counts them, and columns in
+/// characters, not bytes.
+// One pass over the text, then a binary search for each location. A seek
+// from the start of the text for each location made a long ask quadratic.
+pub(super) struct Offsets {
+    /// The character index at which each line starts.
+    line_starts: Vec<usize>,
+    /// A step at the start of the text and after each character of more
+    /// than one byte. Only one-byte characters come between two steps.
+    steps: Vec<Step>,
+    /// The byte length of the text.
+    end: usize,
+}
+
+/// A character index and its byte offset.
+#[derive(Clone, Copy)]
+struct Step {
+    characters: usize,
+    offset: usize,
+}
+
+impl Offsets {
+    pub(super) fn of(text: &str) -> Offsets {
+        let mut line_starts = vec![0];
+        let mut steps = vec![Step {
+            characters: 0,
+            offset: 0,
+        }];
+        for (characters, (offset, character)) in text.char_indices().enumerate() {
+            if character == '\n' {
+                line_starts.push(characters + 1);
+            } else if !character.is_ascii() {
+                steps.push(Step {
+                    characters: characters + 1,
+                    offset: offset + character.len_utf8(),
+                });
+            }
+        }
+        Offsets {
+            line_starts,
+            steps,
+            end: text.len(),
+        }
     }
-    let characters = usize::try_from(location.column.saturating_sub(1)).unwrap_or(usize::MAX);
-    match text[line_start..].char_indices().nth(characters) {
-        Some((offset, _)) => line_start + offset,
-        None => text.len(),
+
+    /// Where `location` is, as a byte offset; the end of the text for a
+    /// location past it.
+    pub(super) fn offset(&self, location: Location) -> usize {
+        let line = usize::try_from(location.line.saturating_sub(1)).unwrap_or(usize::MAX);
+        let Some(&line_start) = self.line_starts.get(line) else {
+            return self.end;
+        };
+        let column = usize::try_from(location.column.saturating_sub(1)).unwrap_or(usize::MAX);
+        let characters = line_start.saturating_add(column);
+        // The first step is at character 0, so one step is at or before.
+        let after = self
+            .steps
+            .partition_point(|step| step.characters <= characters);
+        let step = self.steps[after - 1];
+        let ascii = characters - step.characters;
+        step.offset.saturating_add(ascii).min(self.end)
     }
 }
 

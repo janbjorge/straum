@@ -32,8 +32,8 @@ use straum_domain::{
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
-    NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, byte_offset,
-    line, statements, without_leading_zeros,
+    NOT_IN_STRAUM_SQL, Names, Offsets, PARENTHESES, Reported, SqlError, Walker, and_parts, line,
+    statements, without_leading_zeros,
 };
 use crate::ask_error::comparison_text;
 
@@ -442,6 +442,7 @@ impl Walker {
         if let Some(expression) = having {
             and_parts(expression, &mut parts);
         }
+        let offsets = Offsets::of(text);
         let mut conditions = Vec::with_capacity(parts.len());
         for part in self.without_repeats(parts) {
             let sql::Expr::BinaryOp { left, op, right } = part else {
@@ -462,7 +463,12 @@ impl Walker {
             let value = self.parameter(right, parameters);
             // sqlparser reads != as <>, and prints it so; the text tells.
             if comparison == Comparison::NotEqual
-                && spelled_with_bang(written_between(text, left.span().end, right.span().start))
+                && spelled_with_bang(written_between(
+                    text,
+                    &offsets,
+                    left.span().end,
+                    right.span().start,
+                ))
             {
                 self.error(line(part), "write <> for not equal, not !=".into());
                 continue;
@@ -673,10 +679,16 @@ fn comparison(operator: &sql::BinaryOperator) -> Option<Comparison> {
 }
 
 /// The text from `start` to `end`, located as sqlparser does.
-fn written_between(text: &str, start: Location, end: Location) -> &str {
-    let start = byte_offset(text, start);
+// The lifetime says that the text comes from `text`, not from `offsets`.
+fn written_between<'text>(
+    text: &'text str,
+    offsets: &Offsets,
+    start: Location,
+    end: Location,
+) -> &'text str {
+    let start = offsets.offset(start);
     // An end before the start is no text, never a panic.
-    let end = byte_offset(text, end).max(start);
+    let end = offsets.offset(end).max(start);
     &text[start..end]
 }
 
@@ -722,7 +734,8 @@ fn spelled_with_bang(between: &str) -> bool {
     };
     for token in tokens {
         if token.token == Token::Neq {
-            return written_between(between, token.span.start, token.span.end) == "!=";
+            let offsets = Offsets::of(between);
+            return written_between(between, &offsets, token.span.start, token.span.end) == "!=";
         }
     }
     false

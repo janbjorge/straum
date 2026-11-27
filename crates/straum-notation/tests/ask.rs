@@ -5,6 +5,7 @@
 mod common;
 
 use common::{FEB, JAN, Wrong, any_contains, assert_each_contains, condition, id, strings};
+use std::time::{Duration, Instant};
 use straum_domain::{Ask, AskKey, Comparison, Literal, MeasureCondition, Width};
 use straum_notation::parse_ask;
 
@@ -778,6 +779,14 @@ fn having_takes_one_spelling() {
         let found = errors(&query, &three);
         assert!(any_contains(&found, error), "{query}: {found:?}");
     }
+    // Characters of more than one byte come before the operator on its line.
+    let wide = "SELECT \"æøå\", trips FROM t WHERE bucket >= $1 AND bucket < $2 HAVING trips ";
+    let bang = "write <> for not equal";
+    assert!(any_contains(&errors(&format!("{wide}!= $3"), &three), bang));
+    assert!(!any_contains(
+        &errors(&format!("{wide}<> $3"), &three),
+        bang
+    ));
     // A refused != still uses its parameter.
     assert_eq!(
         errors(&format!("{ask}trips != $3"), &three),
@@ -994,4 +1003,30 @@ fn an_ask_names_at_most_256_items() {
     let allowed = format!("SELECT {} FROM t", names(256));
     let ask = parse_ask(&allowed, &[]).unwrap();
     assert_eq!(ask.measures.len(), 256);
+}
+
+/// The walker finds each `<>` of HAVING in the ask's text by its line
+/// and column. A seek from the start of the text for each `<>` made a
+/// long ask quadratic: a mebibyte of blank lines and spaces before 250
+/// `<>` took seconds. The bound is wide, so a slow debug build passes.
+#[test]
+fn a_long_ask_with_many_not_equals_reads_quickly() {
+    let mut parts = Vec::new();
+    for index in 0..250 {
+        parts.push(format!("m{index} <> $1"));
+    }
+    let having = format!("HAVING {}", parts.join(" AND "));
+    let select = "SELECT trips FROM t";
+    let blank = (1 << 20) - select.len() - having.len();
+    let ask = format!(
+        "{select}{}{}{having}",
+        "\n".repeat(blank / 2),
+        " ".repeat(blank - blank / 2)
+    );
+    assert_eq!(ask.len(), 1 << 20);
+    let started = Instant::now();
+    let parsed = parse_ask(&ask, &[Literal::Int(7)]).unwrap();
+    let took = started.elapsed();
+    assert_eq!(parsed.having.len(), 250);
+    assert!(took < Duration::from_secs(5), "took {took:?}");
 }

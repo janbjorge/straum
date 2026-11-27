@@ -7,9 +7,9 @@
 //! skips it too, so the parts line up with the views.
 
 use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
+use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
-use super::byte_offset;
+use super::Offsets;
 
 /// Each statement of `text` in order, as written; none for a text the
 /// tokenizer refuses, which a spec that parsed never is.
@@ -17,7 +17,7 @@ pub(crate) fn statement_texts(text: &str) -> Vec<String> {
     let Ok(tokens) = Tokenizer::new(&PostgreSqlDialect {}, text).tokenize_with_location() else {
         return Vec::new();
     };
-    let lines = LineStarts::of(text);
+    let offsets = Offsets::of(text);
     let mut statements = Vec::new();
     let mut start: Option<usize> = None;
     let mut has_code = false;
@@ -36,18 +36,18 @@ pub(crate) fn statement_texts(text: &str) -> Vec<String> {
             Token::SemiColon => {
                 let first = start.take();
                 if has_code && let Some(first) = first {
-                    let end = lines.offset(text, token.span.end);
+                    let end = offsets.offset(token.span.end);
                     statements.push(text[first..end].to_owned());
                 }
                 has_code = false;
                 line_ends = 0;
             }
             Token::Whitespace(_) => {
-                start.get_or_insert(lines.offset(text, token.span.start));
+                start.get_or_insert(offsets.offset(token.span.start));
                 line_ends = 0;
             }
             _ => {
-                start.get_or_insert(lines.offset(text, token.span.start));
+                start.get_or_insert(offsets.offset(token.span.start));
                 has_code = true;
                 line_ends = 0;
             }
@@ -57,32 +57,4 @@ pub(crate) fn statement_texts(text: &str) -> Vec<String> {
         statements.push(text[first..].trim_end().to_owned());
     }
     statements
-}
-
-/// The byte offset at which each line of a text starts.
-// Every token of a spec is located, so a seek from the text's start for
-// each, as `byte_offset` does alone, would be quadratic in the spec.
-struct LineStarts(Vec<usize>);
-
-impl LineStarts {
-    fn of(text: &str) -> LineStarts {
-        let mut starts = vec![0];
-        for (offset, character) in text.char_indices() {
-            if character == '\n' {
-                starts.push(offset + 1);
-            }
-        }
-        LineStarts(starts)
-    }
-
-    /// Where a token's location is in `text`: its line's start from the
-    /// table, then its column from there.
-    fn offset(&self, text: &str, location: Location) -> usize {
-        let line_index = usize::try_from(location.line.saturating_sub(1)).unwrap_or(usize::MAX);
-        let Some(&line_start) = self.0.get(line_index) else {
-            return text.len();
-        };
-        let column = Location::new(1, location.column);
-        line_start + byte_offset(&text[line_start..], column)
-    }
 }
