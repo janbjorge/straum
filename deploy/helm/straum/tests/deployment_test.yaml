@@ -185,11 +185,10 @@ tests:
           path: spec.template.spec.containers[0].args
           content: "1e+06"
 
-  - it: reads the physical WAL with its memory limit
+  - it: reads the physical WAL with the default page memory limit
     template: deployment.yaml
     set:
       wal: physical
-      maxPageMemory: 256Mi
     asserts:
       - equal:
           path: spec.template.spec.containers[0].args
@@ -216,6 +215,38 @@ tests:
             - physical
             - --max-page-memory
             - 256Mi
+
+  - it: reads the physical WAL with the page memory limit that is set
+    template: deployment.yaml
+    set:
+      wal: physical
+      maxPageMemory: 512Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - run
+            - /etc/straum/spec.sql
+            - --listen
+            - 0.0.0.0:8080
+            - --health-listen
+            - 0.0.0.0:8081
+            - --publication
+            - straum
+            - --max-lag
+            - "30"
+            - --max-retained-wal
+            - 4Gi
+            - --max-transaction-rows
+            - "100000"
+            - --max-answer-rows
+            - "100000"
+            - --max-stream-memory
+            - 256Mi
+            - --wal
+            - physical
+            - --max-page-memory
+            - 512Mi
 
   - it: passes no memory limit unless one is set
     template: deployment.yaml

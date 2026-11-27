@@ -53,10 +53,11 @@ wal: ""
 # hold from the WAL, pages changed since the last checkpoint and changes of
 # open transactions, before it exits 1 and the pod restarts to load every
 # table again; with a Ki, Mi, Gi or Ti suffix. It comes on top of the
-# cells, so keep it well under resources.limits.memory: at the defaults,
-# both 1Gi, the pod is killed for its memory before straum's own limit
-# can stop it.
-maxPageMemory: "1Gi"
+# cells, and so do up to three times maxStreamMemory. At the defaults,
+# 256Mi and three times 256Mi fill the whole 1Gi memory limit, and leave
+# nothing for the cells. So with wal "physical", add the memory of the
+# cells to resources.limits.memory. straum run without the flag takes 1Gi.
+maxPageMemory: "256Mi"
 
 # maxStreamMemory is how many bytes of commits straum may hold, read from
 # the stream ahead of the writer, and how many bytes of rows one
