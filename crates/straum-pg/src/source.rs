@@ -689,9 +689,21 @@ impl Source for Postgres {
         // A reading's connection may die on its own, terminated or cut,
         // while the stream is whole: one more try, on a new connection,
         // before Straum stops for it.
-        match self.read_wal_once() {
-            Ok(wal) => Ok(wal),
-            Err(_) => Ok(self.read_wal_once()?),
+        if let Ok(wal) = self.read_wal_once() {
+            return Ok(wal);
+        }
+        let error = match self.read_wal_once() {
+            Ok(wal) => return Ok(wal),
+            Err(error) => error,
+        };
+        // A stream thread that fails closes its connection, and PostgreSQL
+        // then drops the temporary slot. A reading fails after that, and
+        // the stream's error gives the cause. The thread records its
+        // failure before it closes the connection. Thus a check after the
+        // last reading always finds a failure that removed the slot.
+        match self.stream_error() {
+            Some(cause) => Err(self.failed(cause)),
+            None => Err(error.into()),
         }
     }
 }
@@ -733,6 +745,14 @@ impl Postgres {
             self.plain = None;
         }
         wal
+    }
+
+    /// The stream's error, if the stream thread failed.
+    fn stream_error(&mut self) -> Option<Error> {
+        let State::Streaming(stream) = &mut self.state else {
+            return None;
+        };
+        stream.check().err()
     }
 }
 

@@ -5,7 +5,8 @@
 //! inherits from it, a label of an enum it reads renamed, a column it
 //! reads rewritten to its own type. Each reading of
 //! the WAL checks the tables, so Straum stops, and the setup check of the
-//! next start names the problem. The physical stream reads the catalog's
+//! next start names the problem. A reading after the stream failed gives
+//! the stream's error. The physical stream reads the catalog's
 //! own changes and stops on the DDL itself.
 
 use std::thread;
@@ -476,5 +477,50 @@ fn a_table_left_out_under_a_lock_stops_the_stream_once_the_lock_goes() {
         db.sql(
             "trips: publication $S leaves out $S.trips: ALTER PUBLICATION $S ADD TABLE $S.trips"
         )
+    );
+}
+
+/// After a column is dropped, the stream is whole and a reading gives its
+/// own reason. A later change fails the stream, and PostgreSQL drops the
+/// temporary slot. The next reading then gives the stream's reason.
+#[test]
+fn a_reading_after_the_stream_failed_says_why() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "slot_gone", TABLES);
+    db.run(&Rng::new(3).trip(1));
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    // The first call starts the stream. The query of its walsender names
+    // the publication, and the publication has the name of the schema.
+    assert_eq!(source.next_commit(Duration::ZERO).unwrap(), None);
+    let slot = db.rows(
+        "SELECT s.slot_name FROM pg_replication_slots s
+           JOIN pg_stat_activity a ON a.pid = s.active_pid
+          WHERE a.backend_type = 'walsender' AND strpos(a.query, '$S') > 0",
+    )[0][0]
+        .clone()
+        .unwrap();
+
+    db.run("ALTER TABLE $S.trips DROP COLUMN rider");
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql("trips: a column Straum reads of $S.trips was altered")
+    );
+
+    db.run(
+        "INSERT INTO $S.trips (id, at, kind, zone_id, fare, tip) VALUES (2, now(), 'cab', 1, 1, 1)",
+    );
+    let wait = Wait::new("the failed stream's slot to go");
+    let left = format!("SELECT 1 FROM pg_replication_slots WHERE slot_name = '{slot}'");
+    while !db.rows(&left).is_empty() {
+        wait.poll();
+    }
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql("trips: column rider of $S.trips was dropped or changed type")
     );
 }

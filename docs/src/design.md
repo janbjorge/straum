@@ -275,7 +275,10 @@ asks whether a second has passed since it last read the WAL. If so, it
 reads the server's position on the plain connection, feeds the `Lag`,
 fails past `--max-retained-wal` and checks that each spec table is
 still the one it follows (`catalog::still_followed`), trying once more
-on a new connection before it gives up. The check runs under a 200 ms
+on a new connection before it gives up. If that try also fails and the
+stream thread failed, the reading gives the stream's error. PostgreSQL
+dropped the slot when the stream's connection closed, and the stream's
+error gives the cause. The check runs under a 200 ms
 `lock_timeout`, because `pg_publication_tables` locks each published
 table. At that timeout, the reading skips the check and keeps the
 position. Then it asks
