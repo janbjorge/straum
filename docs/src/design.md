@@ -352,7 +352,9 @@ The turn ends when the answer is written, before hyper sends it. Then
 the answer takes one permit for each of its bytes from a second
 semaphore. That semaphore holds a quarter of `--max-memory`, or
 `--max-stream-memory` without it. The answer is 503 busy when too few
-permits are free, and 400 when it needs more than the semaphore holds.
+permits are free. The writer stops at the first row past all the
+permits, or past a `u32`, which one take of permits counts: that answer
+is 400.
 The permits go in the body's `Bytes`, because hyper drops the body once
 it queues the last frame. They come back when hyper sends the last byte
 or drops the connection, so a client that does not read holds its

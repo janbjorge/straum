@@ -205,6 +205,12 @@ fn busy(format: Format) -> Reply {
     format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
 }
 
+/// The most bytes one answer may hold: all of `budget`, but at most the
+/// `u32` that one take of permits counts.
+pub(crate) fn one_answer_bytes(budget: usize) -> usize {
+    budget.min(usize::try_from(u32::MAX).unwrap_or(usize::MAX))
+}
+
 /// One of `answer_bytes`' permits for each of `count` bytes, if that many
 /// are free. A count past what a semaphore or `u32` holds never fits.
 fn take_bytes(answer_bytes: &Arc<Semaphore>, count: usize) -> Option<OwnedSemaphorePermit> {
@@ -236,16 +242,6 @@ fn no_bytes(format: Format, count: usize) -> Reply {
          ask again shortly, or narrow the ask"
     );
     format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
-}
-
-/// The reply when an answer is larger than all the bytes that unread
-/// answers may hold: no retry can make it fit.
-fn too_big(format: Format, count: usize, max_bytes: usize) -> Reply {
-    let error = format!(
-        "the answer has {count} bytes, past the {max_bytes} that unread answers may hold; \
-         narrow the ask: a shorter range, fewer keys or a filter"
-    );
-    format.errors(StatusCode::BAD_REQUEST, &[error])
 }
 
 /// `GET /views` on a blocking thread, holding a turn till it is done.
@@ -472,6 +468,14 @@ enum Unwritten {
         total: usize,
         max_rows: usize,
     },
+    /// The answer passes the bytes one answer may hold.
+    TooBig(answer::TooBig),
+}
+
+impl From<answer::TooBig> for Unwritten {
+    fn from(error: answer::TooBig) -> Unwritten {
+        Unwritten::TooBig(error)
+    }
 }
 
 impl From<AnswerError> for Unwritten {
@@ -489,6 +493,7 @@ impl Display for Unwritten {
                 "the answer has {total} rows, past the {max_rows} an ask may get; \
                  narrow the ask: a shorter range, fewer keys or a filter"
             ),
+            Unwritten::TooBig(error) => error.fmt(formatter),
         }
     }
 }
@@ -530,19 +535,17 @@ async fn answer(
         return format.errors(StatusCode::BAD_REQUEST, &range_errors);
     }
     let app = served.app.clone();
+    let max_bytes = served.max_answer_bytes;
     // A big ask reads every cell of a fact, so it runs off the async
     // threads.
     let answered = tokio::task::spawn_blocking(move || {
         let _turn = turn;
-        answer_timed(&app, &asked, writing)
+        answer_timed(&app, &asked, writing, max_bytes)
     })
     .await;
     match answered {
         Ok(Ok(timed)) => {
             let count = timed.body.len();
-            if count > served.max_answer_bytes {
-                return too_big(format, count, served.max_answer_bytes);
-            }
             let Some(bytes) = take_bytes(&served.answer_bytes, count) else {
                 return no_bytes(format, count);
             };
@@ -562,7 +565,13 @@ struct Timed {
     write_time: Duration,
 }
 
-fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, Unwritten> {
+/// The answer to `asked`, written; it stops past `max_bytes`.
+fn answer_timed(
+    app: &App,
+    asked: &Ask,
+    writing: Writing,
+    max_bytes: usize,
+) -> Result<Timed, Unwritten> {
     let answering = Instant::now();
     let answered = match writing.rows {
         Rows::Window(window) => app.ask_window(asked, window)?,
@@ -574,8 +583,8 @@ fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, Unwri
     };
     let written_from = Instant::now();
     let body = match writing.format {
-        Format::Json => answer::write(&answered),
-        Format::Text => answer::table(&answered).into_bytes(),
+        Format::Json => answer::write(&answered, max_bytes)?,
+        Format::Text => answer::table(&answered, max_bytes)?.into_bytes(),
     };
     Ok(Timed {
         applied: answered.applied,
@@ -652,7 +661,9 @@ fn answer_error(error: &Unwritten, describe: DescribeAskError, format: Format) -
         Unwritten::App(AnswerError::NotReady) => {
             format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
         }
-        Unwritten::TooManyRows { .. } => format.errors(StatusCode::BAD_REQUEST, &[error]),
+        Unwritten::TooManyRows { .. } | Unwritten::TooBig(_) => {
+            format.errors(StatusCode::BAD_REQUEST, &[error])
+        }
     }
 }
 
@@ -852,6 +863,30 @@ mod tests {
         assert!(take_bytes(&answer_bytes, Semaphore::MAX_PERMITS + 1).is_none());
         assert!(take_bytes(&answer_bytes, usize::MAX).is_none());
         assert_eq!(answer_bytes.available_permits(), Semaphore::MAX_PERMITS);
+    }
+
+    /// An answer within the bytes one answer may hold can take them all:
+    /// past a `u32` it got 503, which no retry clears.
+    #[test]
+    fn an_answer_within_one_answers_bytes_can_take_them() {
+        let budget = Semaphore::MAX_PERMITS;
+        let max_bytes = one_answer_bytes(budget);
+        let answer_bytes = Arc::new(Semaphore::new(budget));
+        assert!(take_bytes(&answer_bytes, max_bytes).is_some());
+        assert_eq!(one_answer_bytes(1000), 1000);
+    }
+
+    /// An answer past the bytes one answer may hold gets 400: a retry
+    /// cannot make it fit.
+    #[test]
+    fn an_answer_past_one_answers_bytes_is_refused_with_400() {
+        let too_big = answer::TooBig {
+            written: 5,
+            max_bytes: 4,
+        };
+        let describe: DescribeAskError = |_| String::new();
+        let reply = answer_error(&Unwritten::TooBig(too_big), describe, Format::Json);
+        assert_eq!(reply.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

@@ -22,7 +22,8 @@
 //!   or whose answer has more rows than `serve` is told it may, 503 while a
 //!   table it reads isn't ready or while every core answers another ask.
 //!   It is 503 too while unread answers hold the bytes this answer needs,
-//!   and 400 for an answer larger than all the bytes they may hold.
+//!   and 400 for an answer larger than all the bytes they may hold or
+//!   than a `u32`: the writer stops at the first row past them.
 //!   With `Accept: text/plain` the answer is a table and the errors are
 //!   lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
@@ -121,13 +122,13 @@ pub struct Listeners {
 /// What one client may hold of the server, and for how long.
 #[derive(Debug, Clone, Copy)]
 pub struct ServeLimits {
-    /// An answer is written whole in memory, so one ask over every key of
-    /// a large view could take more than the process may hold; past this
-    /// it is refused.
+    /// The app builds every row of an answer in memory, so one ask over
+    /// every key of a large view could take more than the process may hold;
+    /// past this it is refused.
     pub max_answer_rows: usize,
     /// The bytes that all answers not yet sent may hold. A client that
     /// does not read keeps its answer in memory until its connection
-    /// closes; an answer past this gets 503.
+    /// closes. An answer gets 503 when too few are free, and 400 past all.
     pub max_answer_bytes: usize,
     /// The connections served at once. A connection past them waits in
     /// the listen backlog until one closes.
@@ -193,8 +194,8 @@ struct Served {
     /// One per byte of [`ServeLimits::max_answer_bytes`]: an answer holds
     /// one per byte of its body until hyper sends the last byte.
     answer_bytes: Arc<Semaphore>,
-    /// The permits that `answer_bytes` starts with. An answer larger than
-    /// this never fits.
+    /// The most bytes one answer may hold: the permits that `answer_bytes`
+    /// starts with, at most a `u32`. A writer stops at the first row past it.
     max_answer_bytes: usize,
     /// On the health listener: every route but `/livez`, `/readyz` and
     /// `/status` gets 404.
@@ -233,7 +234,7 @@ pub async fn serve(
         max_answer_rows: limits.max_answer_rows,
         turns: Arc::new(Semaphore::new(cores)),
         answer_bytes: Arc::new(Semaphore::new(max_answer_bytes)),
-        max_answer_bytes,
+        max_answer_bytes: routes::one_answer_bytes(max_answer_bytes),
         health_only: false,
     };
     let (stop, stopping) = watch::channel(false);

@@ -111,9 +111,37 @@ pub(crate) fn range_errors(ask: &Ask) -> Vec<RangeError> {
 /// body grows by doubling.
 const MAX_RESERVE: usize = 64 << 20;
 
+/// An answer past the bytes that one answer may hold. The writer stops at
+/// the first row past them, so `written` is a lower bound of the whole.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TooBig {
+    pub(crate) written: usize,
+    pub(crate) max_bytes: usize,
+}
+
+impl fmt::Display for TooBig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let TooBig { written, max_bytes } = self;
+        write!(
+            formatter,
+            "the answer has at least {written} bytes, past the {max_bytes} that one answer may hold; \
+             narrow the ask: a shorter range, fewer keys or a filter"
+        )
+    }
+}
+
+/// Refuses an answer of which `written` bytes pass `max_bytes`.
+fn within(written: usize, max_bytes: usize) -> Result<(), TooBig> {
+    if written > max_bytes {
+        return Err(TooBig { written, max_bytes });
+    }
+    Ok(())
+}
+
 /// The answer as a JSON body, ending in a newline as `--json` prints
-/// it; the LSN is the caller's to send.
-pub(crate) fn write(answered: &Answered) -> Vec<u8> {
+/// it; the LSN is the caller's to send. Past `max_bytes` it stops at
+/// the row that passed them.
+pub(crate) fn write(answered: &Answered, max_bytes: usize) -> Result<Vec<u8>, TooBig> {
     let Answered { answer, as_of, .. } = answered;
     let mut names = Vec::with_capacity(answer.columns.len());
     for column in &answer.columns {
@@ -127,17 +155,19 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         }
         let start = out.len();
         push_row_json(&mut out, &names, &answer.columns, row, &mut last_time);
+        within(out.len(), max_bytes)?;
         if row_index == 0 {
             // The rows to come, at about the first one's length: growing
             // by doubling copies the answer written so far each time. At
             // most `MAX_RESERVE`: one long first row is no measure of the
             // rest, and a 200 MB key times a million rows aborted.
             let rows_to_come = (out.len() - start + 1).saturating_mul(answer.rows.len() - 1);
-            out.reserve(rows_to_come.min(MAX_RESERVE));
+            out.reserve(rows_to_come.min(MAX_RESERVE).min(max_bytes));
         }
     }
     out.push_str("]}\n");
-    out.into_bytes()
+    within(out.len(), max_bytes)?;
+    Ok(out.into_bytes())
 }
 
 /// The time key written last, quoted: the rows of a bucket follow one
@@ -221,14 +251,21 @@ struct Cell {
 /// The answer as a table: the names, a rule, a line per row, then the
 /// row count and `as_of`. Values print as in the JSON, text without its
 /// quotes. An answer cut to a window says how many rows there are and
-/// from which row it starts.
-pub(crate) fn table(answered: &Answered) -> String {
+/// from which row it starts. Past `max_bytes` it stops at the row that
+/// passed them: each cell's text is in the table, so the cells count too.
+pub(crate) fn table(answered: &Answered, max_bytes: usize) -> Result<String, TooBig> {
     let Answered {
         answer, as_of, cut, ..
     } = answered;
     let mut lines = vec![name_cells(&answer.columns)];
+    let mut cell_bytes = 0;
     for row in &answer.rows {
-        lines.push(row_cells(&answer.columns, row));
+        let cells = row_cells(&answer.columns, row);
+        for cell in &cells {
+            cell_bytes += cell.text.len();
+        }
+        within(cell_bytes, max_bytes)?;
+        lines.push(cells);
     }
     let widths = column_widths(&lines);
 
@@ -238,10 +275,12 @@ pub(crate) fn table(answered: &Answered) -> String {
         if line_index == 0 {
             out.push_str(&rule(&widths));
         }
+        within(out.len(), max_bytes)?;
     }
     let rows = row_count(*cut);
     let _ = writeln!(out, "{rows}, as of {}", as_of_text(*as_of));
-    out
+    within(out.len(), max_bytes)?;
+    Ok(out)
 }
 
 fn name_cells(columns: &[AnswerColumn]) -> Vec<Cell> {
@@ -511,10 +550,97 @@ mod tests {
         for _ in 0..100_000 {
             rows.push(row(Datum::Bool(true), Value::Int(1)));
         }
-        let body = write(&answered(rows));
+        let body = whole_json(&answered(rows));
         assert!(body.len() > long.len() && body.capacity() < 2 * MAX_RESERVE);
-        let short = write(&answered(vec![row(Datum::Bool(true), Value::Int(1))]));
+        let short = whole_json(&answered(vec![row(Datum::Bool(true), Value::Int(1))]));
         assert!(short.ends_with(b"]}\n"));
+    }
+
+    /// The answer as JSON with no limit on its bytes.
+    fn whole_json(answered: &Answered) -> Vec<u8> {
+        write(answered, usize::MAX).unwrap()
+    }
+
+    /// The answer as a table with no limit on its bytes.
+    fn whole_table(answered: &Answered) -> String {
+        table(answered, usize::MAX).unwrap()
+    }
+
+    /// A writer stops at the first row past the bytes one answer may hold.
+    /// Before, 100,000 rows of a 3 KB key built 300 MB, then got 400.
+    #[test]
+    fn a_writer_stops_at_the_first_row_past_the_byte_limit() {
+        let key = "x".repeat(3_000);
+        let mut rows = Vec::new();
+        for _ in 0..1_000 {
+            rows.push(row(Datum::Text(key.as_str().into()), Value::Int(1)));
+        }
+        let answered = answered(rows);
+        let max_bytes = 10_000;
+        let Err(json) = write(&answered, max_bytes) else {
+            panic!("the JSON writer passed the limit");
+        };
+        let Err(text) = table(&answered, max_bytes) else {
+            panic!("the table writer passed the limit");
+        };
+        assert_eq!(json.max_bytes, max_bytes);
+        assert!(json.written > max_bytes, "{json}");
+        // The whole body is about 3 MB: the writer stopped one row past.
+        assert!(json.written < max_bytes + 2 * key.len(), "{json}");
+        // The table stops while it collects the cells, before it pads a
+        // line: at the first row whose cells pass the limit.
+        let row_bytes = key.len() + "1970-01-02T00:00:00Z".len() + "0.01".len();
+        let rows_kept = max_bytes / row_bytes + 1;
+        assert_eq!(
+            text,
+            TooBig {
+                written: row_bytes * rows_kept,
+                max_bytes
+            }
+        );
+    }
+
+    /// One wide cell pads every line of its column, so a table can pass
+    /// the limit while its cells do not: it stops at that line.
+    #[test]
+    fn a_table_stops_at_the_first_line_past_the_byte_limit() {
+        let wide = "x".repeat(3_000);
+        let mut rows = vec![row(Datum::Text(wide.as_str().into()), Value::Int(1))];
+        for _ in 0..1_000 {
+            rows.push(row(Datum::Null, Value::Int(1)));
+        }
+        let max_bytes = 50_000;
+        let Err(too_big) = table(&answered(rows), max_bytes) else {
+            panic!("the table writer passed the limit");
+        };
+        // The whole table is about 3 MB.
+        assert!(too_big.written > max_bytes, "{too_big}");
+        assert!(too_big.written < max_bytes + 2 * wide.len(), "{too_big}");
+    }
+
+    /// An answer of exactly the limit is written; one byte less refuses it.
+    #[test]
+    fn an_answer_at_the_byte_limit_is_written() {
+        let rows = vec![
+            row(Datum::Bool(true), Value::Int(123_456)),
+            row(Datum::Null, Value::Null),
+        ];
+        let answered = answered(rows);
+        let json = whole_json(&answered);
+        assert_eq!(write(&answered, json.len()), Ok(json.clone()));
+        assert!(write(&answered, json.len() - 1).is_err());
+        let text = whole_table(&answered);
+        assert_eq!(table(&answered, text.len()), Ok(text.clone()));
+        let refused = table(&answered, text.len() - 1).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the answer has at least {} bytes, past the {} that one answer may hold; \
+                 narrow the ask: a shorter range, fewer keys or a filter",
+                text.len(),
+                text.len() - 1
+            )
+        );
     }
 
     /// A row in the second day of 1970.
@@ -531,7 +657,7 @@ mod tests {
             row(Datum::Bool(true), Value::Int(123_456)),
             row(Datum::Null, Value::Null),
         ];
-        let json = String::from_utf8(write(&answered(rows))).unwrap();
+        let json = String::from_utf8(whole_json(&answered(rows))).unwrap();
         assert_eq!(
             json,
             concat!(
@@ -550,7 +676,7 @@ mod tests {
             row(Datum::Null, Value::Null),
         ];
         assert_eq!(
-            table(&windowed(rows.clone(), first(2))),
+            whole_table(&windowed(rows.clone(), first(2))),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -560,7 +686,7 @@ bucket               | shared | fare
 "
         );
         assert_eq!(
-            table(&windowed(rows, first(1))),
+            whole_table(&windowed(rows, first(1))),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -577,7 +703,7 @@ bucket               | shared | fare
     fn a_table_escapes_control_characters_in_text() {
         let forged = "Bronx\n1970-01-02T00:00:00Z | true | 1.00\r\t\u{1b}[31m\\ ø";
         let rows = vec![row(Datum::Text(forged.into()), Value::Int(100))];
-        let text = table(&windowed(rows, first(1)));
+        let text = whole_table(&windowed(rows, first(1)));
         assert_eq!(text.lines().count(), 4, "{text}");
         assert!(
             text.contains(r"Bronx\n1970-01-02T00:00:00Z | true | 1.00\r\t\u001b[31m\\ ø"),
@@ -596,7 +722,7 @@ bucket               | shared | fare
             row(Datum::Text("nullable".into()), Value::Int(3)),
             row(Datum::Text("\\null".into()), Value::Int(4)),
         ];
-        let text = table(&windowed(rows, first(4)));
+        let text = whole_table(&windowed(rows, first(4)));
         let mut keys = Vec::new();
         for line in text.lines().skip(2).take(4) {
             keys.push(line.split(" | ").nth(1).unwrap().trim_end().to_owned());
@@ -612,7 +738,7 @@ bucket               | shared | fare
             row(Datum::Date(-746_117), Value::Int(1)),
             row(Datum::Uuid([0x0f; 16]), Value::Int(2)),
         ];
-        let text = table(&windowed(rows, first(2)));
+        let text = whole_table(&windowed(rows, first(2)));
         let mut keys = Vec::new();
         for line in text.lines().skip(2).take(2) {
             keys.push(line.split(" | ").nth(1).unwrap().to_owned());
@@ -650,7 +776,7 @@ bucket               | shared | fare
         for fare in 0..5 {
             rows.push(row(Datum::Null, Value::Int(fare * 100)));
         }
-        let text = table(&windowed(rows, Window { start, count }));
+        let text = whole_table(&windowed(rows, Window { start, count }));
         let mut lines: Vec<&str> = text.lines().skip(2).collect();
         let count = lines.pop().unwrap();
         let (count, _) = count.split_once(", as of").unwrap();
@@ -712,7 +838,7 @@ bucket               | shared | fare
     #[test]
     fn a_count_of_one_row_says_row() {
         let rows = vec![row(Datum::Null, Value::Null)];
-        let text = table(&windowed(rows, first(0)));
+        let text = whole_table(&windowed(rows, first(0)));
         assert!(
             text.ends_with("0 of 1 row, as of 1970-01-01T00:00:00Z\n"),
             "{text}"
@@ -726,7 +852,7 @@ bucket               | shared | fare
             row(Datum::Null, Value::Int(123_456)),
         ];
         assert_eq!(
-            table(&answered(rows)),
+            whole_table(&answered(rows)),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -740,7 +866,7 @@ bucket               | shared | fare
     #[test]
     fn a_table_without_rows_keeps_its_names() {
         assert_eq!(
-            table(&answered(Vec::new())),
+            whole_table(&answered(Vec::new())),
             "\
 bucket | shared | fare
 -------+--------+-----
@@ -755,9 +881,9 @@ bucket | shared | fare
             as_of: UNIX_EPOCH + Duration::from_secs(400_000_000_000),
             ..answered(Vec::new())
         };
-        let json = String::from_utf8(write(&answered)).unwrap();
+        let json = String::from_utf8(whole_json(&answered)).unwrap();
         assert_eq!(json, "{\"as_of\":\"1970-01-01T00:00:00Z\",\"rows\":[]}\n");
-        let text = table(&answered);
+        let text = whole_table(&answered);
         assert!(
             text.ends_with("0 rows, as of 1970-01-01T00:00:00Z\n"),
             "{text}"
