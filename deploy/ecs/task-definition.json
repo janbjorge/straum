@@ -14,7 +14,7 @@
       "name": "straum",
       "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/straum:1",
       "essential": true,
-      "command": ["run", "/etc/straum/spec.sql", "--wal", "logical", "--listen", "0.0.0.0:8080", "--health-listen", "127.0.0.1:8081"],
+      "command": ["run", "/etc/straum/spec.sql", "--wal", "logical", "--listen", "0.0.0.0:8080", "--health-listen", "127.0.0.1:8081", "--max-stream-memory", "256Mi"],
       "secrets": [
         {
           "name": "STRAUM_DSN",

@@ -24,6 +24,10 @@ services:
       # The health check reads this port, so a full 8080 cannot fail it.
       - --health-listen
       - 127.0.0.1:8081
+      # Up to three times this comes on top of the cells: the queue, a
+      # transaction and unsent answers. The default, 1Gi, passes mem_limit.
+      - --max-stream-memory
+      - 256Mi
     secrets:
       - dsn
     volumes:

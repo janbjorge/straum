@@ -263,8 +263,10 @@ postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
 runs a release's image, named by `STRAUM_VERSION`. The spec is
 `spec.sql` beside the file. The DSN is the file `dsn`, passed as a
 secret so it never sits in the environment. User 65532, the image's
-user, must be able to read both. Straum listens on `0.0.0.0:8080`
-inside the container, and Compose publishes it on the host's
+user, must be able to read both. The file gives `--max-stream-memory
+256Mi`, so the memory on top of the cells stays under its 1 GiB
+`mem_limit` ([straum run](cli.md#straum-run)). Straum listens on
+`0.0.0.0:8080` inside the container, and Compose publishes it on the host's
 `127.0.0.1:8080` only, so `--allow-hosts` names `localhost:8080` and
 `127.0.0.1:8080` ([Who can ask](#who-can-ask)). Compose restarts
 it unless it was stopped. The health check is `straum status --url
@@ -279,9 +281,10 @@ must not.
 is a Fargate task. A task mounts no file, so the spec, and the CA
 roots when the DSN needs `sslrootcert=/etc/straum-tls/ca.pem`, are
 built into an image on top of the release's. The DSN arrives as
-`STRAUM_DSN`. Run one task, and let the new one become ready before
-the old one stops: PostgreSQL then holds two slots only while both
-are up.
+`STRAUM_DSN`. The task gives `--max-stream-memory 256Mi`, so the memory
+on top of the cells stays well under its 2 GiB. Run one task, and let
+the new one become ready before the old one stops: PostgreSQL then
+holds two slots only while both are up.
 
 ECS has one health check, `straum status --url
 http://127.0.0.1:8081`, and replaces a task that fails it. The check
