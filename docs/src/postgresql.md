@@ -113,7 +113,9 @@ It stops too on a rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`,
 `CLUSTER`, or an `ALTER TABLE` that moves the rows to a new file. It
 follows `ADD COLUMN`, `DROP COLUMN` and other data definition language
 (DDL) that keeps the file once a snapshot sees the new columns, and
-stops after 10 seconds without one. [The physical
+stops after 10 seconds without one. It also stops on DDL that puts
+another column under the name of a column the spec reads, as a rename
+or a drop and an add do. [The physical
 stream](how-it-works.md#the-physical-stream) says why.
 
 ## 2. Connect

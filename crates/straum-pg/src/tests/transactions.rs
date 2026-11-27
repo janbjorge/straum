@@ -288,7 +288,8 @@ fn running_xids(description: &str) -> Vec<u32> {
 /// A table rewritten, truncated or dropped no longer reads as loaded:
 /// its old pages are gone, and the physical stream says so with an
 /// `Unfit` for each, at the commit that did it. DDL that keeps the file
-/// says nothing. A row whose read value is stored out of line, inserted,
+/// says nothing, unless it puts another column under the name of a column
+/// read. A row whose read value is stored out of line, inserted,
 /// updated or deleted, is unfit for that cause, not as an altered table.
 #[test]
 fn rewritten_and_dropped_tables_are_unfit() {
@@ -306,6 +307,21 @@ fn rewritten_and_dropped_tables_are_unfit() {
     let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
     let steps = [
         ("ALTER TABLE $S.trips ADD extra int", None),
+        // A column the spec skips, dropped and added again under its name.
+        (
+            "ALTER TABLE $S.trips DROP extra; ALTER TABLE $S.trips ADD extra int",
+            None,
+        ),
+        // A column the spec reads at another place under its name, of its
+        // type: the rows hold another value under that name.
+        (
+            "ALTER TABLE $S.trips RENAME tip TO tip_old; ALTER TABLE $S.trips RENAME extra TO tip",
+            Some(("trips", Drift::Altered)),
+        ),
+        (
+            "ALTER TABLE $S.trips DROP rider; ALTER TABLE $S.trips ADD rider text",
+            Some(("trips", Drift::Altered)),
+        ),
         ("INSERT INTO $S.trips (id, kind) VALUES (998, 'bob')", None),
         // A changed value the update moves out of line: the page holds a
         // pointer, as for a value the update kept, and the old row's

@@ -3,8 +3,9 @@
 //! an action filtered out by the publication, renamed away
 //! with another table made under its name, a parent of a table that
 //! inherits from it, a label of an enum it reads renamed, a column it
-//! reads rewritten to its own type. Each reading of
-//! the WAL checks the tables, so Straum stops, and the setup check of the
+//! reads rewritten to its own type or put at another place under its
+//! name. Each reading of the WAL checks the tables, so Straum stops, and
+//! the setup check of the
 //! next start names the problem. A reading after the stream failed gives
 //! the stream's error. The physical stream reads the catalog's
 //! own changes and stops on the DDL itself.
@@ -422,6 +423,40 @@ fn a_column_granted_keeps_the_logical_stream_and_one_retyped_stops_it() {
         error,
         db.sql("trips: a column Straum reads of $S.trips was altered")
     );
+}
+
+/// The DDL that puts a column the spec reads at another place under its
+/// name, of its type: the rows loaded hold another value under that name.
+const MOVED: [&str; 2] = [
+    "ALTER TABLE $S.trips RENAME tip TO tip_old; ALTER TABLE $S.trips RENAME extra TO tip",
+    "ALTER TABLE $S.trips DROP tip; ALTER TABLE $S.trips ADD tip int",
+];
+
+/// A column read at another place sends a Relation with the same names
+/// and types: the reading of the WAL finds the move. `tip` is the last
+/// column read, so the order of the columns read stays the same. A column
+/// the spec skips, dropped and added again, keeps the stream.
+#[test]
+fn a_column_read_at_another_place_stops_the_logical_stream() {
+    let pg = postgres();
+    for (index, moved) in MOVED.into_iter().enumerate() {
+        let mut db = Db::new(&pg, &format!("moved{index}"), TABLES);
+        db.run(&Rng::new(3).trip(1));
+        db.run("ALTER TABLE $S.trips ADD extra int");
+        let spec = db.spec(SPEC);
+        let mut source = db.pg();
+        source.open(&spec).unwrap();
+        load_all(&mut source, &spec).unwrap();
+        db.run("ALTER TABLE $S.trips DROP extra; ALTER TABLE $S.trips ADD extra int");
+        assert!(source.wal().is_ok());
+        db.run(moved);
+        let error = source.wal().unwrap_err().to_string();
+        assert_eq!(
+            error,
+            db.sql("trips: a column Straum reads of $S.trips was altered"),
+            "{moved}"
+        );
+    }
 }
 
 /// The tables of [`TABLES`], plus a published table the spec does not

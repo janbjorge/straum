@@ -178,14 +178,16 @@ fn relabelled(
 /// of. `VACUUM FULL` and `CLUSTER` rewrite the rows alone, with the same
 /// values, and leave the catalog row. A column-level `GRANT`, `SET
 /// STATISTICS`, `SET STORAGE`, a first `SET DEFAULT`, `SET NOT NULL` or
-/// `DROP NOT NULL` write the catalog row alone and leave the file. So a
-/// column is altered when its type changed, or its catalog row and the
-/// file both did; the last also takes such a write and a `VACUUM FULL`
-/// both since the load, and stops Straum for nothing, which is safe.
+/// `DROP NOT NULL` write the catalog row alone and leave the file. A
+/// rename over a column, or a drop and an add again, puts another column
+/// under its name at another `attnum`. So a column is altered when its
+/// type or `attnum` changed, or its catalog row and the file both did;
+/// the last also takes such a write and a `VACUUM FULL` both since the
+/// load, and stops Straum for nothing, which is safe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ColumnVersions {
     pub(crate) oid: Oid,
-    /// `name:atttypid:atttypmod` of each column read, in column order.
+    /// `name:attnum:atttypid:atttypmod` of each column read, in column order.
     pub(crate) types: String,
     /// The `xmin` of each column's catalog row, in column order.
     pub(crate) rows: String,
@@ -220,7 +222,7 @@ pub(crate) fn column_versions(
     }
     let rows = connection.rows(&format!(
         "SELECT a.attrelid,
-                string_agg(a.attname || ':' || a.atttypid || ':' || a.atttypmod,
+                string_agg(a.attname || ':' || a.attnum || ':' || a.atttypid || ':' || a.atttypmod,
                            ',' ORDER BY a.attnum),
                 string_agg(a.xmin::text, ',' ORDER BY a.attnum),
                 c.relfilenode

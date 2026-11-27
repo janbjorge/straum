@@ -119,7 +119,10 @@ impl Publisher {
     /// now, rewritten or truncated, or gone, no longer reads as loaded:
     /// its pages went with the old file. Any other is announced again
     /// before its next change, as pgoutput does after an invalidation,
-    /// and the decoder sees what changed. A column added may be of an
+    /// and the decoder sees what changed, unless a column it reads is at
+    /// another `attnum` under its name: renamed over, or dropped and added
+    /// again, its rows hold other values, and the decoder sees only names
+    /// and types. A column added may be of an
     /// enum no table had before, and an enum may have gained a label, so
     /// the labels come along, `stale` empty or not. A label renamed makes
     /// every table that reads its enum unfit and keeps its old text, so
@@ -131,6 +134,12 @@ impl Publisher {
             };
             match table_with_oid(&fresh.tables, oid) {
                 Some(table) if table.file == file => {
+                    if moved(&self.tables[&file], table) {
+                        self.unfit.push(Unfit {
+                            oid,
+                            drift: Drift::Altered,
+                        });
+                    }
                     self.tables.insert(file, table.clone());
                     self.announced.remove(&file);
                 }
@@ -279,6 +288,21 @@ fn table_with_oid(tables: &[Layout], oid: Oid) -> Option<&Layout> {
         }
     }
     None
+}
+
+/// Whether a column `old` reads is at another `attnum` in `fresh`.
+fn moved(old: &Layout, fresh: &Layout) -> bool {
+    for (column, &attribute) in old.relation.columns.iter().zip(&old.columns) {
+        if old.attributes[attribute].kind == Kind::Other {
+            continue;
+        }
+        for (now, &at) in fresh.relation.columns.iter().zip(&fresh.columns) {
+            if now.name == column.name && at != attribute {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Whether `message` invalidates `table`: relation 0 is every table of
