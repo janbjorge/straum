@@ -8,14 +8,18 @@
 //! the dims of the spec.
 
 use sqlparser::ast as sql;
+use sqlparser::ast::Spanned;
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::keywords::Keyword;
+use sqlparser::tokenizer::{Token, Tokenizer};
 use straum_domain::{
     Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Via,
 };
 
 use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
-    Clause, Names, NullTest, Reported, SqlError, Walker, and_parts, comma_list, line, statements,
-    without_leading_zeros, written_digits,
+    Clause, Names, NullTest, Offsets, Reported, SqlError, Walker, and_parts, comma_list, line,
+    statements, without_leading_zeros, written_between, written_digits,
 };
 
 mod columns;
@@ -32,6 +36,7 @@ pub(crate) struct Views {
 /// Walks a spec's text into its views and their dims.
 pub(crate) fn parse(text: &str) -> Result<Views, Vec<SqlError>> {
     let statements = statements(text)?;
+    let offsets = Offsets::of(text);
     let mut walker = Walker::default();
     let mut dims = Vec::new();
     let mut facts = Vec::new();
@@ -46,7 +51,7 @@ pub(crate) fn parse(text: &str) -> Result<Views, Vec<SqlError>> {
             walker.refuse(line(statement), "statement", statement);
             continue;
         };
-        if let Ok(fact) = walker.view(view, &mut dims) {
+        if let Ok(fact) = walker.view(view, &mut dims, text, &offsets) {
             facts.push(fact);
         }
     }
@@ -133,11 +138,17 @@ struct SelectedKeys {
 }
 
 impl Walker {
-    fn view(&mut self, view: &sql::CreateView, dims: &mut Vec<Dim>) -> Result<Fact, Reported> {
+    fn view(
+        &mut self,
+        view: &sql::CreateView,
+        dims: &mut Vec<Dim>,
+        text: &str,
+        offsets: &Offsets,
+    ) -> Result<Fact, Reported> {
         let before = self.met();
         let at = self.view_clauses(view);
         let fact_name = self.bare_name(&view.name, "view");
-        let body = self.view_body(&view.query);
+        let body = self.view_body(&view.query, text, offsets);
         let name = fact_name?;
         let body = body?;
         if self.met() > before {
@@ -165,9 +176,14 @@ impl Walker {
         })
     }
 
-    fn view_body(&mut self, query: &sql::Query) -> Result<Body, Reported> {
+    fn view_body(
+        &mut self,
+        query: &sql::Query,
+        text: &str,
+        offsets: &Offsets,
+    ) -> Result<Body, Reported> {
         let select = self.one_select(query, "view body")?;
-        self.select(select)
+        self.select(select, text, offsets)
     }
 
     fn view_clauses(&mut self, view: &sql::CreateView) -> u64 {
@@ -212,7 +228,12 @@ impl Walker {
         at
     }
 
-    fn select(&mut self, select: &sql::Select) -> Result<Body, Reported> {
+    fn select(
+        &mut self,
+        select: &sql::Select,
+        text: &str,
+        offsets: &Offsets,
+    ) -> Result<Body, Reported> {
         let at = self.select_clauses(select);
         self.reject_if_present(at, select.having.is_some(), "HAVING");
         let [from] = select.from.as_slice() else {
@@ -227,7 +248,7 @@ impl Walker {
             mut scope,
             conditions,
         } = self.from(from, select.selection.as_ref())?;
-        let named = self.named_items(&select.projection);
+        let named = self.named_items(&select.projection, text, offsets);
         let SelectedKeys {
             positions,
             buckets,
@@ -308,15 +329,27 @@ impl Walker {
         selected
     }
 
+    /// The named items. `sqlparser` does not record `AS`, and PostgreSQL
+    /// takes a name without it, so the walker reads the text before the name.
     // Borrows the items from the tree, which outlives the walk.
     fn named_items<'tree>(
         &mut self,
         projection: &'tree [sql::SelectItem],
+        text: &str,
+        offsets: &Offsets,
     ) -> Vec<NamedItem<'tree>> {
         let mut named = Vec::new();
         for item in projection {
             match item {
                 sql::SelectItem::ExprWithAlias { expr, alias } => {
+                    let before_name =
+                        written_between(text, offsets, expr.span().end, alias.span.start);
+                    if !ends_in_as(before_name) {
+                        self.error(
+                            line(item),
+                            format!("write {expr} AS {alias}, not {expr} {alias}"),
+                        );
+                    }
                     named.push(NamedItem {
                         expression: expr,
                         alias,
@@ -420,6 +453,23 @@ impl Walker {
             );
         }
     }
+}
+
+/// Whether the last token of `text` is `AS`, comments and blanks left
+/// out.
+fn ends_in_as(text: &str) -> bool {
+    let Ok(tokens) = Tokenizer::new(&PostgreSqlDialect {}, text).tokenize() else {
+        return false;
+    };
+    let mut last_is_as = false;
+    for token in tokens {
+        match token {
+            Token::Whitespace(_) => {}
+            Token::Word(word) => last_is_as = word.keyword == Keyword::AS,
+            _ => last_is_as = false,
+        }
+    }
+    last_is_as
 }
 
 /// A GROUP BY item written as a SELECT position, `1` on.

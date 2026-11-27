@@ -244,9 +244,16 @@ fn every_column_is_alias_column() {
     ]);
 }
 
-/// Every SELECT item is named, the time too, and nothing twice.
+/// Every SELECT item is named after `AS`, the time too, and nothing
+/// twice. A comment may come between `AS` and the name.
 #[test]
 fn every_select_item_is_named() {
+    assert_eq!(
+        error_lines(&canon("orders.status AS status", "orders.status status")),
+        ["line 3: write orders.status AS status, not orders.status status"]
+    );
+    let comment = canon("count(*) AS orders", "count(*) AS /* all */ orders");
+    assert!(parse(&comment).is_ok(), "{:?}", parse(&comment));
     check(&[
         (
             "orders.status AS status",
@@ -264,6 +271,26 @@ fn every_select_item_is_named() {
             "name every SELECT item: count(*) AS <name>",
         ),
         ("'1 day') AS bucket", "'1 day')", "name every SELECT item"),
+        (
+            "'1 day') AS bucket",
+            "'1 day') bucket",
+            "write buckets(orders.placed_at, '1 hour', '1 day') AS bucket, not buckets(",
+        ),
+        (
+            ") AS shipped,",
+            ") shipped,",
+            "write (orders.shipped_at IS NOT NULL) AS shipped, not (",
+        ),
+        (
+            "count(*) AS orders",
+            "count(*) orders",
+            "write count(*) AS orders, not count(*) orders",
+        ),
+        (
+            "'paid') AS paid",
+            "'paid') paid",
+            "write count(*) FILTER (WHERE orders.status = 'paid') AS paid, not count(*) FILTER",
+        ),
         ("AS bucket", "AS status", "orders: status declared twice"),
         (
             "orders.customer_id AS customer_id",

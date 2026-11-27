@@ -792,6 +792,20 @@ impl Offsets {
     }
 }
 
+/// The text from `start` to `end`, located as sqlparser does.
+// The lifetime says that the text comes from `text`, not from `offsets`.
+pub(super) fn written_between<'text>(
+    text: &'text str,
+    offsets: &Offsets,
+    start: Location,
+    end: Location,
+) -> &'text str {
+    let start = offsets.offset(start);
+    // An end before the start is no text, never a panic.
+    let end = offsets.offset(end).max(start);
+    &text[start..end]
+}
+
 /// The items printed and joined by `, `.
 // Any printable list: names, SELECT positions or widths.
 pub(crate) fn comma_list(items: &[impl fmt::Display]) -> String {

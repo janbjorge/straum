@@ -25,7 +25,7 @@ use jiff::Timestamp;
 use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
+use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 use straum_domain::{
     Ask, AskKey, BoundZone, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
@@ -33,7 +33,7 @@ use straum_domain::{
 use super::calls::{BUCKETS, DATE_BIN, is_call};
 use super::{
     NOT_IN_STRAUM_SQL, Names, Offsets, PARENTHESES, Reported, SqlError, Walker, and_parts, line,
-    statements, without_leading_zeros,
+    statements, without_leading_zeros, written_between,
 };
 use crate::ask_error::comparison_text;
 
@@ -676,20 +676,6 @@ fn comparison(operator: &sql::BinaryOperator) -> Option<Comparison> {
         sql::BinaryOperator::GtEq => Some(Comparison::GreaterOrEqual),
         _ => None,
     }
-}
-
-/// The text from `start` to `end`, located as sqlparser does.
-// The lifetime says that the text comes from `text`, not from `offsets`.
-fn written_between<'text>(
-    text: &'text str,
-    offsets: &Offsets,
-    start: Location,
-    end: Location,
-) -> &'text str {
-    let start = offsets.offset(start);
-    // An end before the start is no text, never a panic.
-    let end = offsets.offset(end).max(start);
-    &text[start..end]
 }
 
 /// A comment or a trailing `;` in an ask: it is one statement, written
