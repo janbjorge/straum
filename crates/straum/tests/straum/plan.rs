@@ -170,6 +170,32 @@ fn plan_reads_the_libpq_variables() {
 }
 
 #[test]
+fn plan_gives_the_dsn_password_only_to_its_user() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let with_role = |role: &str| {
+        let mut command = straum(&["plan", "--wal", "logical", &spec, "--role", role]);
+        command
+            .env("PGHOST", "db.example")
+            .env("PGUSER", "postgres")
+            .env("PGPASSWORD", "adminpw");
+        output(&mut command)
+    };
+    let (code, stdout, stderr) = with_role("postgres");
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let verifier = "CREATE ROLE \"postgres\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$";
+    assert!(stdout.contains(verifier), "{stdout}");
+    // The password is the DSN user's, so another role gets none.
+    let (code, stdout, stderr) = with_role("straum");
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(
+        stdout.contains("CREATE ROLE \"straum\" LOGIN REPLICATION;\n"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("PASSWORD"), "{stdout}");
+}
+
+#[test]
 fn plan_can_write_the_setup_sql() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);

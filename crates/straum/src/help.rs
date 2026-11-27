@@ -71,8 +71,9 @@ usage: straum plan FILE --wal logical|physical [flags]
 
 Prints the SQL that sets PostgreSQL up for FILE, the spec. With --wal
 logical: logical decoding, the role, its grants and the publication.
-With --wal physical: the role and its grants. With a DSN the role is its user and gets
-its password, as a SCRAM-SHA-256 verifier. --out writes the SQL to a
+With --wal physical: the role and its grants. With a DSN the role is
+its user, unless --role names another. Only the DSN's user gets the
+DSN's password, as a SCRAM-SHA-256 verifier. --out writes the SQL to a
 file instead of stdout.
 
 --copy writes two psql scripts into DIR that copy the tables of one or

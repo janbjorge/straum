@@ -326,9 +326,10 @@ fn plan_setup(specs: &[Spec], plan: &Plan, replication: Replication) -> Result<(
     if role.chars().any(char::is_control) {
         return Err(Failure::RoleControl(role.to_owned()));
     }
+    // The password is the DSN user's, so another --role gets none.
     let password = match &dsn {
-        Some(dsn) => dsn.password(),
-        None => None,
+        Some(dsn) if dsn.user() == role => dsn.password(),
+        _ => None,
     };
     let sql = straum_pg::plan(spec, &plan.publication, role, password, replication);
     write_or_print(plan.out.as_deref(), &sql)
