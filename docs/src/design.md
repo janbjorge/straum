@@ -370,7 +370,8 @@ widths, cells, range of buckets at any width, each width kept for a
 time with its horizon (`Store::horizons`), keys with the types the load
 set, and measures; per dim its rows. `GET /views/NAME` builds an ask of
 its own (`App::rows_ask`), every measure by the bucket and every key over all
-the buckets the view holds, and runs it like any other
+the buckets the view holds, from the horizon of its width when the spec
+keeps that width for a time. It runs that ask like any other
 (`App::ask_window`). The store builds only the rows of the window asked
 for, at most 1000, but still merges every cell into its group.
 `GET /views/NAME/spec` replies with the view's `CREATE VIEW` statement,

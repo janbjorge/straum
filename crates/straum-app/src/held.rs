@@ -3,7 +3,7 @@
 //! widths, keys, measures, how many cells it keeps at each width and
 //! each width kept only for a time with its horizon, per dim its rows
 //! and the view keys that read it. `App::rows_ask` builds, from the spec
-//! alone, the ask for every row a view holds.
+//! and the horizon of the view's width, the ask for every row a view holds.
 
 use std::ops::Range;
 
@@ -99,10 +99,19 @@ impl App {
     }
 
     /// The ask for every row the view holds: each measure by the time and
-    /// every key, both ends of the range open.
+    /// every key, from the horizon of the view's width, else open, to an
+    /// open end.
     /// `None` for a name no view has.
     pub fn rows_ask(&self, view: &str) -> Option<Ask> {
         let fact = self.spec.fact(view)?;
+        // An open start reads the buckets that the horizon dropped, and
+        // the store refuses it.
+        let mut from = None;
+        for horizon in self.read().store.horizons(view).expect(IN_SPEC) {
+            if horizon.width == fact.time.width {
+                from = horizon.kept_from;
+            }
+        }
         let mut keys = vec![AskKey::Key(fact.time.name.clone())];
         for key in fact.keys() {
             keys.push(AskKey::Key(key.clone()));
@@ -113,7 +122,7 @@ impl App {
             keys,
             filter: Vec::new(),
             having: Vec::new(),
-            from: None,
+            from,
             to: None,
             bounded: None,
             bound_zone: straum_domain::BoundZone::Utc,

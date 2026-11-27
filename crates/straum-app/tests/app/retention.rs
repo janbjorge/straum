@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use straum_app::{AnswerError, App, HeldKept, Step, Writer};
-use straum_domain::{AnswerRow, Ask, AskError, AskKey, Spec, Store, Width};
+use straum_domain::{AnswerRow, Ask, AskError, AskKey, Spec, Store, Value, Width};
 
 use crate::common::{DAY, LIMITS, database, insert, int, row};
 use crate::fake::{Fake, Write, id};
@@ -198,4 +198,36 @@ fn the_held_view_names_each_kept_width_and_its_horizon() {
     };
     assert_eq!(view.kept, [kept]);
     assert_eq!(view.range, Some(2 * DAY..9 * DAY + 3 * HOUR));
+}
+
+/// A view's rows start at the horizon of its own width once the store is
+/// advanced: an open start would read the dropped hours, and is refused.
+/// Before the load the store has no horizon, and the start stays open.
+#[test]
+fn the_rows_ask_starts_at_the_horizon_of_the_view_s_width() {
+    let database = database();
+    database.borrow_mut().commit(vec![
+        trip_at(1, 2 * DAY + 600),
+        trip_at(2, 9 * DAY + 2 * HOUR),
+    ]);
+    database.borrow_mut().clock = days(10);
+    let mut writer = writer_of(Fake::new(&database));
+    assert_eq!(writer.app().rows_ask("trips").unwrap().from, None);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let app = writer.app();
+    let asked = app.rows_ask("trips").unwrap();
+    let hour = AnswerRow {
+        keys: vec![int(9 * DAY + 2 * HOUR), int(1)],
+        values: vec![Value::Int(1)],
+    };
+    assert_eq!(
+        app.ask(&asked).map(|answered| answered.answer.rows),
+        Ok(vec![hour])
+    );
+    assert_eq!((asked.from, asked.to), (Some(9 * DAY), None));
+    let open = Ask {
+        from: None,
+        ..asked
+    };
+    assert_eq!(refusal(app, &open), past(9 * DAY));
 }

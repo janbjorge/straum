@@ -127,6 +127,8 @@ width still held answers, read from those wider buckets, as does an ask
 with no time key and both ends open. Each width read too far back is
 named once, the narrowest first. [`straum views`](cli.md#straum-views)
 and `GET /views` show each width's horizon before an ask meets it.
+`GET /views/NAME` and `\rows` start a view's rows at the horizon of
+its width, so Straum does not refuse them.
 
 ## HAVING
 
