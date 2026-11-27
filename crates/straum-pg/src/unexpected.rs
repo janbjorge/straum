@@ -51,11 +51,16 @@ pub(crate) enum Unexpected {
 pub(crate) enum BinaryCopy {
     DataAfterEnd,
     ValueCutShort,
+    /// A field length below -1, the length of null.
+    ValueLength(i32),
     WithoutEnd,
     NotBinary,
     HeaderCutShort,
     RowCutShort,
-    RowWidth { fields: i16, columns: usize },
+    RowWidth {
+        fields: i16,
+        columns: usize,
+    },
 }
 
 impl fmt::Display for BinaryCopy {
@@ -63,6 +68,7 @@ impl fmt::Display for BinaryCopy {
         match self {
             BinaryCopy::DataAfterEnd => formatter.write_str("data after the end of a copy"),
             BinaryCopy::ValueCutShort => formatter.write_str("a copy value cut short"),
+            BinaryCopy::ValueLength(length) => write!(formatter, "a copy value of length {length}"),
             BinaryCopy::WithoutEnd => formatter.write_str("a copy without its end"),
             BinaryCopy::NotBinary => formatter.write_str("a copy that isn't binary"),
             BinaryCopy::HeaderCutShort => formatter.write_str("a copy header cut short"),

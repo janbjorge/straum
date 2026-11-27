@@ -425,7 +425,7 @@ fn binary_copy_errors() {
 /// Copies a server could send that are broken, from `header` and a two
 /// column `row`, each with the start of the error it gets.
 // `'static`: each expected error is a literal written here.
-fn broken_copies(header: &[u8], row: &[u8]) -> [(Vec<Vec<u8>>, &'static str); 9] {
+fn broken_copies(header: &[u8], row: &[u8]) -> [(Vec<Vec<u8>>, &'static str); 10] {
     let mut cut = joined(&[header, row]);
     cut.pop();
     let mut cut_header = copy_header(b"ext");
@@ -468,6 +468,18 @@ fn broken_copies(header: &[u8], row: &[u8]) -> [(Vec<Vec<u8>>, &'static str); 9]
                 &COPY_END,
             ])],
             "can't read \"\\\\x000001\" as an integer in column b of public.t",
+        ),
+        // Only -1 is null: a length below it isn't a value.
+        (
+            vec![joined(&[
+                header,
+                &2_i16.to_be_bytes(),
+                &(-2_i32).to_be_bytes(),
+                &4_i32.to_be_bytes(),
+                &1_i32.to_be_bytes(),
+                &COPY_END,
+            ])],
+            "PostgreSQL sent a copy value of length -2",
         ),
     ]
 }

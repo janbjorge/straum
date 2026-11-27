@@ -268,7 +268,12 @@ fn read(
                 let length = i32::from_be_bytes(take(&mut data)?);
                 batch.push(match usize::try_from(length) {
                     // -1 is null.
-                    Err(_) => Datum::Null,
+                    Err(_) if length == -1 => Datum::Null,
+                    Err(_) => {
+                        return Err(Error::Protocol(Unexpected::Copy(BinaryCopy::ValueLength(
+                            length,
+                        ))));
+                    }
                     Ok(length) => {
                         let Some((value, rest)) = data.split_at_checked(length) else {
                             return Err(Error::Protocol(Unexpected::Copy(
