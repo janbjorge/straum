@@ -260,7 +260,7 @@
         }
       },
       "Misdirected": {
-        "description": "On loopback, the Host header names another machine or port.",
+        "description": "The Host header names none of the names that --allow-hosts lists, or Straum listens on loopback and the Host header names another machine or port.",
         "content": { "text/plain": { "schema": { "type": "string" } } }
       }
     },

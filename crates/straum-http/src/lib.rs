@@ -8,8 +8,9 @@
 //! parses JSON for it and writes the strings and nulls of every reply;
 //! `time.rs` writes times as RFC 3339.
 //!
-//! On loopback a request whose `Host` names another machine or port gets
-//! 421 (see `host.rs`).
+//! A request gets 421 when its `Host` is none of the names that `serve`
+//! is told, or when Straum listens on loopback, is told no names, and the
+//! `Host` names another machine or port (see `host.rs`).
 //!
 //! A health listener, if `serve` is given one, serves `/livez`, `/readyz`
 //! and `/status` alone, with [`MAX_HEALTH_CONNECTIONS`] of its own. Idle
