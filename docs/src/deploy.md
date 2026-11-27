@@ -279,13 +279,17 @@ must not.
 ## Amazon ECS
 
 [`deploy/ecs/`](https://github.com/janbjorge/straum/tree/main/deploy/ecs)
-is a Fargate task. A task mounts no file, so the spec, and the CA
-roots when the DSN needs `sslrootcert=/etc/straum-tls/ca.pem`, are
-built into an image on top of the release's. The DSN arrives as
-`STRAUM_DSN`. The task gives `--max-stream-memory 256Mi`, so the memory
-on top of the cells stays well under its 2 GiB. Run one task, and let
-the new one become ready before the old one stops: PostgreSQL then
-holds two slots only while both are up.
+is a Fargate task. A task mounts no file, so the spec and the CA roots
+are built into an image on top of the release's. The build needs
+`spec.sql` and the Amazon RDS
+[`global-bundle.pem`](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem)
+beside the Dockerfile. The DSN names the roots with
+`sslrootcert=/etc/straum-tls/ca.pem`. For a server that the built-in
+roots check, remove the last `COPY` line of the Dockerfile. The DSN
+arrives as `STRAUM_DSN`. The task gives `--max-stream-memory 256Mi`,
+so the memory on top of the cells stays well under its 2 GiB. Run one
+task, and let the new one become ready before the old one stops:
+PostgreSQL then holds two slots only while both are up.
 
 ECS has one health check, `straum status --url
 http://127.0.0.1:8081`, and replaces a task that fails it. The check
