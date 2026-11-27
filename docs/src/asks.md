@@ -281,7 +281,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | Status | When |
 | --- | --- |
 | 200 | The answer. |
-| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An answer of more rows than [`--max-answer-rows`](cli.md#straum-run) allows, 100,000 by default, is refused too, since it is written whole in memory: narrow the ask. |
+| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An answer of more rows than [`--max-answer-rows`](cli.md#straum-run) allows, 100,000 by default, is refused too, since it is written whole in memory: narrow the ask. So is an answer larger than all the bytes that unread answers may hold ([Connections](deploy.md#connections)). |
 | 405 | Not a `POST`. |
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
@@ -289,7 +289,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | 421 | The `Host` is none `--allow-hosts` lists, or Straum listens on loopback and the `Host` names another machine or port, on every endpoint ([Who can ask](deploy.md#who-can-ask)). |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 | 503 | `{"errors": ["busy: every core is answering an ask; ask again shortly"]}`: Straum answers as many asks at once as it has cores, and `GET /views` and `GET /views/NAME` count as asks. Retry. |
-| 503 | `{"errors": ["busy: unread answers hold the memory that this answer of N bytes needs; ask again shortly, or narrow the ask"]}`: the answers that Straum has not sent yet hold all the bytes that they may hold ([Connections](deploy.md#connections)). `GET /views/NAME` counts too. Retry, or narrow an answer that is larger than all of them. |
+| 503 | `{"errors": ["busy: unread answers hold the memory that this answer of N bytes needs; ask again shortly, or narrow the ask"]}`: the answers that Straum has not sent yet hold all the bytes that they may hold ([Connections](deploy.md#connections)). `GET /views/NAME` counts too. Retry. |
 
 No ask is answered 500: a panic in Straum ends the process rather than
 answering from a store it may have left half written, and the client

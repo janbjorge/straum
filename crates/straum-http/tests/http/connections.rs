@@ -385,3 +385,22 @@ fn an_ask_past_the_bytes_of_unread_answers_is_refused() {
     assert_eq!(answered.status, 200, "{}", answered.body);
     server.stop();
 }
+
+/// An answer larger than all the bytes that unread answers may hold can
+/// never be sent, so it gets 400 and not a 503 that a retry cannot clear.
+#[test]
+fn an_answer_past_the_whole_answer_budget_is_refused_with_400() {
+    let writer = many_rows();
+    let server = serve_limited(writer.app().clone(), answer_budget(1000));
+    let refused = send(server.address, &ask_every_row(server.address));
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let error = " bytes, past the 1000 that unread answers may hold; \
+                 narrow the ask: a shorter range, fewer keys or a filter";
+    assert!(
+        refused.body.starts_with("{\"errors\":[\"the answer has ")
+            && refused.body.ends_with(&format!("{error}\"]}}")),
+        "{}",
+        refused.body
+    );
+    server.stop();
+}

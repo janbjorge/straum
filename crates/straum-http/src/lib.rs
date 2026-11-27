@@ -21,7 +21,8 @@
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer
 //!   or whose answer has more rows than `serve` is told it may, 503 while a
 //!   table it reads isn't ready or while every core answers another ask.
-//!   It is 503 too while unread answers hold the bytes this answer needs.
+//!   It is 503 too while unread answers hold the bytes this answer needs,
+//!   and 400 for an answer larger than all the bytes they may hold.
 //!   With `Accept: text/plain` the answer is a table and the errors are
 //!   lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
@@ -192,6 +193,9 @@ struct Served {
     /// One per byte of [`ServeLimits::max_answer_bytes`]: an answer holds
     /// one per byte of its body until hyper sends the last byte.
     answer_bytes: Arc<Semaphore>,
+    /// The permits that `answer_bytes` starts with. An answer larger than
+    /// this never fits.
+    max_answer_bytes: usize,
     /// On the health listener: every route but `/livez`, `/readyz` and
     /// `/status` gets 404.
     health_only: bool,
@@ -220,6 +224,7 @@ pub async fn serve(
     let main = to_tokio(main)?;
     // A core count unknown is taken as one: asks queue, but none fails.
     let cores = thread::available_parallelism().map_or(1, NonZero::get);
+    let max_answer_bytes = limits.max_answer_bytes.min(Semaphore::MAX_PERMITS);
     let served = Served {
         app,
         syntax,
@@ -227,9 +232,8 @@ pub async fn serve(
         hosts,
         max_answer_rows: limits.max_answer_rows,
         turns: Arc::new(Semaphore::new(cores)),
-        answer_bytes: Arc::new(Semaphore::new(
-            limits.max_answer_bytes.min(Semaphore::MAX_PERMITS),
-        )),
+        answer_bytes: Arc::new(Semaphore::new(max_answer_bytes)),
+        max_answer_bytes,
         health_only: false,
     };
     let (stop, stopping) = watch::channel(false);

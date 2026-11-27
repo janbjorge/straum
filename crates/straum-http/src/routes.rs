@@ -238,6 +238,16 @@ fn no_bytes(format: Format, count: usize) -> Reply {
     format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
 }
 
+/// The reply when an answer is larger than all the bytes that unread
+/// answers may hold: no retry can make it fit.
+fn too_big(format: Format, count: usize, max_bytes: usize) -> Reply {
+    let error = format!(
+        "the answer has {count} bytes, past the {max_bytes} that unread answers may hold; \
+         narrow the ask: a shorter range, fewer keys or a filter"
+    );
+    format.errors(StatusCode::BAD_REQUEST, &[error])
+}
+
 /// `GET /views` on a blocking thread, holding a turn till it is done.
 async fn views_off_async(app: &App, turns: &Arc<Semaphore>, format: Format) -> Reply {
     let Some(turn) = take_turn(turns) else {
@@ -530,6 +540,9 @@ async fn answer(
     match answered {
         Ok(Ok(timed)) => {
             let count = timed.body.len();
+            if count > served.max_answer_bytes {
+                return too_big(format, count, served.max_answer_bytes);
+            }
             let Some(bytes) = take_bytes(&served.answer_bytes, count) else {
                 return no_bytes(format, count);
             };

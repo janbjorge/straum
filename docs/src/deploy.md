@@ -96,7 +96,8 @@ Straum writes each answer whole in memory. It keeps the answer until it
 sends the last byte, so a client that does not read keeps its answer in
 Straum. The answers that Straum has not sent yet may hold a quarter of
 `--max-memory`, or `--max-stream-memory` without `--max-memory`
-([straum run](cli.md#straum-run)). An answer past that gets 503 busy
+([straum run](cli.md#straum-run)). An answer gets 503 busy when too few
+of these bytes are free. An answer larger than all of them gets 400
 ([Errors](asks.md#errors)). The bytes come back when the client reads
 its answer, or when its connection closes.
 
