@@ -410,7 +410,7 @@ impl Rollup {
         let width = self.levels[level.0].width;
         // A bucket boundary past either end of `i64` has no whole bucket
         // of this width inside the range on that side.
-        let (Some(first), Some(last)) = (ceiling_multiple(from, width), floor_multiple(to, width))
+        let (Some(first), Some(last)) = (ceiling_multiple(from, width), width.bucket_start(to))
         else {
             self.runs(narrower, from, to, runs);
             return;
@@ -437,9 +437,4 @@ fn ceiling_multiple(at: i64, width: Width) -> Option<i64> {
         quotient += 1;
     }
     quotient.checked_mul(seconds)
-}
-
-/// The greatest multiple of `width` at or below `at`, if `i64` holds it.
-fn floor_multiple(at: i64, width: Width) -> Option<i64> {
-    width.bucket_start(at)
 }
