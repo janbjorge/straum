@@ -1,5 +1,5 @@
 """Read Rust source as the check scripts need it: where its comments,
-string literals and char literals lie.
+string literals and char literals lie, and where a file's modules lie.
 
 `lex` walks the text once. It gives back the code with every comment
 blanked and every literal masked, so a pattern over the code never
@@ -11,6 +11,7 @@ that compiles, and fails with its line rather than being read on.
 
 import bisect
 import dataclasses
+import pathlib
 import re
 
 
@@ -175,6 +176,16 @@ def lex(text: str) -> Source:
     """`text` split into its code and literals; LexError if a comment or
     literal never closes."""
     return Lexer(text).run()
+
+
+def module_folder(path: pathlib.Path) -> pathlib.Path:
+    """The folder that holds the files of the modules `path` declares, as
+    rustc reads `#[path]` in an inline module too: the file's own folder
+    for `lib.rs`, `main.rs` and `mod.rs`, else a folder named as the
+    file."""
+    if path.name in ("lib.rs", "main.rs", "mod.rs"):
+        return path.parent
+    return path.parent / path.stem
 
 
 def closing(code: str, opening: int) -> int:

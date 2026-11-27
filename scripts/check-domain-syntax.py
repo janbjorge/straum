@@ -83,20 +83,13 @@ TEST_FILE_MODULE = re.compile(
 CONCAT = re.compile(r"\bconcat\s*!\s*[\(\[\{]")
 
 
-def module_folder(path: pathlib.Path) -> pathlib.Path:
-    """The folder that holds the files of the modules `path` declares."""
-    if path.name in ("lib.rs", "main.rs", "mod.rs"):
-        return path.parent
-    return path.parent / path.stem
-
-
 def test_files(sources: dict[pathlib.Path, rust_source.Source]) -> set[pathlib.Path]:
     """The files of every test module declared as `mod name;`, and of
     every module beneath one."""
     found = set()
     for path, source in sources.items():
         for name in TEST_FILE_MODULE.findall(source.code):
-            folder = module_folder(path)
+            folder = rust_source.module_folder(path)
             found.add(folder / f"{name}.rs")
             found.add(folder / name / "mod.rs")
             found.update((folder / name).rglob("*.rs"))

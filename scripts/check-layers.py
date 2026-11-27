@@ -290,15 +290,6 @@ def check_includes(packages: list[dict], root: pathlib.Path) -> list[str]:
     return errors
 
 
-def module_base(file: pathlib.Path) -> pathlib.Path:
-    """The folder a file's inline modules sit in, as rustc reads
-    `#[path]` inside one: the file's own folder for `lib.rs`, `main.rs`
-    and `mod.rs`, else a folder named as the file."""
-    if file.name in ("lib.rs", "main.rs", "mod.rs"):
-        return file.parent
-    return file.parent / file.stem
-
-
 def path_base(file, offset: int, code: str) -> pathlib.Path:
     """The folder a `#[path]` at `offset` is relative to: the file's own,
     or inside inline modules, theirs."""
@@ -308,7 +299,7 @@ def path_base(file, offset: int, code: str) -> pathlib.Path:
             names.append(match.group(1))
     if not names:
         return file.parent
-    return module_base(file).joinpath(*names)
+    return rust_source.module_folder(file).joinpath(*names)
 
 
 def value_at(source: rust_source.Source, offset: int) -> str | None:

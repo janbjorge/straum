@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import asyncpg
 import orjson
+from answers import duration
 from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_service
 
 type Rows = Sequence[Mapping[str, Any]]
@@ -355,12 +356,6 @@ async def median(run: Callable[[], Awaitable[object]]) -> float:
         await run()
         times.append(time.perf_counter() - start)
     return statistics.median(times)
-
-
-def duration(seconds: float) -> str:
-    if seconds >= 1e-3:
-        return f"{seconds * 1e3:.1f} ms"
-    return f"{seconds * 1e6:.0f} µs"
 
 
 def dsn(password: str) -> str:
