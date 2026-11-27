@@ -415,12 +415,13 @@ fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<QueryError>>
 
 /// From the file, else from `STRAUM_DSN`, else from libpq's variables.
 /// Never from the command line, where other users of the machine can read
-/// it. A set `STRAUM_DSN` wins, even when libpq's are set too.
+/// it. A set `STRAUM_DSN` wins, even when libpq's are set too. An empty
+/// one is unset, as an empty `STRAUM_` variable is.
 fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, Failure> {
     let text = match (file, env::var("STRAUM_DSN")) {
         (Some(path), _) => read_file(path)?,
-        (None, Ok(text)) => text,
-        (None, Err(_)) => return Dsn::from_pg(&pg_env()).map_err(Failure::Dsn),
+        (None, Ok(text)) if !text.trim().is_empty() => text,
+        (None, _) => return Dsn::from_pg(&pg_env()).map_err(Failure::Dsn),
     };
     Ok(Some(Dsn::parse(text.trim())?))
 }

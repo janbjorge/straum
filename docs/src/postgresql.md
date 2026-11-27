@@ -135,10 +135,11 @@ The scheme is `postgres://` or `postgresql://`. The port defaults to
 `sslmode` and `sslrootcert` are taken. An error about a parameter
 never repeats its text, which could be a password's.
 
-With neither the file nor `STRAUM_DSN`, Straum reads libpq's
-variables: `PGHOST` or `PGHOSTADDR`, `PGPORT`, `PGUSER`, `PGPASSWORD`,
-`PGDATABASE`, `PGSSLMODE` and `PGSSLROOTCERT`. They default as the URL
-does, and `PGUSER` to the OS user. `PGHOST` names one host.
+An empty `STRAUM_DSN` counts as unset. With neither the file nor
+`STRAUM_DSN`, Straum reads libpq's variables: `PGHOST` or `PGHOSTADDR`,
+`PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE` and
+`PGSSLROOTCERT`. They default as the URL does, and `PGUSER` to the OS
+user. `PGHOST` names one host.
 
 Use the server's direct endpoint, not a pooler: the replication
 connection needs a session of its own.

@@ -167,6 +167,15 @@ fn plan_reads_the_libpq_variables() {
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     assert!(stdout.contains("CREATE ROLE \"owner\""), "{stdout}");
     assert!(!stdout.contains("\"reader\""), "{stdout}");
+    // An empty STRAUM_DSN is unset, as an empty STRAUM_ variable is.
+    let mut empty = straum(&["plan", "--wal", "logical", &spec]);
+    empty
+        .env("STRAUM_DSN", "")
+        .env("PGHOST", "db.example")
+        .env("PGUSER", "reader");
+    let (code, stdout, stderr) = output(&mut empty);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(stdout.contains("CREATE ROLE \"reader\""), "{stdout}");
 }
 
 #[test]
