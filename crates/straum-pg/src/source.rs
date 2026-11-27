@@ -922,4 +922,12 @@ mod tests {
         let lsn = Lsn(0x16_B374_D848);
         assert_eq!(parse_lsn(&lsn.to_string()), Some(lsn));
     }
+
+    #[test]
+    fn quotes_replication_literals() {
+        assert_eq!(replication_literal("pub"), "'pub'");
+        assert_eq!(replication_literal("a'b"), "'a''b'");
+        // A replication command has no E'...' form: a backslash stays.
+        assert_eq!(replication_literal(r"a\b"), r"'a\b'");
+    }
 }
