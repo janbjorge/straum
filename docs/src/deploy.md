@@ -88,9 +88,7 @@ runs, a rebound page in a browser on that machine can read it.
 Straum serves at most 1024 connections at once. It does not accept a
 connection past that limit. The connection waits in the listen backlog
 until another connection closes. Straum cuts a connection that sends no
-request head for 5 s, from when it opens or from its last reply. Each
-connection can also hold an ask body of up to 1 MiB in memory while
-Straum reads it.
+request head for 5 s, from when it opens or from its last reply.
 
 Straum writes each answer in memory. It keeps the answer until it sends
 the last byte, so a client that does not read keeps its answer in
@@ -102,6 +100,11 @@ or more, gets 400 ([Errors](asks.md#errors)). Straum stops the write at
 the first row past that size, so it does not build the rest. The bytes
 come back when the client reads its answer, or when its connection
 closes.
+
+An ask body of up to 1 MiB holds its bytes of the same budget while
+Straum reads it. A body without a `Content-Length` holds 1 MiB. An ask
+gets 503 busy when too few bytes are free, so slow bodies cannot fill
+the memory.
 
 A client that opens more than about 205 idle connections each second
 still holds the limit. Then a health check on that port gets no
@@ -246,8 +249,9 @@ process, cells and page memory alike. Set it a little under the memory
 limit, so Straum stops with a line naming it before the kernel kills
 the pod, or, on a shared host, something else. With `--wal physical`
 keep it above `maxPageMemory` plus the cells, or it stops Straum
-before the page memory limit can. The answers that Straum has not sent
-yet may hold a quarter of `maxMemory` ([Connections](#connections)).
+before the page memory limit can. The ask bodies that Straum reads and
+the answers that it has not sent yet may hold a quarter of `maxMemory`
+([Connections](#connections)).
 Without `maxMemory`, they may hold `maxStreamMemory`, on top of the
 cells.
 

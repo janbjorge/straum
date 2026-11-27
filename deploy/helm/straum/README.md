@@ -47,14 +47,14 @@ leave nothing for the cells. So add the memory of the cells to
 ahead of the writer, and the rows of one transaction. Past it while the
 tables load, or in one transaction, straum exits 1; after the load, a
 full queue waits for the writer. The queue and a transaction can each
-hold this much. Without `maxMemory`, the answers that straum has not
-sent yet can hold this much too. So up to three times `maxStreamMemory`
+hold this much. Without `maxMemory`, the ask bodies that straum reads
+and the answers that it has not sent yet can hold this much too. So up to three times `maxStreamMemory`
 comes on top of the cells: keep that under `resources.limits.memory`.
 
 `maxMemory`, unset by default, bounds straum's resident memory: past
 it straum exits 1 with a line naming the limit, rather than the kernel
-killing the pod without one. The answers that straum has not sent yet
-may hold a quarter of it. Set it a little under
+killing the pod without one. The ask bodies that straum reads and the
+answers that it has not sent yet may hold a quarter of it. Set it a little under
 `resources.limits.memory`. Keep three quarters of it above twice
 `maxStreamMemory` plus the cells, and `maxPageMemory` too with
 `wal: physical`.

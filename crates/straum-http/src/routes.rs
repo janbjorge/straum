@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes, Incoming};
 use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
@@ -244,6 +244,16 @@ fn no_bytes(format: Format, count: usize) -> Reply {
     format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
 }
 
+/// The reply when the asks and answers in flight leave too few bytes for
+/// this ask's body.
+fn no_ask_bytes(format: Format, count: usize) -> Reply {
+    let error = format!(
+        "busy: asks and unread answers hold the memory that this ask of {count} bytes needs; \
+         ask again shortly"
+    );
+    format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error])
+}
+
 /// `GET /views` on a blocking thread, holding a turn till it is done.
 async fn views_off_async(app: &App, turns: &Arc<Semaphore>, format: Format) -> Reply {
     let Some(turn) = take_turn(turns) else {
@@ -295,6 +305,14 @@ async fn post_ask(body: Incoming, served: &Served, writing: Writing) -> Reply {
     let syntax = served.syntax;
     let format = writing.format;
     let start = Instant::now();
+    // A body sits in memory as an answer does, so it holds its bytes of
+    // the same budget till it is read: else slow bodies fill the pod.
+    // One without a length may come to MAX_ASK_BYTES.
+    let length = body.size_hint().upper().unwrap_or(u64::MAX);
+    let count = usize::try_from(length).map_or(MAX_ASK_BYTES, |length| length.min(MAX_ASK_BYTES));
+    let Some(bytes) = take_bytes(&served.answer_bytes, count) else {
+        return no_ask_bytes(format, count);
+    };
     let collected = Limited::new(body, MAX_ASK_BYTES).collect();
     let Ok(collected) = tokio::time::timeout(BODY_TIMEOUT, collected).await else {
         let error = format!(
@@ -321,7 +339,11 @@ async fn post_ask(body: Incoming, served: &Served, writing: Writing) -> Reply {
     // Reading a 1 MiB ask takes time an async thread can't spare: the
     // health routes queue behind it. The turn goes along, so a client
     // that hangs up frees it only once the read is done.
-    let read = tokio::task::spawn_blocking(move || (read_body(&body, syntax), turn)).await;
+    let read = tokio::task::spawn_blocking(move || {
+        let _bytes = bytes;
+        (read_body(&body, syntax), turn)
+    })
+    .await;
     let (asked, turn) = match read {
         Ok((Ok(asked), turn)) => (asked, turn),
         Ok((Err(errors), _)) => return format.errors(StatusCode::BAD_REQUEST, &errors),

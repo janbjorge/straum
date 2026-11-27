@@ -65,9 +65,9 @@ maxPageMemory: "256Mi"
 # tables load, or in one transaction, straum exits 1 and the pod restarts
 # to load every table again; after the load, a full queue waits for the
 # writer. The queue and a transaction can each hold this much. Without
-# maxMemory, the answers that straum has not sent yet can hold this much
-# too. So up to three times it comes on top of the cells, and of
-# maxPageMemory with wal "physical": keep that under
+# maxMemory, the ask bodies that straum reads and the answers that it has
+# not sent yet can hold this much too. So up to three times it comes on
+# top of the cells, and of maxPageMemory with wal "physical": keep that under
 # resources.limits.memory. The default, 256Mi, is a quarter of the
 # default memory limit, so three times it leaves a quarter for the
 # cells. straum run without the flag takes 1Gi.
@@ -77,8 +77,9 @@ maxStreamMemory: "256Mi"
 # memory and all, before it exits 1 with a line naming the limit, instead
 # of the kernel killing the pod with no word from straum; in bytes or with
 # a Ki, Mi, Gi or Ti suffix. Empty, the default, passes no limit. The
-# answers that straum has not sent yet may hold a quarter of it. Set it a
-# little under resources.limits.memory. Keep three quarters of it above
+# ask bodies that straum reads and the answers that it has not sent yet
+# may hold a quarter of it. Set it a little under resources.limits.memory.
+# Keep three quarters of it above
 # twice maxStreamMemory plus the cells, and maxPageMemory too with wal
 # "physical". A spec too big for it fails each start.
 maxMemory: ""

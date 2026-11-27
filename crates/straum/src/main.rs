@@ -530,8 +530,9 @@ fn run(
     Ok(())
 }
 
-/// The bytes that unread answers may hold: a quarter of `--max-memory`, as
-/// the chart gives `maxStreamMemory` a quarter of the memory limit. Without
+/// The bytes that ask bodies and unread answers may hold: a quarter of
+/// `--max-memory`, as the chart gives `maxStreamMemory` a quarter of the
+/// memory limit. Without
 /// `--max-memory`, `--max-stream-memory`: it bounds the commits that wait
 /// for the writer, as this bounds the answers that wait for a client.
 fn answer_bytes(max_memory: Option<u64>, max_stream_memory: usize) -> usize {

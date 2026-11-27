@@ -22,9 +22,10 @@
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer
 //!   or whose answer has more rows than `serve` is told it may, 503 while a
 //!   table it reads isn't ready or while every core answers another ask.
-//!   It is 503 too while unread answers hold the bytes this answer needs,
-//!   and 400 for an answer larger than all the bytes they may hold or
-//!   than a `u32`: the writer stops at the first row past them.
+//!   It is 503 too while asks and unread answers hold the bytes this ask
+//!   or answer needs, and 400 for an answer larger than all the bytes
+//!   they may hold or than a `u32`: the writer stops at the first row
+//!   past them.
 //!   With `Accept: text/plain` the answer is a table and the errors are
 //!   lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
@@ -127,9 +128,9 @@ pub struct ServeLimits {
     /// every key of a large view could take more than the process may hold;
     /// past this it is refused.
     pub max_answer_rows: usize,
-    /// The bytes that all answers not yet sent may hold. A client that
-    /// does not read keeps its answer in memory until its connection
-    /// closes. An answer gets 503 when too few are free, and 400 past all.
+    /// The bytes that all ask bodies being read and answers not yet sent
+    /// may hold. A client that does not read keeps its answer in memory
+    /// until its connection closes. An answer gets 503 when too few are free, and 400 past all.
     pub max_answer_bytes: usize,
     /// The connections served at once. A connection past them waits in
     /// the listen backlog until one closes.
@@ -193,7 +194,8 @@ struct Served {
     /// lock, which a waiting writer would hold every new reader behind.
     turns: Arc<Semaphore>,
     /// One per byte of [`ServeLimits::max_answer_bytes`]: an answer holds
-    /// one per byte of its body until hyper sends the last byte.
+    /// one per byte of its body until hyper sends the last byte, and an
+    /// ask one per byte of its body until it is parsed.
     answer_bytes: Arc<Semaphore>,
     /// The most bytes one answer may hold: the permits that `answer_bytes`
     /// starts with, at most a `u32`. A writer stops at the first row past it.
@@ -209,8 +211,8 @@ struct Served {
 /// time enabled. With `named_hosts`, each `NAME[:PORT]`, a request whose
 /// `Host` is none of them gets 421; with none, the address decides. On
 /// the health listener its address always decides.
-/// `limits` caps each answer's rows, the bytes of unread answers, the
-/// connections served at once and how long each stays open.
+/// `limits` caps each answer's rows, the bytes of asks and unread
+/// answers, the connections served at once and how long each stays open.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 pub async fn serve(
     listeners: Listeners,

@@ -359,7 +359,8 @@ is 400.
 The permits go in the body's `Bytes`, because hyper drops the body once
 it queues the last frame. They come back when hyper sends the last byte
 or drops the connection, so a client that does not read holds its
-answer's bytes.
+answer's bytes. An ask's body takes its permits from the same semaphore
+before Straum reads it, and gives them back once it is parsed.
 
 The answer carries `as_of` from the `Lag`, the applied LSN in the
 `Straum-LSN` header and `Cache-Control: no-store`. It is JSON, or a

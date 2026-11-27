@@ -1,10 +1,10 @@
 //! What a client may hold of the server: the connections served at once,
-//! how long one stays open, and the bytes of answers that clients have not
-//! read. Each test serves with a small limit and
+//! how long one stays open, and the bytes of ask bodies and of answers that
+//! clients have not read. Each test serves with a small limit and
 //! waits on what the socket gives back: a reply, or the connection's end.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use straum_http::{HEADER_TIMEOUT, ServeLimits};
 
 use crate::fake::{Fake, LIMITS, fake, int, loaded, trip, writer, writer_with};
 use crate::{
-    SERVE_LIMITS, STATUS_CODE, first_hour, read_reply, send, serve_limited, serve_with_health,
+    SERVE_LIMITS, STATUS_CODE, call, first_hour, read_reply, send, serve_limited, serve_with_health,
 };
 
 /// Fires only if the server stalls: every wait below ends far sooner.
@@ -405,5 +405,49 @@ fn an_answer_past_the_whole_answer_budget_is_refused_with_400() {
         "{}",
         refused.body
     );
+    server.stop();
+}
+
+/// What the stalled body below says it holds: all of the budget.
+const BODY_BUDGET: usize = 10_000;
+
+/// An ask's body holds its bytes of the budget while Straum reads it, as
+/// an unread answer does. So a body that stalls leaves them to no other
+/// ask, and they are free again once Straum gives up on it.
+#[test]
+fn an_ask_body_holds_its_bytes_until_it_is_read() {
+    let server = serve_limited(loaded().app().clone(), answer_budget(BODY_BUDGET));
+    let mut stalled = TcpStream::connect(server.address).unwrap();
+    stalled.set_read_timeout(Some(HANG_GUARD)).unwrap();
+    // hyper sends 100 Continue once Straum starts to read the body.
+    let head = format!(
+        "POST /ask HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\n\
+         expect: 100-continue\r\ncontent-length: {BODY_BUDGET}\r\n\r\n",
+        server.address
+    );
+    stalled.write_all(head.as_bytes()).unwrap();
+    let continued = b"HTTP/1.1 100 Continue\r\n\r\n";
+    let mut read = [0; 25];
+    stalled.read_exact(&mut read).unwrap();
+    assert_eq!(&read, continued);
+    stalled.write_all(b"{").unwrap();
+
+    let ask = first_hour();
+    let refused = call(server.address, "POST", "/ask", &ask);
+    let error = format!(
+        "busy: asks and unread answers hold the memory that this ask of {} bytes needs; \
+         ask again shortly",
+        ask.len()
+    );
+    assert_eq!(
+        (refused.status, refused.body),
+        (503, format!("{{\"errors\":[\"{error}\"]}}"))
+    );
+
+    // A body cut short is an error, and its bytes are free again.
+    stalled.shutdown(Shutdown::Write).unwrap();
+    assert_eq!(read_reply(&mut stalled).status, 400);
+    let answered = call(server.address, "POST", "/ask", &ask);
+    assert_eq!(answered.status, 200, "{}", answered.body);
     server.stop();
 }
