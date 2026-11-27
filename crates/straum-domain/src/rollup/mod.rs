@@ -194,35 +194,35 @@ fn coded(columns: &[Identifier], parts: &[KeyPart<'_>]) -> Vec<Coded> {
 }
 
 /// `inputs` without one another input on its column serves: a `Sum`
-/// beside a `Spread`, which keeps the sum and count too, and a `Distinct`
-/// beside an `Extent`, which keeps the same count per number.
+/// beside a `Spread`, which keeps the sum and count too, a `Count` beside
+/// either, which keeps the same nulls, and a `Distinct` beside an
+/// `Extent`, which keeps the same count per number.
 fn shared(inputs: &[Input]) -> Vec<Input> {
     let mut kept = Vec::with_capacity(inputs.len());
-    for &input in inputs {
-        let serving = serving(input);
-        if serving != input && inputs.contains(&serving) {
-            continue;
+    'inputs: for &input in inputs {
+        for &other in inputs {
+            if serves(other, input) {
+                continue 'inputs;
+            }
         }
         kept.push(input);
     }
     kept
 }
 
-/// The input that serves `input`'s column as well: a `Spread` for a
-/// `Sum`, an `Extent` for a `Distinct`; for any other kind, the input
-/// itself.
+/// Whether `server` keeps all that `input` keeps of the same column: a
+/// `Spread` for a `Sum`, a `Sum` or `Spread` for a `Count`, an `Extent`
+/// for a `Distinct`. No input serves itself.
 // An `Extent` reads numbers only, so beside one a `Distinct` never needs
 // the map that holds values of other kinds.
-fn serving(input: Input) -> Input {
-    let kind = match input.kind {
-        StateKind::Sum => StateKind::Spread,
-        StateKind::Distinct => StateKind::Extent,
-        _ => return input,
-    };
-    Input {
-        kind,
-        column: input.column,
-    }
+fn serves(server: Input, input: Input) -> bool {
+    server.column == input.column
+        && matches!(
+            (server.kind, input.kind),
+            (StateKind::Spread, StateKind::Sum)
+                | (StateKind::Sum | StateKind::Spread, StateKind::Count)
+                | (StateKind::Extent, StateKind::Distinct)
+        )
 }
 
 fn position_of(columns: &[Identifier], name: &Identifier) -> ColumnIndex {
@@ -577,7 +577,7 @@ impl Rollup {
         let column = self.column(aggregate.input()?)?;
         let wanted = Input { kind, column };
         for (position, input) in self.inputs.iter().enumerate() {
-            if *input == wanted || *input == serving(wanted) {
+            if *input == wanted || serves(*input, wanted) {
                 return Some(InputIndex(position));
             }
         }

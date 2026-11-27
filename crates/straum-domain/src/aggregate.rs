@@ -502,7 +502,7 @@ impl<'s> Partials<'s> {
         }
         match (self, state) {
             (Partials::Count(counts), None) => add_counts(counts, groups, rows),
-            (Partials::Count(counts), Some(State::Count { nulls })) => {
+            (Partials::Count(counts), Some(State::Count { nulls } | State::Sum { nulls, .. })) => {
                 add_counts(counts, groups, rows);
                 take_counts(counts, groups, nulls);
             }
@@ -607,7 +607,7 @@ impl<'s> Partials<'s> {
         let at = lane(cell, group);
         match (self, state) {
             (Partials::Count(counts), None) => counts[at] += rows.get(cell),
-            (Partials::Count(counts), Some(State::Count { nulls })) => {
+            (Partials::Count(counts), Some(State::Count { nulls } | State::Sum { nulls, .. })) => {
                 counts[at] += rows.get(cell) - nulls.get(cell);
             }
             (
@@ -674,7 +674,7 @@ impl<'s> Partials<'s> {
         let group = group as usize;
         match (self, state) {
             (Partials::Count(counts), None) => counts[at] += rows.total(),
-            (Partials::Count(counts), Some(State::Count { nulls })) => {
+            (Partials::Count(counts), Some(State::Count { nulls } | State::Sum { nulls, .. })) => {
                 counts[at] += rows.total() - nulls.total();
             }
             (

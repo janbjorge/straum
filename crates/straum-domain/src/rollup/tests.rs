@@ -1,10 +1,10 @@
 //! Code reclaiming when the `date_bin` level no longer holds every key: a
 //! test drops a `date_bin` bucket by hand, as dropping old buckets there
 //! while wider levels keep them would, then reclaims the codes and reads
-//! the keys back from the widest level.
+//! the keys back from the widest level. Then the inputs that measures share.
 
 use super::*;
-use crate::spec::{ByKey, Table, Time};
+use crate::spec::{ByKey, Measure, Table, Time};
 
 const DATE_BIN_SECONDS: u32 = 900;
 const HOUR_SECONDS: u32 = 3_600;
@@ -21,8 +21,8 @@ fn id(name: &str) -> Identifier {
     Identifier::new(name).expect("a valid identifier")
 }
 
-/// Trips counted by pay, every quarter hour and every hour.
-fn rollup() -> Rollup {
+/// Trips counted by pay with `measures`, every quarter hour and every hour.
+fn rollup(measures: Vec<Measure>) -> Rollup {
     let fact = Fact {
         as_text: Vec::new(),
         name: id("trips"),
@@ -47,7 +47,7 @@ fn rollup() -> Rollup {
             name: id("pay"),
         }],
         filter: Vec::new(),
-        measures: Vec::new(),
+        measures,
     };
     Rollup::new(&fact)
 }
@@ -55,7 +55,7 @@ fn rollup() -> Rollup {
 /// A rollup whose pay part holds many dead codes, then one key at the
 /// start of time and one later.
 fn rollup_with_dead_codes() -> Rollup {
-    let mut rollup = rollup();
+    let mut rollup = rollup(Vec::new());
     for pay in 0..DEAD_KEYS {
         rollup.add(&[Datum::Int(0), Datum::Int(pay)]).unwrap();
     }
@@ -114,4 +114,25 @@ fn a_key_no_level_holds_loses_its_code() {
         .remove(&[Datum::Int(NEW_AT), Datum::Int(NEW_PAY)])
         .unwrap();
     assert!(!rollup.holds_cells());
+}
+
+/// A count of a column beside a sum of it reads the nulls that the sum
+/// keeps, so the cells keep one state for both. A count alone keeps its own.
+#[test]
+fn a_count_beside_a_sum_shares_its_state() {
+    let count = Aggregate::CountNotNull(id("fare"));
+    let sum = Aggregate::Sum(id("fare"));
+    let alone = rollup(vec![measure("fares", &count)]);
+    assert_eq!(alone.inputs.len(), 1);
+    let both = rollup(vec![measure("fares", &count), measure("fare", &sum)]);
+    assert_eq!(both.inputs.len(), 1);
+    assert_eq!(both.state_of(&count), both.state_of(&sum));
+}
+
+fn measure(name: &str, aggregate: &Aggregate) -> Measure {
+    Measure {
+        name: id(name),
+        aggregate: aggregate.clone(),
+        filter: Vec::new(),
+    }
 }

@@ -65,7 +65,7 @@ and `bool_or` keep a count of true and of false for the same reason.
 | Measure | A cell keeps | Cells merge by | A row leaves by |
 | --- | --- | --- | --- |
 | `count(*)` | its row count | adding | subtracting one |
-| `count(c)` | a count of the nulls among its rows | adding | subtracting one |
+| `count(c)` | a count of the nulls among its rows, the one a `sum` on its column keeps | adding | subtracting one |
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `var_samp(c)`, `var_pop(c)`, `stddev_samp(c)`, `stddev_pop(c)` | the same, and a sum of squares | adding all three | subtracting all three |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |

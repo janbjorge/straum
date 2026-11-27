@@ -1,6 +1,6 @@
 # ADR-0003: Straum holds cells and nothing else
 
-Status: Accepted 2026-11-10; revised 2026-11-20
+Status: Accepted 2026-11-10; revised 2026-11-27
 
 ## Context
 
@@ -21,7 +21,8 @@ Cell state is per input column, shared by measures, one enum with no
 accumulator trait. Sum and avg share a sum and a null count; the
 variances and standard deviations keep a sum of squares beside them, in
 the same state, so `sum` on their column adds nothing; `count(column)`
-keeps a null count; min, max, `percentile_disc` and `mode()` share value
+keeps a null count, or reads the null count of a sum on its column;
+min, max, `percentile_disc` and `mode()` share value
 counts; `count(DISTINCT c)` keeps value counts of its own while its
 column holds only numbers, and a hash map per cell from its first value
 of another type, which `sum(DISTINCT c)` and `avg(DISTINCT c)` read too;
