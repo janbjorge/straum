@@ -42,7 +42,7 @@ pub(crate) fn why_not(status: &Status) -> Option<String> {
     }
     // No lag means no stream yet: a failed one ends the process.
     let why = match (status.lag, &status.loading) {
-        (Some(lag), _) => format!("{} s behind PostgreSQL", lag.as_secs()),
+        (Some(lag), _) => format!("{:.1} s behind PostgreSQL", lag.as_secs_f64()),
         (None, Some(loading)) => loading.to_string(),
         (None, None) => "loading".to_owned(),
     };
@@ -364,11 +364,14 @@ memory:       512.0 MiB resident, at most 2048.0 MiB
     fn says_how_far_behind() {
         let behind = Status {
             ready: false,
-            lag: Some(Duration::from_secs(45)),
+            lag: Some(Duration::from_millis(45_600)),
             ..status()
         };
-        assert_eq!(why_not(&behind).as_deref(), Some("45 s behind PostgreSQL"));
-        assert!(write(&behind).starts_with("ready:        no, 45 s behind PostgreSQL\n"));
+        assert_eq!(
+            why_not(&behind).as_deref(),
+            Some("45.6 s behind PostgreSQL")
+        );
+        assert!(write(&behind).starts_with("ready:        no, 45.6 s behind PostgreSQL\n"));
         assert_eq!(why_not(&status()), None);
     }
 

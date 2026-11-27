@@ -267,9 +267,12 @@ fn readiness_says_how_far_behind() {
     };
     let (_writer, server) = started(writer_with(limits, fake));
     let reply = call(server.address, "GET", "/readyz", "");
-    assert_eq!(
-        (reply.status, reply.body.as_str()),
-        (503, "not ready: 1 s behind PostgreSQL\n")
+    assert_eq!(reply.status, 503);
+    assert!(reply.body.starts_with("not ready: 1."), "{}", reply.body);
+    assert!(
+        reply.body.ends_with(" s behind PostgreSQL\n"),
+        "{}",
+        reply.body
     );
     // Asks still answer.
     assert_eq!(

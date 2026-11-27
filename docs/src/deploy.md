@@ -138,7 +138,7 @@ a new slot. SIGTERM leads to Stopping.*
 | --- | --- | --- |
 | Loading | 503 `not ready: loading public.trips, table 2 of 4, 41% of rows; commits held 3.0 MiB of 1024.0 MiB` | 503 |
 | Ready | 200 `ready` | Answered |
-| Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `as_of` |
+| Lagging | 503 `not ready: 45.6 s behind PostgreSQL` | Answered, each with its `as_of` |
 | Exited | No answer: the port is closed | Refused |
 | Stopping | No answer: the port is closed | Those in flight finish, for at most 10 s; new ones refused |
 
