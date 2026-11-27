@@ -251,6 +251,13 @@ table of past data, loaded today under `keep('1 hour', '14 days')`,
 holds no hour of it at all: every row is older than 14 days before
 `now()`.
 
+A `timestamp` has no zone, so the horizon reads the rows' wall clock as
+UTC. Straum then reads rows written in a zone west of UTC, such as
+`America/New_York`, as older by that zone's offset. A width kept for a
+time can drop their buckets up to that many hours early. To keep the
+whole duration, add the offset and round up to a whole multiple of the
+next wider width. A `timestamptz` is an instant and has no such offset.
+
 Buckets before the horizon are dropped and never made again. A later
 insert, update or delete of an older row changes the wider widths, and
 they stay exact. A row with a null time is never dropped. An ask that
