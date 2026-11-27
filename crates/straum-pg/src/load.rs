@@ -19,7 +19,7 @@ use straum_domain::{ColumnType, Datum, Identifier, Store};
 use crate::catalog::{Checked, escaped};
 use crate::error::Error;
 use crate::stream::Stream;
-use crate::unexpected::Unexpected;
+use crate::unexpected::{BinaryCopy, Unexpected};
 use crate::value::read_binary;
 use crate::wire::{Connection, first_row_value};
 
@@ -251,7 +251,7 @@ fn read(
         // the first. A row split across two messages fails as cut short.
         while !data.is_empty() {
             if ended {
-                return Err(Error::Protocol(Unexpected::DataAfterCopy));
+                return Err(Error::Protocol(Unexpected::Copy(BinaryCopy::DataAfterEnd)));
             }
             let fields = i16::from_be_bytes(take(&mut data)?);
             if fields == -1 {
@@ -259,10 +259,10 @@ fn read(
                 continue;
             }
             if usize::try_from(fields).ok() != Some(types.len()) {
-                return Err(Error::Protocol(Unexpected::CopyRowWidth {
+                return Err(Error::Protocol(Unexpected::Copy(BinaryCopy::RowWidth {
                     fields,
                     columns: types.len(),
-                }));
+                })));
             }
             for (name, column_type) in table.columns.iter().zip(types) {
                 let length = i32::from_be_bytes(take(&mut data)?);
@@ -271,7 +271,9 @@ fn read(
                     Err(_) => Datum::Null,
                     Ok(length) => {
                         let Some((value, rest)) = data.split_at_checked(length) else {
-                            return Err(Error::Protocol(Unexpected::CopyValueCutShort));
+                            return Err(Error::Protocol(Unexpected::Copy(
+                                BinaryCopy::ValueCutShort,
+                            )));
                         };
                         data = rest;
                         read_binary(*column_type, value)
@@ -286,7 +288,7 @@ fn read(
         Ok(())
     })?;
     if !ended {
-        return Err(Error::Protocol(Unexpected::CopyWithoutEnd));
+        return Err(Error::Protocol(Unexpected::Copy(BinaryCopy::WithoutEnd)));
     }
     if batch.is_empty() {
         Ok(())
@@ -298,14 +300,16 @@ fn read(
 /// The data after the signature, flags and header extension.
 fn header(data: &[u8]) -> Result<&[u8], Error> {
     let Some(mut data) = data.strip_prefix(SIGNATURE) else {
-        return Err(Error::Protocol(Unexpected::CopyNotBinary));
+        return Err(Error::Protocol(Unexpected::Copy(BinaryCopy::NotBinary)));
     };
     let _flags: [u8; 4] = take(&mut data)?;
     let extension = u32::from_be_bytes(take(&mut data)?);
     // An extension past `usize` is past the data too.
     let extension = usize::try_from(extension).unwrap_or(usize::MAX);
     let Some(rest) = data.get(extension..) else {
-        return Err(Error::Protocol(Unexpected::CopyHeaderCutShort));
+        return Err(Error::Protocol(Unexpected::Copy(
+            BinaryCopy::HeaderCutShort,
+        )));
     };
     Ok(rest)
 }
@@ -313,7 +317,7 @@ fn header(data: &[u8]) -> Result<&[u8], Error> {
 /// The next `N` bytes.
 fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], Error> {
     let Some((head, rest)) = data.split_first_chunk() else {
-        return Err(Error::Protocol(Unexpected::CopyRowCutShort));
+        return Err(Error::Protocol(Unexpected::Copy(BinaryCopy::RowCutShort)));
     };
     *data = rest;
     Ok(*head)

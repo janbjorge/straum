@@ -24,16 +24,7 @@ pub(crate) enum Unexpected {
     MessageDuringQuery,
     MessageDuringCopy,
     NoCopyBothResponse,
-    DataAfterCopy,
-    CopyValueCutShort,
-    CopyWithoutEnd,
-    CopyNotBinary,
-    CopyHeaderCutShort,
-    CopyRowCutShort,
-    CopyRowWidth {
-        fields: i16,
-        columns: usize,
-    },
+    Copy(BinaryCopy),
     TupleWidth {
         columns: usize,
         relation_columns: usize,
@@ -53,6 +44,34 @@ pub(crate) enum Unexpected {
     CommitBeforeSnapshot,
     /// A catalog query, named, whose rows don't read as Straum asked.
     CatalogShape(&'static str),
+}
+
+/// A binary copy that Straum can't read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BinaryCopy {
+    DataAfterEnd,
+    ValueCutShort,
+    WithoutEnd,
+    NotBinary,
+    HeaderCutShort,
+    RowCutShort,
+    RowWidth { fields: i16, columns: usize },
+}
+
+impl fmt::Display for BinaryCopy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BinaryCopy::DataAfterEnd => formatter.write_str("data after the end of a copy"),
+            BinaryCopy::ValueCutShort => formatter.write_str("a copy value cut short"),
+            BinaryCopy::WithoutEnd => formatter.write_str("a copy without its end"),
+            BinaryCopy::NotBinary => formatter.write_str("a copy that isn't binary"),
+            BinaryCopy::HeaderCutShort => formatter.write_str("a copy header cut short"),
+            BinaryCopy::RowCutShort => formatter.write_str("a copy row cut short"),
+            BinaryCopy::RowWidth { fields, columns } => {
+                write!(formatter, "a copy row of {fields} columns, not {columns}")
+            }
+        }
+    }
 }
 
 impl fmt::Display for Unexpected {
@@ -84,15 +103,7 @@ impl fmt::Display for Unexpected {
             Unexpected::NoCopyBothResponse => {
                 formatter.write_str("a message instead of CopyBothResponse")
             }
-            Unexpected::DataAfterCopy => formatter.write_str("data after the end of a copy"),
-            Unexpected::CopyValueCutShort => formatter.write_str("a copy value cut short"),
-            Unexpected::CopyWithoutEnd => formatter.write_str("a copy without its end"),
-            Unexpected::CopyNotBinary => formatter.write_str("a copy that isn't binary"),
-            Unexpected::CopyHeaderCutShort => formatter.write_str("a copy header cut short"),
-            Unexpected::CopyRowCutShort => formatter.write_str("a copy row cut short"),
-            Unexpected::CopyRowWidth { fields, columns } => {
-                write!(formatter, "a copy row of {fields} columns, not {columns}")
-            }
+            Unexpected::Copy(copy) => fmt::Display::fmt(copy, formatter),
             Unexpected::TupleWidth {
                 columns,
                 relation_columns,
@@ -146,10 +157,10 @@ mod tests {
                 "SASL mechanisms [\"PLAIN\"]; Straum needs SCRAM-SHA-256",
             ),
             (
-                Unexpected::CopyRowWidth {
+                Unexpected::Copy(BinaryCopy::RowWidth {
                     fields: 3,
                     columns: 2,
-                },
+                }),
                 "a copy row of 3 columns, not 2",
             ),
             (
