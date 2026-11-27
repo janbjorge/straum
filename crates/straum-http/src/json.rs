@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 /// One JSON value as sent, before `ask.rs` checks what it holds.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,7 +129,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
         let mut seen: HashSet<String> = HashSet::new();
         while let Some(name) = map.next_key::<String>()? {
             if fields.is_empty() && name == NUMBER {
-                return Ok(Json::Number(map.next_value()?));
+                return Ok(Json::Number(map.next_value_seed(NumberText)?));
             }
             if !seen.insert(name.clone()) {
                 return Err(de::Error::custom(format!("key {name:?} given twice")));
@@ -138,6 +138,35 @@ impl<'de> Visitor<'de> for JsonVisitor {
             fields.push(Field { name, value });
         }
         Ok(Json::Object(fields))
+    }
+}
+
+/// The text of a number under [`NUMBER`]. `serde_json` hands it over as an
+/// owned `String`, and a client's string as a `&str`: so a client's object
+/// that names the key is refused, not read as a number.
+struct NumberText;
+
+impl<'de> DeserializeSeed<'de> for NumberText {
+    type Value = String;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl Visitor<'_> for NumberText {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "no key {NUMBER:?}")
+    }
+
+    fn visit_string<E>(self, text: String) -> Result<String, E> {
+        Ok(text)
+    }
+
+    fn visit_str<E: de::Error>(self, _: &str) -> Result<String, E> {
+        Err(E::custom(format!("key {NUMBER:?} is serde_json's own")))
     }
 }
 
@@ -214,6 +243,15 @@ mod tests {
         }
         let deep = "[".repeat(200) + &"]".repeat(200);
         assert!(parse_error(deep.as_bytes()).starts_with("recursion limit"));
+    }
+
+    /// A client's object that names `serde_json`'s number key is no number.
+    #[test]
+    fn an_object_does_not_pass_for_a_number() {
+        let parameters = br#"{"parameters": [{"$serde_json::private::Number": "7"}]}"#;
+        let got = parse_error(parameters);
+        let error = r#"key "$serde_json::private::Number" is serde_json's own at line 1 column 52"#;
+        assert_eq!(got, error);
     }
 
     /// A key is given twice only within one object.
