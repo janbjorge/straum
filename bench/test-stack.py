@@ -23,16 +23,19 @@ the check stop it.
 """
 
 import argparse
+import contextlib
 import datetime
 import decimal
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 import uuid
 
@@ -229,6 +232,32 @@ class TryAllowedHosts(unittest.TestCase):
             probe.bind(("127.0.0.1", port))
 
 
+class TryPlanCopy(unittest.TestCase):
+    """--plan-copy writes load.sql with the image that then runs, for a
+    copy that a script wrote in place of export.sql."""
+
+    def copy_without_load(self) -> pathlib.Path:
+        data = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (data / TRY.SCHEMA_FILE).write_text("")
+        return data
+
+    def test_a_copy_without_load_sql_needs_plan_copy(self):
+        data = self.copy_without_load()
+        spec = str(BENCH / "usage.sql")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            TRY.parse([spec, "--data", str(data)])
+        self.assertTrue(TRY.parse([spec, "--data", str(data), "--plan-copy"]).plan_copy)
+
+    def test_plans_the_copy_in_the_service_that_runs(self):
+        data = self.copy_without_load()
+        command = TRY.plan_copy_command(data)
+        self.assertEqual(
+            command[command.index(TRY.STRAUM) :],
+            [TRY.STRAUM, "plan", TRY.SPEC_IN_IMAGE, "--copy", TRY.COPY_IN_IMAGE],
+        )
+        self.assertIn(f"{data}:{TRY.COPY_IN_IMAGE}", command)
+
+
 class Answers(unittest.TestCase):
     def test_alike_answers_pass(self):
         # Straum's avg at its places, PostgreSQL's longer, rows in
@@ -394,6 +423,20 @@ def every_call(trace) -> tuple:
 
 
 class UsageEvents(unittest.TestCase):
+    def test_runs_try_on_the_copy_with_the_image_s_plan(self):
+        self.assertEqual(
+            usage_events.try_arguments(pathlib.Path("copy"), ["--image", "straum:dev"]),
+            [
+                str(BENCH / "try_your_data.py"),
+                str(BENCH / "usage.sql"),
+                "--data",
+                "copy",
+                "--plan-copy",
+                "--image",
+                "straum:dev",
+            ],
+        )
+
     def test_a_sample_with_the_shape_of_the_trace_passes(self):
         trace = usage_trace()
         functions, minutes = every_call(trace)

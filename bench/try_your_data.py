@@ -21,6 +21,10 @@ export.sql has run on the source:
     straum plan usage.sql --copy copy
     psql "$SOURCE" -f copy/export.sql
 
+With --plan-copy, the image runs `straum plan --copy` on --data first.
+Thus a copy that a script wrote in place of export.sql gets the
+load.sql of the same build that then runs.
+
 The directory may hold the tables of more specs than this one. Its
 load.sql runs in the container, stops at the first error, and so does
 this. Nothing here connects to the source.
@@ -88,6 +92,10 @@ def main() -> int:
 
 def run_stack(stack: "Stack", args: argparse.Namespace) -> None:
     stack.pull(STRAUM, args.image)
+    if args.plan_copy:
+        planned = stack.compose_file(*plan_copy_command(args.data))
+        if planned.returncode:
+            raise SystemExit(f"try: straum plan --copy failed\n{planned.stderr}")
     # Planned before the load: the plan needs no database, so a spec it
     # refuses stops the run at once.
     setup_sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE, "--wal", args.wal)
@@ -121,7 +129,7 @@ def stop(signal_number: int, frame: object) -> None:
     raise SystemExit(f"try: stopped by signal {signal_number}")
 
 
-def parse() -> argparse.Namespace:
+def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0], epilog="Needs Docker and uv."
     )
@@ -163,7 +171,18 @@ def parse() -> argparse.Namespace:
         type=int,
         help="local port Straum answers on (a free one)",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--plan-copy",
+        action="store_true",
+        help=f"write {LOAD_SCRIPT} into --data first, with the image's"
+        " straum plan --copy",
+    )
+    args = parser.parse_args(argv)
+    if not args.plan_copy and not (args.data / LOAD_SCRIPT).is_file():
+        parser.error(
+            f"{args.data} has no {LOAD_SCRIPT}; make it with straum plan SPEC"
+            f" --copy {args.data}, or pass --plan-copy"
+        )
     if args.port is None:
         args.port = free_port()
     if args.spec_file and args.spec_flag:
@@ -194,16 +213,33 @@ def existing(path: str) -> pathlib.Path:
 def copy_directory(path: str) -> pathlib.Path:
     """A directory from `straum plan --copy` whose export has run."""
     resolved = existing(path)
-    if not (resolved / LOAD_SCRIPT).is_file():
-        raise argparse.ArgumentTypeError(
-            f"{path} has no {LOAD_SCRIPT}; make it with straum plan SPEC --copy {path}"
-        )
     if not (resolved / SCHEMA_FILE).is_file():
         raise argparse.ArgumentTypeError(
             f"{path} has no {SCHEMA_FILE}; run its export.sql on the source first:"
             f' psql "$SOURCE" -f {path}/export.sql'
         )
     return resolved
+
+
+def plan_copy_command(data: pathlib.Path) -> list[str]:
+    """The Compose arguments that run `straum plan --copy` in a one-off
+    container of the Straum service, as this user, so that the files it
+    writes into `data` are this user's."""
+    return [
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "--volume",
+        f"{data}:{COPY_IN_IMAGE}",
+        STRAUM,
+        "plan",
+        SPEC_IN_IMAGE,
+        "--copy",
+        COPY_IN_IMAGE,
+    ]
 
 
 def compose_file(args: argparse.Namespace, password: str) -> str:

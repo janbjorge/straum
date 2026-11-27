@@ -6,7 +6,7 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""Writes the usage events of the guide as a copy that `just try` loads.
+"""Writes the usage events of the guide as a copy and runs Straum on it.
 
 The events come from the Azure Functions trace of 2019 (Shahrad et al.,
 "Serverless in the Wild", USENIX ATC 2020, CC-BY 4.0). The trace counts
@@ -32,14 +32,16 @@ as in the trace. The script compares them with the trace for each day,
 and stops if one is not in its limit.
 
 --out gets `schema.sql`, `public.events.csv` and `public.accounts.csv`.
-`just usage-events` then writes `load.sql` beside them with `straum
-plan --copy` and opens `straum shell` on them through `just try`.
+Then the script runs bench/try_your_data.py on them with --plan-copy.
+The image writes `load.sql` beside them with `straum plan --copy`, and
+the same image runs Straum and opens `straum shell`.
 """
 
 import argparse
 import collections
 import datetime
 import hashlib
+import os
 import pathlib
 import sys
 import tarfile
@@ -59,6 +61,9 @@ TRACE_FILE = "azurefunctions-dataset2019.tar.xz"
 # hold only for these bytes.
 TRACE_SHA256 = "aff8b3ca7240a41a109e4ee598e0a96e45fcb92e7b8395ac19cb3748cd260d89"
 DAYS = 14
+BENCH = pathlib.Path(__file__).resolve().parent
+SPEC = BENCH / "usage.sql"
+TRY = BENCH / "try_your_data.py"
 
 # Day 6, 7, 13 and 14 have fewer calls than the other days, so day 1 is
 # taken as a Monday. The trace does not give its dates.
@@ -128,7 +133,11 @@ class TraceDay:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Each other flag goes to bench/try_your_data.py, as --wal,"
+        " --image or --port.",
+    )
     parser.add_argument(
         "--out", type=pathlib.Path, required=True, help="the copy directory"
     )
@@ -141,7 +150,7 @@ def main() -> None:
     parser.add_argument(
         "--days", type=int, default=DAYS, help=f"from day 1, at most {DAYS}"
     )
-    args = parser.parse_args()
+    args, try_flags = parser.parse_known_args()
     if not 1 <= args.days <= DAYS:
         raise SystemExit(f"--days is {args.days}; give 1 to {DAYS}")
     args.data.mkdir(parents=True, exist_ok=True)
@@ -161,6 +170,14 @@ def main() -> None:
     write_accounts(args.out / "public.accounts.csv", regions)
     (args.out / "schema.sql").write_text(SCHEMA)
     log(f"{len(regions)} accounts")
+    command = try_arguments(args.out, try_flags)
+    os.execv(command[0], command)
+
+
+def try_arguments(out: pathlib.Path, try_flags: list[str]) -> list[str]:
+    """The command that runs Straum on the copy in `out`: the image
+    writes its load.sql, so that one build plans and runs."""
+    return [str(TRY), str(SPEC), "--data", str(out), "--plan-copy", *try_flags]
 
 
 def download(data: pathlib.Path) -> pathlib.Path:

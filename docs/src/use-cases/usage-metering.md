@@ -27,7 +27,8 @@ just usage-events
 
 The recipe loads the events into Docker with the `usage` view of
 `bench/usage.sql`, then opens `straum shell`. It prints the port that
-Straum answers on. Add `--days 1` to make only the first day.
+Straum answers on. Add `--days 1` to make only the first day. The
+recipe gives each other flag to `just try`, as `--image`.
 
 ## The bill for a month
 
