@@ -2,6 +2,9 @@
 # /// script
 # requires-python = "==3.14.*"
 # dependencies = ["openapi-spec-validator==0.7.2"]
+#
+# [tool.uv]
+# exclude-newer = "2026-11-01T00:00:00Z"
 # ///
 """Check that crates/straum-http/openapi.json is a valid OpenAPI 3.1
 document. Whether the replies match it is straum-http's tests' job; this

@@ -2,6 +2,9 @@
 # /// script
 # requires-python = "==3.14.*"
 # dependencies = ["numpy", "pyarrow"]
+#
+# [tool.uv]
+# exclude-newer = "2026-11-01T00:00:00Z"
 # ///
 """Tests of the bench scripts' parts that need no Docker.
 

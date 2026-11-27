@@ -2,6 +2,9 @@
 # /// script
 # requires-python = "==3.14.*"
 # dependencies = ["openapi-spec-validator==0.7.2"]
+#
+# [tool.uv]
+# exclude-newer = "2026-11-01T00:00:00Z"
 # ///
 """Tests of the check scripts: each rule they hold catches a planted
 break and lets the honest form through.
