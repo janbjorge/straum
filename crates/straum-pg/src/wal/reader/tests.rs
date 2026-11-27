@@ -313,6 +313,33 @@ fn checks_the_pages_a_record_passed_by_runs_across() {
     );
 }
 
+#[test]
+fn holds_about_a_page_of_a_record_it_passes_by() {
+    let mut passed_by = plain_block(None, vec![7; 20]);
+    passed_by.main = vec![1; 100_000];
+    let theirs = RelationFile {
+        relation: FIRST_USER_OID + 1,
+        ..FILE
+    };
+    let mut wanted = plain_block(None, vec![8; 20]);
+    wanted.blocks[0].file = theirs;
+    let LaidOut { wal, lsns } = lay_out(MAJOR, SEGMENT, &[assemble(&passed_by), assemble(&wanted)]);
+    let mut records = Records::new(lsns[0], SEGMENT, MAJOR);
+    records.pass_by_other_files([theirs].into_iter().collect());
+    let mut read = Vec::new();
+    for page in wal.chunks(usize::try_from(PAGE_SIZE).unwrap()) {
+        records.feed(records.wanted(), page).unwrap();
+        while let Some(record) = records.next_record().unwrap() {
+            read.push(record.clone());
+        }
+        let held = records.buffer.len() as u64;
+        assert!(held <= 2 * PAGE_SIZE, "held {held} bytes");
+    }
+    assert_eq!(read.len(), 1);
+    check(&read[0], &wanted, lsns[1]);
+    assert_eq!(records.passed(), SEGMENT + wal.len() as u64);
+}
+
 /// One record of 100 bytes of main data, alone in its segment.
 fn one_record() -> LaidOut {
     one_record_of(MAJOR)

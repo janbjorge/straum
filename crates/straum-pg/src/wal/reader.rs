@@ -138,6 +138,9 @@ struct Gathering {
     gathered: usize,
     /// Where the next bytes to gather lie, page headers counted.
     position: u64,
+    /// Whether the record is passed by: its bytes are not copied, so the
+    /// buffer keeps only the page that `position` is on.
+    passing_by: bool,
 }
 
 /// Where a record lies in the WAL: its first byte, and the byte after
@@ -214,7 +217,13 @@ impl Records {
         }
         // Read bytes go here, not as each record is read: by now only the
         // unread tail of a record is left to move to the front.
-        let read = usize::try_from(page_start(self.next).saturating_sub(self.start))
+        let mut kept = page_start(self.next);
+        if let Some(gathering) = self.gathering
+            && gathering.passing_by
+        {
+            kept = page_start(gathering.position);
+        }
+        let read = usize::try_from(kept.saturating_sub(self.start))
             .unwrap_or(usize::MAX)
             .min(self.buffer.len());
         self.buffer.drain(..read);
@@ -265,6 +274,13 @@ impl Records {
             }
             self.unchecked = None;
         }
+        // The buffer no longer holds the first bytes of a record passed by,
+        // so its gathering goes on from where it stopped.
+        if let Some(gathering) = self.gathering
+            && gathering.passing_by
+        {
+            return self.pass_by(gathering.start, gathering.length);
+        }
         let mut start = self.next;
         if start.is_multiple_of(PAGE_SIZE) {
             let Some(header) = self.page_header(start)? else {
@@ -282,10 +298,7 @@ impl Records {
             return Ok(None);
         };
         if self.passes_by(start, total_length) {
-            let Some(end) = self.gather(start, total_length, None)? else {
-                return Ok(None);
-            };
-            return Ok(Some(Found::PassedBy(RecordSpan { start, end })));
+            return self.pass_by(start, total_length);
         }
         let Some(end) = self.gather(start, total_length, Some(bytes))? else {
             return Ok(None);
@@ -295,6 +308,15 @@ impl Records {
             return Err(at(start, Problem::Checksum));
         }
         Ok(Some(Found::Whole(RecordSpan { start, end })))
+    }
+
+    /// Passes by the record at `start`: checks the page headers it runs
+    /// across, and copies nothing.
+    fn pass_by(&mut self, start: u64, total_length: usize) -> Result<Option<Found>, WalError> {
+        let Some(end) = self.gather(start, total_length, None)? else {
+            return Ok(None);
+        };
+        Ok(Some(Found::PassedBy(RecordSpan { start, end })))
     }
 
     /// Whether the record at `start` names only pages of files the stream
@@ -450,6 +472,7 @@ impl Records {
             length,
             gathered: 0,
             position: start,
+            passing_by: out.is_none(),
         };
         let Some(gathering) = self.gathering else {
             return from_start;
