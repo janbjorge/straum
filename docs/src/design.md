@@ -64,7 +64,7 @@ an empty `Store` and the `Limits`. It then starts the memory watch
 second, from `/proc/self/status` on Linux and from `ps` where that file
 is missing, as on macOS, records each reading in the app's
 `MemoryReadings` for `/status`, and exits 1 past `--max-memory` when it
-is set. It keeps the status file open, so it reads on when the
+is set, or when a figure can no longer be read. It keeps the status file open, so it reads on when the
 connections hold every file descriptor. It reads once before the
 thread starts: a limit it can't read fails the start, and without a
 limit a system with neither runs without the watch. Then `run` builds

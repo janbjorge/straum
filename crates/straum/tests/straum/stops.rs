@@ -134,6 +134,37 @@ fn past_max_memory_straum_stops() {
     );
 }
 
+/// Without `--max-memory`, a resident memory figure that can no longer
+/// be read ended only the watch, and Straum ran on unwatched. It ends
+/// Straum now. macOS reads the figure through `ps` on `PATH`, which the
+/// test removes after the start; Linux reads `/proc`, which stays.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_unreadable_memory_figure_stops_straum() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let ps = scratch.path.join("ps");
+    std::os::unix::fs::symlink("/bin/ps", &ps).unwrap();
+    let mut child = straum(&["run", "--wal", "logical", &spec, "--listen", "127.0.0.1:0"])
+        .env("STRAUM_DSN", silent_server())
+        .env("PATH", &scratch.path)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let started = lines.next().unwrap().unwrap();
+    assert!(started.starts_with("straum: listening on "), "{started}");
+    std::fs::remove_file(&ps).unwrap();
+    let log: Vec<String> = lines.map(Result::unwrap).collect();
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{log:?}");
+    let last = log.last().unwrap();
+    let unread = "straum: reading resident memory from ps -o rss= -p ";
+    assert!(last.starts_with(unread), "{log:?}");
+}
+
 /// A stop waits for a request still coming in, but at most 10 s, and a
 /// second signal ends Straum at once.
 #[test]

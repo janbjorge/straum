@@ -1,6 +1,6 @@
 # ADR-0010: Every bucket stays in memory
 
-Status: Accepted 2026-11-11; revised 2026-11-24
+Status: Accepted 2026-11-11; revised 2026-11-28
 
 ## Context
 
@@ -46,7 +46,11 @@ is otherwise killed by the kernel with no line saying why, and on a
 shared host the kernel may kill something else. Straum reads the
 figure from Linux's `/proc/self/status`, since `std` has no call for
 it and the file needs no `unsafe`; where it can't be read, a set limit
-fails the start rather than pass for no limit. A cap on cells was
+fails the start rather than pass for no limit. A system with neither
+the file nor `ps` starts without the watch when no limit is set. A
+figure that can no longer be read while Straum runs ends it, with or
+without a limit: `/status` would show an old figure as the last one,
+and the watch ran on blind until 2026-11-28. A cap on cells was
 rejected: a cell took from 33 to 177 bytes in the benchmark's runs, so
 a count of cells bounds bytes only loosely.
 

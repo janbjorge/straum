@@ -52,9 +52,9 @@ const NOT_READY: u8 = 3;
 // What a failed writer ends the process with, as every other failure.
 const WRITER_FAILED: i32 = 1;
 
-// What memory past `--max-memory` ends the process with, as every other
-// failure.
-const PAST_MAX_MEMORY: i32 = 1;
+// What the memory watch ends the process with, past `--max-memory` or
+// on a figure it can no longer read, as every other failure.
+const MEMORY_WATCH_ENDED: i32 = 1;
 
 /// A command that started and failed.
 #[derive(Debug)]
@@ -606,19 +606,19 @@ fn start_memory_watch(limit: Option<u64>, readings: MemoryReadings) -> Result<()
     Ok(())
 }
 
-/// Watches resident memory until it passes `limit`, then ends the
-/// process, as a failed writer does. Without a limit, a figure that can
-/// no longer be read only ends the watch.
+/// Watches resident memory until it passes `limit`, or until a figure
+/// can no longer be read, then ends the process, as a failed writer does.
+/// Without a limit, an unread figure ends it too: `/status` would show a
+/// figure that no longer changes.
 fn watch_memory(resident: &memory::Resident, limit: Option<u64>, readings: &MemoryReadings) {
     let stop = memory::watch(resident, limit, readings);
-    if let (None, MemoryError::Unreadable { source, error }) = (limit, &stop) {
-        log(&format!(
-            "stopped reading resident memory from {source}: {error}"
-        ));
-        return;
+    match (limit, &stop) {
+        (None, MemoryError::Unreadable { source, error }) => {
+            log(&format!("reading resident memory from {source}: {error}"));
+        }
+        _ => log(&stop.to_string()),
     }
-    log(&stop.to_string());
-    process::exit(PAST_MAX_MEMORY);
+    process::exit(MEMORY_WATCH_ENDED);
 }
 
 /// `message` to stderr, as `write_logged` words it. A stderr nobody reads
