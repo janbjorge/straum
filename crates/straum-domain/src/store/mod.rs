@@ -218,13 +218,14 @@ impl Store {
         Some(self.projections[dim.0].len())
     }
 
-    /// Every bucket the fact holds at any width, in Unix seconds: the
-    /// range an ask without bounds reads. The `date_bin` buckets while
-    /// that width is kept for good; from the first widest bucket once it
-    /// is kept for a time. None while the fact has no bucket.
+    /// Every bucket at any width of the cells an ask reads, in Unix
+    /// seconds: the range an ask without bounds reads. These are the bound
+    /// cells when the fact keeps them, else the keyed cells. The `date_bin`
+    /// buckets while that width is kept for good; from the first widest
+    /// bucket once it is kept for a time. None while the fact has no bucket.
     pub fn range(&self, fact: &str) -> Option<Range<i64>> {
         let fact = self.fact_index(fact)?;
-        self.keyed(fact).open_range()
+        self.read(fact).rollup().open_range()
     }
 
     /// Each width the view keeps only for a time, narrowest first, with

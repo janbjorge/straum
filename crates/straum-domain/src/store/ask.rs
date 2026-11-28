@@ -22,8 +22,8 @@ use super::lookup::{
 use crate::value::{ColumnType, Threshold, Value};
 
 use super::{
-    Answer, AnswerColumn, CHECKED, Store, Window, WindowAnswer, bound_part_of, key_part_of,
-    position_of,
+    Answer, AnswerColumn, CHECKED, FactIndex, Store, Window, WindowAnswer, bound_part_of,
+    key_part_of, position_of,
 };
 
 /// The cells an ask reads: a fact's bound cells, where every key the
@@ -117,11 +117,19 @@ impl Store {
     pub(super) fn reading(&self, ask: &Ask) -> Result<Reading<'_>, Vec<AskError>> {
         let fact = self.spec.check_ask(ask)?;
         let index = self.fact_index(fact.name.as_str()).expect(CHECKED);
-        let read = match &self.bound[index.0] {
+        Ok(Reading {
+            fact,
+            read: self.read(index),
+        })
+    }
+
+    /// The cells that answer an ask of a fact: the bound cells when the
+    /// fact keeps them, else the keyed cells.
+    pub(super) fn read(&self, index: FactIndex) -> Read<'_> {
+        match &self.bound[index.0] {
             Some(bound) => Read::Bound(&bound.rollup),
             None => Read::Keyed(self.keyed(index)),
-        };
-        Ok(Reading { fact, read })
+        }
     }
 
     /// The cell loop of an ask before it meets a cell: its groupings,

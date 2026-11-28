@@ -4,7 +4,7 @@
 
 use crate::common::{id, text};
 use crate::views::{Widths, zones_spec};
-use crate::{START, trips_ask};
+use crate::{START, WIDTH, trips_ask};
 use straum_domain::{Ask, AskKey, Attribute, Datum, RefKind, Spec, Store, Value};
 
 /// Zones 1 to 3 in borough m, 4 to 6 in q, and a trip from each at
@@ -216,4 +216,22 @@ fn answers_hold_across_a_recode() {
     assert_eq!(answer.rows[0].keys, [Datum::Null]);
     assert_eq!(answer.rows[0].values, [Value::Int(2)]);
     assert_eq!(answer.rows[1].values, [Value::Int(2)]);
+}
+
+/// An ask without bounds reads the bound cells, so the range is theirs.
+/// Under an inner join, a trip whose zone no dim row holds is in no bound
+/// cell, and its bucket is out of the range.
+#[test]
+fn the_range_is_the_range_of_the_bound_cells() {
+    let mut store = Store::new(zones_spec(Some(RefKind::Inner), Widths::Quarter));
+    store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
+    let later = START + 3 * i64::from(WIDTH);
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(2)])
+        .unwrap();
+    store
+        .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(1)])
+        .unwrap();
+    assert_eq!(store.bound_cells("trips"), Some(1));
+    assert_eq!(store.range("trips"), Some(later..later + i64::from(WIDTH)));
 }
