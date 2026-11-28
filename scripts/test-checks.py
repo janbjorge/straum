@@ -13,7 +13,9 @@ The layer check reads Cargo's metadata; these tests hand it metadata
 built here, over a workspace of files in a temporary folder, so they
 need no cargo and no network. The domain syntax check reads a folder of
 Rust files; these tests write one. The chart check reads its oldest
-Kubernetes from Chart.yaml; these tests hand it the line. The OpenAPI
+Kubernetes from Chart.yaml; these tests hand it the line. It reads the
+release notes' helm command, the templates and values.yaml; these tests
+hand it each text. The OpenAPI
 check reads a document; these tests hand it one.
 changed-crates.py maps paths to crates; these tests hand it paths. The
 test filter check reads a justfile and a crate; these tests write both.
@@ -716,6 +718,22 @@ class ChartKubernetesFloor(unittest.TestCase):
     def test_the_chart_has_a_floor(self):
         text = (chart.CHART / "Chart.yaml").read_text()
         self.assertIsNotNone(chart.oldest_kubernetes(text))
+
+
+class ChartReleaseCommand(unittest.TestCase):
+    def test_the_command_sets_each_required_value_without_a_default(self):
+        templates = (
+            '{{ required "a" .Values.wal }} {{ required "b" .Values.dsn.secret }}'
+            '{{ required "c" .Values.image.repository }}'
+        )
+        values = 'image:\n  repository: "x"\ndsn:\n  secret: ""\nwal: ""\n'
+        command = "helm upgrade --install s c \\\n  --set dsn.secret=s"
+        self.assertEqual(chart.unset_in_release(command, templates, values), ["wal"])
+        command += " --set x=a,wal=logical"
+        self.assertEqual(chart.unset_in_release(command, templates, values), [])
+
+    def test_the_release_notes_set_each_required_value(self):
+        self.assertEqual(chart.release_errors(), [])
 
 
 class OpenApiCheck(unittest.TestCase):

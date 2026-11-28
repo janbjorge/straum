@@ -64,4 +64,6 @@ answers that it has not sent yet may hold a quarter of it. Set it a little under
 `just chart` runs `helm lint --strict`, the
 [helm-unittest](https://github.com/helm-unittest/helm-unittest) suites in
 `tests/`, and [kubeconform](https://github.com/yannh/kubeconform) on what
-the chart renders with `ci/values.yaml`. CI runs it too.
+the chart renders with `ci/values.yaml`. It also checks that the helm
+command in the release notes sets each required value that `values.yaml`
+leaves empty. CI runs it too.

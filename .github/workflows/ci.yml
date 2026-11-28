@@ -388,7 +388,7 @@ jobs:
 
           ${fence}sh
           helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum --version $VERSION \\
-            --set dsn.existingSecret=straum-dsn --set-file spec=spec.sql
+            --set dsn.existingSecret=straum-dsn --set wal=logical --set-file spec=spec.sql
           ${fence}
 
           ## Verify
