@@ -60,8 +60,9 @@ ALLOWED = {
 # Crates with no outside dependency and no I/O: the domain and the use
 # cases. The world reaches them through a port.
 PURE = {"straum-domain", "straum-app"}
-# The `std` modules that reach outside the process.
-IO_MODULES = "fs|net|process|env|io|os"
+# The `std` modules that reach outside the process. `path` is one of
+# them: `Path::exists` reads the disk.
+IO_MODULES = "fs|net|process|env|io|os|path"
 # Only straum-http runs an async runtime; every other crate reaches one
 # through straum-http or not at all. mio is tokio's own I/O.
 RUNTIMES = {"tokio", "mio", "async-std", "smol", "async-io", "async-executor"}
@@ -81,7 +82,8 @@ TRAIT = re.compile(r"\btrait\s+(?:r#)?(\w+)")
 INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*\{")
 # A use group runs to its ";", so a nested group cannot hide a module.
 # A glob or a new name for std hides the module that a later path names.
-HIDES = rf"\b(?:{IO_MODULES})\b|\*|\bself\s+as\b"
+# A raw name, as `r#fs`, names the same module.
+HIDES = rf"\b(?:r#)?(?:{IO_MODULES})\b|\*|\bself\s+as\b"
 IO_PATH = re.compile(
     rf"\bstd\s*::\s*(?:{HIDES}|\{{[^;]*?(?:{HIDES}))"
     r"|\bextern\s+crate\b|\bstd\s+as\b"

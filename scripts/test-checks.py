@@ -260,6 +260,8 @@ class LayerCheck(unittest.TestCase):
             "use std::{collections::{HashMap, HashSet}, fs};",
             'use std::*;\nfn f() { fs::read("x"); }',
             'use std::{self as s};\nfn f() { s::fs::read("x"); }',
+            'use std::path::Path;\nfn f(p: &str) -> bool { Path::new(p).exists() }',
+            'fn f() { let _ = std::r#fs::read("x"); }',
         ]:
             with self.subTest(text=text):
                 self.write("crates/straum-domain/src/lib.rs", text)
@@ -272,7 +274,9 @@ class LayerCheck(unittest.TestCase):
             "use std::{collections::{HashMap, HashSet}, sync::mpsc};\n"
             "use std::collections::*;\nuse std::fmt::{self as f};\n",
         )
-        self.write("crates/straum-pg/src/lib.rs", "use std::net::TcpStream;\n")
+        self.write(
+            "crates/straum-pg/src/lib.rs", "use std::{net::TcpStream, path::Path};\n"
+        )
         self.assert_passes()
 
     # Traits.
