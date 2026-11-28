@@ -323,7 +323,7 @@ impl Store {
                     level,
                     start: *start,
                 };
-                (bound.pour(keyed, &self.projections, at, cells, Direction::Add)).expect(POURED);
+                (bound.pour(keyed, &self.projections, at, cells)).expect(POURED);
             }
         }
     }

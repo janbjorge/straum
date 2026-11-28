@@ -2,8 +2,7 @@
 //! columns, keyed by the dim columns' values instead of the join
 //! columns, so an ask reads no projection (ADR-0006). A fact
 //! row reaches them through its join rows: per join, the dim row its key
-//! finds now. A keyed bucket is poured in or out whole when a dim is
-//! replaced.
+//! finds now. A keyed bucket is poured in whole when a dim is replaced.
 
 use crate::identifier::Identifier;
 use crate::projection::{AttributeIndex, Projection};
@@ -272,20 +271,19 @@ impl Bound {
     }
 
     /// Moves every cell of a keyed bucket into the bound cells its
-    /// joins resolve to now, at the same level, or back out of them.
+    /// joins resolve to now, at the same level.
     pub(super) fn pour(
         &mut self,
         keyed: &Rollup,
         projections: &[Projection],
         at: LevelBucket,
         cells: &Cells,
-        direction: Direction,
     ) -> Result<(), RowError> {
         for cell in 0..cells.len() {
             let count = cells.rows().get(cell);
             let keyed_cell = KeyedCell { cells, cell };
             for key in &self.keys(keyed, keyed_cell, projections, None) {
-                (self.rollup).adjust(at, key, count, cells.states(), cell, direction)?;
+                (self.rollup).adjust(at, key, count, cells.states(), cell, Direction::Add)?;
             }
         }
         Ok(())
