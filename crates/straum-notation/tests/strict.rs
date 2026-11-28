@@ -855,6 +855,36 @@ fn a_bucket_width_has_one_spelling() {
     ]);
 }
 
+/// A width of zero seconds is no width. In each unit, and as the
+/// duration of `keep`, it gets the form of a width, not a spelling that
+/// is refused next.
+#[test]
+fn a_zero_width_is_refused_in_any_unit() {
+    let widths = "buckets(orders.placed_at, '1 hour', '1 day')";
+    check(&[
+        (
+            widths,
+            "buckets(orders.placed_at, '0 seconds', '1 day')",
+            "bucket width '0 seconds': use '<n>",
+        ),
+        (
+            widths,
+            "buckets(orders.placed_at, '0 hours', '1 day')",
+            "bucket width '0 hours': use '<n>",
+        ),
+        (
+            widths,
+            "buckets(orders.placed_at, '0 days', '1 day')",
+            "bucket width '0 days': use '<n>",
+        ),
+        (
+            widths,
+            "buckets(orders.placed_at, keep('1 hour', '0 days'), '1 day')",
+            "bucket width '0 days': use '<n>",
+        ),
+    ]);
+}
+
 /// `keep` is one call, in one place: a width of a view's `buckets`. Each
 /// other spelling or place is refused by name, saying what to write, and
 /// its arguments read as widths do.

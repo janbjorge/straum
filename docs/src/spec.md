@@ -52,8 +52,9 @@ condition  alias.column = literal
            [NOT] EXISTS (SELECT 1 FROM schema.table AS alias
                          WHERE alias.column = alias.column [AND ...])
 
-width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days,
-           in the largest unit that divides it, singular for one
+width      15 minutes, 1 hour, 1 day: a count above 0 of seconds,
+           minutes, hours or days, in the largest unit that divides
+           it, singular for one
 duration   1 day, 14 days: written as a width is
 literal    42, -7, 0, 'text', true, false: an integer with no leading
            zero, and 0 with no sign

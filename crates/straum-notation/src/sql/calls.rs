@@ -263,6 +263,10 @@ fn parse_width(text: &str) -> Result<Width, String> {
     let Ok(count) = count.parse::<u32>() else {
         return Err(WIDTH_FORM.into());
     };
+    // No spelling of a zero width is kept, so none is offered.
+    if count == 0 {
+        return Err(WIDTH_FORM.into());
+    }
     let Some(seconds) = count.checked_mul(scale) else {
         return Err(WIDTH_FORM.into());
     };
