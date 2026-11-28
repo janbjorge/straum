@@ -119,6 +119,9 @@ pub const MAX_HEALTH_CONNECTIONS: usize = 16;
 pub struct Listeners {
     pub main: net::TcpListener,
     pub health: Option<net::TcpListener>,
+    /// Takes one line when a listener starts to fail to accept: the
+    /// binary logs it.
+    pub report: fn(&str),
 }
 
 /// What one client may hold of the server, and for how long.
@@ -223,7 +226,7 @@ pub async fn serve(
     limits: ServeLimits,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    let Listeners { main, health } = listeners;
+    let Listeners { main, health, .. } = listeners;
     let hosts = Hosts::of(main.local_addr()?, named_hosts);
     let main = to_tokio(main)?;
     // A core count unknown is taken as one: asks queue, but none fails.
@@ -260,6 +263,7 @@ pub async fn serve(
             Arc::new(health_served),
             limits,
             stopping.clone(),
+            listeners.report,
             async move {
                 stopped.wait_for(is_true).await.ok();
             },
@@ -273,6 +277,7 @@ pub async fn serve(
         Arc::new(served),
         limits,
         stopping,
+        listeners.report,
         shutdown,
     );
     accepting.await;
@@ -297,6 +302,8 @@ pub async fn serve(
 
 /// Accepts connections on `listener` until `shutdown` completes, each
 /// served from `served` while it holds one of `connections`' permits.
+/// Tells `report` when accepts start to fail, and not again until one
+/// succeeds: a full table of file descriptors fails ten tries a second.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 async fn accept_until(
     listener: TcpListener,
@@ -304,9 +311,14 @@ async fn accept_until(
     served: Arc<Served>,
     limits: ServeLimits,
     stopping: watch::Receiver<bool>,
+    report: fn(&str),
     shutdown: impl Future<Output = ()>,
 ) {
     let mut shutdown = pin!(shutdown);
+    let address = listener
+        .local_addr()
+        .map_or_else(|error| error.to_string(), |address| address.to_string());
+    let mut failing = false;
     loop {
         // Past the limit nothing is accepted: the listen backlog holds the
         // next connections until one closes.
@@ -319,6 +331,7 @@ async fn accept_until(
         };
         match accepted {
             Ok((stream, _)) => {
+                failing = false;
                 let connection = Connection {
                     stream,
                     permit,
@@ -328,7 +341,17 @@ async fn accept_until(
                 };
                 spawn_connection(connection, &served);
             }
-            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
+            Err(error) => {
+                if !failing {
+                    report(&format!(
+                        "accepting a connection on {address} failed: {error}; \
+                         Straum tries again every {} ms",
+                        ACCEPT_BACKOFF.as_millis()
+                    ));
+                }
+                failing = true;
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+            }
         }
     }
 }

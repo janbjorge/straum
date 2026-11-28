@@ -90,6 +90,11 @@ connection past that limit. The connection waits in the listen backlog
 until another connection closes. Straum cuts a connection that sends no
 request head for 5 s, from when it opens or from its last reply.
 
+Each connection holds a file descriptor. If no file descriptor is free,
+Straum cannot accept a connection. Then it logs one line,
+`accepting a connection on ADDRESS failed`, and tries again every
+100 ms. It logs again only after an accept succeeds.
+
 Straum writes each answer in memory. It keeps the answer until it sends
 the last byte, so a client that does not read keeps its answer in
 Straum. The answers that Straum has not sent yet may hold a quarter of

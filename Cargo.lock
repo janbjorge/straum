@@ -701,6 +701,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiff",
+ "nix",
  "serde",
  "serde_json",
  "straum-app",
