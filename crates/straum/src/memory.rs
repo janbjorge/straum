@@ -10,9 +10,8 @@
 //! a thread of its own; past the limit it ends the process.
 
 use std::fmt;
-use std::fs;
-use std::io;
-use std::path::Path;
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::process::{self, Command};
 use std::thread;
 use std::time::Duration;
@@ -53,10 +52,13 @@ impl fmt::Display for ReadError {
 }
 
 /// Where a process's resident memory is read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum Resident {
-    /// A `/proc/<pid>/status` file, which Linux writes.
-    Status { path: String },
+    /// A `/proc/<pid>/status` file, which Linux writes, at `path`. It
+    /// stays open and is read again from its start: an open at each read
+    /// failed once the connections held every file descriptor, and ended
+    /// Straum.
+    Status { path: String, file: File },
     /// `ps -o rss= -p PID`, for a system without that file.
     Ps { pid: u32 },
 }
@@ -66,18 +68,19 @@ impl Resident {
     /// writes one, else `ps`. The image holds no `ps`, but it runs on
     /// Linux.
     pub(crate) fn of_this_process() -> Resident {
-        if Path::new(STATUS).exists() {
-            return Resident::Status {
+        match File::open(STATUS) {
+            Ok(file) => Resident::Status {
                 path: STATUS.to_owned(),
-            };
+                file,
+            },
+            Err(_) => Resident::Ps { pid: process::id() },
         }
-        Resident::Ps { pid: process::id() }
     }
 
     /// The resident memory, in bytes.
     pub(crate) fn read(&self) -> Result<u64, MemoryError> {
         let read = match self {
-            Resident::Status { path } => match fs::read_to_string(path) {
+            Resident::Status { file, .. } => match read_again(file) {
                 Ok(text) => resident_bytes(&text),
                 Err(error) => Err(ReadError::File(error)),
             },
@@ -96,10 +99,19 @@ impl Resident {
 impl fmt::Display for Resident {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Resident::Status { path } => formatter.write_str(path),
+            Resident::Status { path, .. } => formatter.write_str(path),
             Resident::Ps { pid } => write!(formatter, "ps -o rss= -p {pid}"),
         }
     }
+}
+
+/// The whole text of `file`, read from its start. Linux writes a status
+/// file again for each read from its start.
+fn read_again(mut file: &File) -> io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
 }
 
 /// Why the memory watch ends Straum, or fails the start.

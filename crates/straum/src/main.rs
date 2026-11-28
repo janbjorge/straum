@@ -733,15 +733,11 @@ mod tests {
                 "listening on x: gone",
             ),
             (
-                Failure::Memory(
-                    memory::Resident::Status {
-                        path: "/nowhere/status".to_owned(),
-                    }
-                    .read()
-                    .unwrap_err(),
-                ),
-                "--max-memory needs /nowhere/status to read Straum's resident memory: \
-                 No such file or directory (os error 2)",
+                Failure::Memory(memory::MemoryError::Unreadable {
+                    source: "/nowhere/status".to_owned(),
+                    error: memory::ReadError::File(gone()),
+                }),
+                "--max-memory needs /nowhere/status to read Straum's resident memory: gone",
             ),
             (
                 Failure::StartingWatch(gone()),

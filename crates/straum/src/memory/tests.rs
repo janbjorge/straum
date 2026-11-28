@@ -2,7 +2,8 @@
 //! a file the test writes, from `ps` and from this very process, the
 //! check against the limit, and the watch that ends when memory passes it.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
@@ -37,15 +38,22 @@ fn scratch(name: &str) -> PathBuf {
 fn status_file(path: &Path) -> Resident {
     Resident::Status {
         path: path.to_str().unwrap().to_owned(),
+        file: File::open(path).unwrap(),
     }
 }
 
-/// Writes a status text holding `kib` kB resident at `path`, whole: a
-/// watch reading it meanwhile sees the old text or the new one.
-fn write_status(path: &PathBuf, kib: u64) {
-    let written = path.with_extension("new");
-    fs::write(&written, format!("Name:\tstraum\nVmRSS:\t {kib} kB\n")).unwrap();
-    fs::rename(&written, path).unwrap();
+/// Writes a status text holding `kib` kB resident at `path`, in place
+/// and always as long: a watch holds the file open, and reads the old
+/// text or the new one.
+fn write_status(path: &Path, kib: u64) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    let text = format!("Name:\tstraum\nVmRSS:\t{kib:>20} kB\n");
+    file.write_all(text.as_bytes()).unwrap();
 }
 
 #[test]
@@ -92,7 +100,8 @@ fn reads_resident_memory_from_a_file() {
         )
     );
     fs::remove_file(&path).unwrap();
-    let error = resident.read().unwrap_err();
+    let directory = std::env::temp_dir();
+    let error = status_file(&directory).read().unwrap_err();
     let MemoryError::Unreadable {
         error: ReadError::File(_),
         ..
@@ -100,7 +109,8 @@ fn reads_resident_memory_from_a_file() {
     else {
         panic!("{error:?}");
     };
-    let start = format!("--max-memory needs {text} to read Straum's resident memory: ");
+    let directory = directory.to_str().unwrap();
+    let start = format!("--max-memory needs {directory} to read Straum's resident memory: ");
     assert!(error.to_string().starts_with(&start), "{error}");
 }
 
@@ -145,9 +155,10 @@ fn the_watch_ends_once_memory_passes_the_limit() {
         limit_bytes: Some(2 * MEBIBYTE),
     };
     assert_eq!(readings.last(), Some(past));
-    fs::remove_file(&path).unwrap();
+    fs::write(&path, "Name:\tstraum\n").unwrap();
     let gone = watch(&status_file(&path), Some(2 * MEBIBYTE), &readings);
     assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
+    fs::remove_file(&path).unwrap();
 }
 
 /// Without a limit the watch records every reading, however large, and
@@ -167,9 +178,24 @@ fn without_a_limit_the_watch_only_records() {
         limit_bytes: None,
     };
     assert_eq!(readings.last(), Some(read));
-    fs::remove_file(&path).unwrap();
+    fs::write(&path, "Name:\tstraum\n").unwrap();
     let gone = watching.join().unwrap();
     assert!(matches!(gone, MemoryError::Unreadable { .. }), "{gone:?}");
+    fs::remove_file(&path).unwrap();
+}
+
+/// An open of the status at each read failed once the connections held
+/// every file descriptor, and ended Straum. The status opens once, so a
+/// read reads it again after its path is gone.
+#[test]
+fn reads_the_status_again_without_an_open() {
+    let path = scratch("open-once");
+    write_status(&path, 1_024);
+    let resident = status_file(&path);
+    assert_eq!(resident.read().unwrap(), MEBIBYTE);
+    write_status(&path, 2_048);
+    fs::remove_file(&path).unwrap();
+    assert_eq!(resident.read().unwrap(), 2 * MEBIBYTE);
 }
 
 /// This process's own resident memory reads on any system the tests run
