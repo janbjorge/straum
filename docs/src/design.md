@@ -295,8 +295,9 @@ the buckets before it. `Following` moves to the commit's LSN and time.
 Under the same lock, the writer asks `Source::next_commit` with a zero
 wait, and applies each commit that is already queued. Thus a long ask
 delays a batch, and not each commit. The batch stops when the queue is
-empty, or when a reading of the WAL is due. The reading never runs
-under the lock. The stream thread can queue more commits during a
+empty, or when a reading of the WAL is due. The time that the writer
+waits for the lock does not count, so a long ask moves the reading
+later. The reading never runs under the lock. The stream thread can queue more commits during a
 batch, so the time to the next reading bounds a long batch. Then the
 lock is let go.
 

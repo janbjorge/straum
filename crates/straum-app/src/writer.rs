@@ -42,7 +42,8 @@ pub struct Writer<S> {
     /// When the server's WAL was last read: the time before the reading.
     wal_read_at: Instant,
     /// When the next reading of the WAL falls due: `WAL_EVERY` after the
-    /// last reading ended, so a slow reading leaves time to apply.
+    /// last reading ended, so a slow reading leaves time to apply. A batch
+    /// ends later than it by the time that the writer waited for the lock.
     wal_due_at: Instant,
     /// Where the start says what it is doing, line by line.
     report: Report,
@@ -178,7 +179,8 @@ impl<S: Source> Writer<S> {
     /// Loads every table when nothing is loaded yet, else applies the next
     /// commit, waiting for one and reading the server's WAL meanwhile. Under
     /// the same lock, it applies each commit queued after it, until the
-    /// queue is empty or a reading of the WAL is due.
+    /// queue is empty or a reading of the WAL is due. The wait for the lock
+    /// does not count, so a long ask delays the reading and not the batch.
     /// After an error Straum is not ready and the writer is done: Straum
     /// starts again with a new app and writer, from a new stream.
     ///
@@ -277,7 +279,10 @@ impl<S: Source> Writer<S> {
             if let Some(mut commit) = self.source.next_commit(wait)? {
                 // One wait for the lock applies every commit queued, so a
                 // long ask delays a batch and not each commit.
+                let asked = Instant::now();
                 let mut state = self.app.write();
+                // The wait for the lock is the time of an ask, not of the batch.
+                let due_at = self.wal_due_at + asked.elapsed();
                 loop {
                     state.apply(&commit)?;
                     let mut progress = self.app.progress();
@@ -287,7 +292,7 @@ impl<S: Source> Writer<S> {
                     following.applying.count(commit.changes.len());
                     drop(progress);
                     // The reading of the WAL never runs under the lock.
-                    if Instant::now() >= self.wal_due_at {
+                    if Instant::now() >= due_at {
                         return Ok(commit.lsn);
                     }
                     match self.source.next_commit(Duration::ZERO)? {
@@ -734,6 +739,31 @@ mod tests {
         assert_eq!(writer.source.readings, readings);
         assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(4)));
         assert_eq!(writer.source.readings, readings + 1);
+    }
+
+    /// An ask that holds the store's lock past the due time of the WAL
+    /// reading does not cut the batch. The wait for the lock is not time
+    /// that the writer applies in. Thus a long ask delays a batch, and
+    /// not each commit (ADR-0002).
+    #[test]
+    fn a_long_ask_delays_a_batch_and_not_each_commit() {
+        const QUEUED: u64 = 50;
+        let app = app();
+        let mut writer = Writer::new(app.clone(), Queued::of(QUEUED));
+        writer.step().unwrap();
+        let (held, holding) = mpsc::channel();
+        let asker = {
+            let app = app.clone();
+            thread::spawn(move || {
+                let guard = app.read();
+                held.send(()).unwrap();
+                thread::sleep(WAL_EVERY + WAL_EVERY / 5);
+                drop(guard);
+            })
+        };
+        holding.recv().unwrap();
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(QUEUED + 1)));
+        asker.join().unwrap();
     }
 
     /// The next reading of the WAL falls due a second after the last one

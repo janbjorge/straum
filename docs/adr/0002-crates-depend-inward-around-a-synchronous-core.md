@@ -1,6 +1,6 @@
 # ADR-0002: Crates depend inward around a synchronous core
 
-Status: Accepted 2026-11-10; revised 2026-11-26
+Status: Accepted 2026-11-10; revised 2026-11-28
 
 ## Context
 
@@ -67,7 +67,8 @@ the last two are the next step if the lock ever matters.
   After one wait for the lock, the writer applies every commit that
   the stream has queued. Thus a long ask delays a batch, and not each
   commit. A batch stops when the queue is empty, or when a reading of
-  the WAL is due, about once a second.
+  the WAL is due, about once a second. The time that the writer waits
+  for the lock does not count, so a long ask moves the reading later.
   `/readyz` and `/status` don't wait behind it. They read only the
   progress, which the writer never holds while it waits for the
   store's lock.
