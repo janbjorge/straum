@@ -564,6 +564,24 @@ mod tests {
             (largest.clone(), 0, point_two, Some(Greater)),
             (largest, 0, point_five, Some(Less)),
         ]);
+        // Three of Euclid's steps decide these two, so a reciprocal taken
+        // twice must turn the order back. Python's fractions give it.
+        let thirteenths = Value::Avg {
+            sum: i128::MAX,
+            count: 13,
+        };
+        let elevenths = Value::Avg {
+            sum: i128::MIN,
+            count: 11,
+        };
+        let below_thirteenths =
+            decimal_literal(130_877_833_431_130_178_255_144_079_781_449_312_096, 1);
+        let above_elevenths =
+            decimal_literal(-154_673_803_145_881_119_756_079_367_014_440_096_116, 1);
+        assert_orders(vec![
+            (thirteenths, 0, below_thirteenths, Some(Greater)),
+            (elevenths, 0, above_elevenths, Some(Less)),
+        ]);
     }
 
     #[test]
