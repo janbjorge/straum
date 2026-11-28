@@ -1,0 +1,1 @@
+{"views":[{"name":"trips","time":"bucket","from":"2024-01-01T00:00:00Z","to":"2024-01-02T00:00:00Z","kept":[],"keys":[{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},{"name":"zone_id","type":"integer"},{"name":"borough","type":"text"}],"measures":["trips","fare","fare_avg","fare_max"]}]}

@@ -519,3 +519,26 @@ fn a_command_on_one_side_alone_drifts() {
     assert_eq!(help_commands(help), ["\\d", "\\y"]);
     assert_eq!(command_drift(&["\\d", "\\x "], help), ["\\x", "\\y"]);
 }
+
+/// The shell reads the views as a Straum serves them: the straum-http
+/// tests compare this file with a real `GET /views` reply.
+#[test]
+fn reads_the_views_json_of_a_real_straum() {
+    let served = include_str!("../../../straum-http/tests/http/views.json");
+    let trips = View {
+        name: "trips".to_owned(),
+        time: "bucket".to_owned(),
+        keys: vec![
+            key("bucket", "timestamptz"),
+            key("kind", "integer"),
+            key("zone_id", "integer"),
+            key("borough", "text"),
+        ],
+        measures: ["trips", "fare", "fare_avg", "fare_max"]
+            .map(str::to_owned)
+            .to_vec(),
+        from: Some("2024-01-01T00:00:00Z".to_owned()),
+        to: Some("2024-01-02T00:00:00Z".to_owned()),
+    };
+    assert_eq!(read_views(served), Some(vec![trips]));
+}
