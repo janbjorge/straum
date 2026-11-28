@@ -678,15 +678,16 @@ fn comparison(operator: &sql::BinaryOperator) -> Option<Comparison> {
     }
 }
 
-/// A comment or a trailing `;` in an ask: it is one statement, written
-/// one way, so neither has a place in it. A `;` between statements is
+/// A comment, or a `;` before or after an ask: it is one statement,
+/// written one way, so none has a place in it. A `;` between statements is
 /// left to the parse, which says an ask is one `SELECT`. `None` when it
-/// holds neither, or when the tokenizer fails, which the parse reports.
+/// holds none, or when the tokenizer fails, which the parse reports.
 fn extra_tokens(query: &str) -> Option<SqlError> {
     let tokens = Tokenizer::new(&PostgreSqlDialect {}, query)
         .tokenize_with_location()
         .ok()?;
     let mut trailing = None;
+    let mut leading = true;
     for token in tokens {
         match token.token {
             Token::Whitespace(
@@ -695,8 +696,14 @@ fn extra_tokens(query: &str) -> Option<SqlError> {
                 return Some(refused_token(token.span.start.line, "a comment"));
             }
             Token::Whitespace(_) => {}
+            Token::SemiColon if leading => {
+                return Some(refused_token(token.span.start.line, "a ;"));
+            }
             Token::SemiColon => trailing = Some(token.span.start.line),
-            _ => trailing = None,
+            _ => {
+                trailing = None;
+                leading = false;
+            }
         }
     }
     let line = trailing?;

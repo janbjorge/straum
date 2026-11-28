@@ -69,7 +69,8 @@ written twice: `kind = $1 AND kind = $1` is refused, naming
 `kind = $1`.
 
 Names are lowercase, `buckets` too; keywords such as `SELECT` and
-`GROUP BY` take any case. An ask holds no comment and no `;` after it.
+`GROUP BY` take any case. An ask holds no comment and no `;` before or
+after it.
 
 An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
 `+`, `::`, `OPERATOR`, `UNION` and the like), as does each statement of

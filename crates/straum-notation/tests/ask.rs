@@ -853,13 +853,15 @@ fn a_refused_ask_names_only_its_fault() {
     assert_eq!(errors(unused, &three), ["parameter $3 is not used"]);
 }
 
-/// A comment or a trailing `;` is refused as any construct is, saying
-/// Straum SQL is Straum's own subset; the ask without it parses.
+/// A comment, or a `;` before or after the ask, is refused as any
+/// construct is, saying Straum SQL is Straum's own subset; the ask without
+/// it parses.
 #[test]
 fn a_comment_or_a_trailing_semicolon_is_not_in_straum_sql() {
     for (query, what) in [
         ("SELECT trips FROM t -- trips", "a comment"),
         ("SELECT trips FROM t;", "a ;"),
+        (";SELECT trips FROM t", "a ;"),
     ] {
         assert_eq!(
             errors(query, &[]),
