@@ -452,20 +452,22 @@ pub(crate) fn read_in_time(
     );
     let tables = match read {
         Ok(tables) => tables,
-        Err(error) => return Err(name_locked(error, connection, spec)),
+        Err(error) => {
+            return Err(name_locked(error, connection, spec, &settings.publication));
+        }
     };
     if after == AfterRead::HoldTables
         && let Err(error) = hold_tables(connection, &tables)
     {
-        return Err(name_locked(error, connection, spec));
+        return Err(name_locked(error, connection, spec, &settings.publication));
     }
     connection.execute("SET lock_timeout = 0")?;
     Ok(tables)
 }
 
-/// `error`, or, when it gave up at the lock timeout, the spec tables
-/// another session locks against a read.
-fn name_locked(error: Error, connection: &mut Connection, spec: &Spec) -> Error {
+/// `error`, or, when it gave up at the lock timeout, the spec tables and
+/// the tables of `publication` that another session locks against a read.
+fn name_locked(error: Error, connection: &mut Connection, spec: &Spec, publication: &str) -> Error {
     let Error::Server { code, .. } = &error else {
         return error;
     };
@@ -476,7 +478,7 @@ fn name_locked(error: Error, connection: &mut Connection, spec: &Spec) -> Error 
     if connection.execute("ROLLBACK").is_err() {
         return error;
     }
-    let Ok(tables) = catalog::locked_tables(connection, spec) else {
+    let Ok(tables) = catalog::locked_tables(connection, spec, publication) else {
         return error;
     };
     if tables.is_empty() {

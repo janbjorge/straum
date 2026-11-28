@@ -2,7 +2,8 @@
 //! `pg_attribute`, `pg_type`, `pg_enum`, `pg_publication_tables`) into a
 //! `Catalog` for the setup check: the server's settings, then the spec's
 //! tables, their columns and their enums' labels, a query each. Also,
-//! from `pg_locks`, the spec tables another session locks against a read.
+//! from `pg_locks`, the spec tables and the tables of the publication
+//! that another session locks against a read.
 
 use postgres_protocol::escape::escape_literal;
 use straum_domain::Spec;
@@ -35,12 +36,14 @@ pub(crate) fn query(
     Ok(catalog)
 }
 
-/// The spec's tables another session holds, or waits for, an
-/// `ACCESS EXCLUSIVE` lock on, the one lock that blocks a read, as
-/// `schema.table`.
+/// The spec's tables and the tables of `publication` that another session
+/// holds, or waits for, an `ACCESS EXCLUSIVE` lock on, the one lock that
+/// blocks a read, as `schema.table`. `pg_publication_tables` locks each
+/// table of the publication.
 pub(crate) fn locked_tables(
     connection: &mut Connection,
     spec: &Spec,
+    publication: &str,
 ) -> Result<Vec<String>, Error> {
     let rows = connection.rows(&format!(
         "SELECT DISTINCT n.nspname || '.' || c.relname
@@ -48,9 +51,18 @@ pub(crate) fn locked_tables(
            JOIN pg_class c ON c.oid = l.relation
            JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE l.pid <> pg_backend_pid() AND l.mode = 'AccessExclusiveLock'
-            AND (n.nspname, c.relname) IN (VALUES {})
+            AND ((n.nspname, c.relname) IN (VALUES {})
+                 OR c.oid IN (SELECT r.prrelid FROM pg_publication_rel r
+                                JOIN pg_publication p ON p.oid = r.prpubid
+                               WHERE p.pubname = {publication})
+                 OR c.relnamespace IN (SELECT s.pnnspid FROM pg_publication_namespace s
+                                         JOIN pg_publication p ON p.oid = s.pnpubid
+                                        WHERE p.pubname = {publication})
+                 OR EXISTS (SELECT FROM pg_publication p
+                             WHERE p.pubname = {publication} AND p.puballtables))
           ORDER BY 1",
-        table_list(spec)
+        table_list(spec),
+        publication = escape_literal(publication)
     ))?;
     let mut tables = Vec::new();
     for row in rows {

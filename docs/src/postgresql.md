@@ -240,7 +240,9 @@ before would read empty in the load's snapshot, so Straum stops and
 the next start loads the table whole. Straum waits at most 5 seconds
 for each lock, so a session holding or queued for `ACCESS EXCLUSIVE`,
 as an `ALTER TABLE` behind a long transaction is, stops the start
-rather than stalls it:
+rather than stalls it. The read of the publication also waits for each
+table of the publication that the spec does not read, and the error
+names that table:
 
 ```text
 usage: public.events was rewritten as Straum started

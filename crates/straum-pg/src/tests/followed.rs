@@ -587,6 +587,33 @@ fn a_column_altered_while_another_table_is_locked_stops_the_logical_stream() {
     );
 }
 
+/// A lock on a published table that the spec does not read holds the
+/// read of the publication's tables too: the start fails at the lock
+/// timeout and names that table.
+#[test]
+fn a_lock_on_a_table_the_spec_does_not_read_is_named_at_the_start() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "otherlocked", TABLES);
+    with_other(&mut db);
+    let spec = db.spec(SPEC);
+    let mut locker = db.another_connection();
+    locker.run("BEGIN; LOCK TABLE $S.other IN ACCESS EXCLUSIVE MODE");
+    let mut connection = Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap();
+    connection
+        .execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")
+        .unwrap();
+    let logical = Replication::Logical;
+    let settings = Settings::new(db.dsn.clone(), &db.name, ROW_LIMIT, logical, STREAM_MEMORY);
+    let read = read_in_time(&mut connection, &spec, &settings, AfterRead::HoldTables);
+    assert_eq!(
+        read.err().map(|error| error.to_string()),
+        Some(db.sql(
+            "the start waited 5 s for a lock on $S.other; another session holds or waits \
+             for one that blocks a read, as ALTER TABLE takes"
+        ))
+    );
+}
+
 /// After a column is dropped, the stream is whole and a reading gives its
 /// own reason. A later change fails the stream, and PostgreSQL drops the
 /// temporary slot. The next reading then gives the stream's reason.
