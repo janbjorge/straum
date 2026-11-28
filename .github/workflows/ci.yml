@@ -345,7 +345,7 @@ jobs:
         run: |
           helm package deploy/helm/straum --version "$VERSION" --app-version "$VERSION" --destination chart
           echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          pushed=$(helm push "chart/straum-$VERSION.tgz" oci://ghcr.io/janbjorge/charts 2>&1)
+          pushed=$(helm push "chart/straum-$VERSION.tgz" oci://ghcr.io/janbjorge/charts 2>&1) || { echo "$pushed"; exit 1; }
           echo "$pushed"
           digest=$(echo "$pushed" | awk '/^Digest:/ {print $2}')
           if ! [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then

@@ -13,9 +13,9 @@ The layer check reads Cargo's metadata; these tests hand it metadata
 built here, over a workspace of files in a temporary folder, so they
 need no cargo and no network. The domain syntax check reads a folder of
 Rust files; these tests write one. The chart check reads its oldest
-Kubernetes from Chart.yaml; these tests hand it the line. It reads the
-release notes' helm command, the templates and values.yaml; these tests
-hand it each text. The OpenAPI
+Kubernetes from Chart.yaml; these tests hand it the line. It reads ci.yml,
+the release notes' helm command in it, the templates and values.yaml;
+these tests hand it each text. The OpenAPI
 check reads a document; these tests hand it one.
 changed-crates.py maps paths to crates; these tests hand it paths. The
 test filter check reads a justfile and a crate; these tests write both.
@@ -732,7 +732,13 @@ class ChartReleaseCommand(unittest.TestCase):
         command += " --set x=a,wal=logical"
         self.assertEqual(chart.unset_in_release(command, templates, values), [])
 
-    def test_the_release_notes_set_each_required_value(self):
+    def test_an_error_output_that_a_failure_hides_is_refused(self):
+        planted = 'run: |\n  pushed=$(helm push x 2>&1)\n  echo "$pushed"\n'
+        self.assertEqual(chart.hidden_failures(planted), [2])
+        honest = 'pushed=$(helm push x 2>&1) || { echo "$pushed"; exit 1; }\n'
+        self.assertEqual(chart.hidden_failures(honest), [])
+
+    def test_the_release_job_passes(self):
         self.assertEqual(chart.release_errors(), [])
 
 

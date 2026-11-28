@@ -9,7 +9,9 @@ against the schemas of the oldest and newest Kubernetes it targets.
 The oldest is the floor of the chart's `kubeVersion` in Chart.yaml, so
 the check moves with the chart; the newest is NEWEST_KUBERNETES. First
 it checks that the helm command in the release notes of ci.yml sets each
-value that a template marks required and values.yaml leaves empty."""
+value that a template marks required and values.yaml leaves empty, and
+that each line of ci.yml that keeps the error output of a command shows
+it when the command fails."""
 
 import pathlib
 import re
@@ -61,14 +63,32 @@ def unset_in_release(command: str, templates: str, values: str) -> list[str]:
     return unset
 
 
+def hidden_failures(workflow: str) -> list[int]:
+    """The lines of `workflow` that keep the error output of a command in
+    a variable with no `||`: bash -e stops there, and nothing shows it."""
+    return [
+        number
+        for number, line in enumerate(workflow.splitlines(), 1)
+        if re.search(r"=\$\(.*2>&1\)\s*$", line)
+    ]
+
+
 def release_errors() -> list[str]:
-    """What the helm command of the release notes in ci.yml leaves unset."""
-    command = release_command(WORKFLOW.read_text())
+    """What the release job in ci.yml gets wrong: a value that the helm
+    command of its notes leaves unset, or an error output that it hides."""
+    workflow = WORKFLOW.read_text()
+    name = WORKFLOW.relative_to(ROOT)
+    errors = [
+        f"{name}:{number}: a failure hides the output that the line keeps"
+        for number in hidden_failures(workflow)
+    ]
+    command = release_command(workflow)
     if command is None:
-        return [f"{WORKFLOW.relative_to(ROOT)} has no helm upgrade --install"]
+        return [*errors, f"{name} has no helm upgrade --install"]
     templates = "".join(p.read_text() for p in (CHART / "templates").iterdir())
     unset = unset_in_release(command, templates, (CHART / "values.yaml").read_text())
-    return [f"the release notes' helm command does not set {name}" for name in unset]
+    errors += [f"the release notes' helm command does not set {n}" for n in unset]
+    return errors
 
 
 def main() -> int:
