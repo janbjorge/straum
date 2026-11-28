@@ -790,9 +790,12 @@ class ChangedCrates(unittest.TestCase):
 def filter_errors(call: str) -> list[str]:
     """The test filter check's errors over a justfile holding `call`, and
     a straum-pg with three tests in `tests::decoding`: two ignored and
-    one not."""
+    one not. One more test is in the inline module `pgoutput::tests`."""
     files = {
-        "lib.rs": "#[cfg(test)]\nmod tests;\n",
+        "lib.rs": "mod pgoutput;\n#[cfg(test)]\nmod tests;\n",
+        "pgoutput.rs": (
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn decodes_begin() {}\n}\n"
+        ),
         "tests/mod.rs": "mod decoding;\n",
         "tests/decoding.rs": (
             '#[test]\n#[ignore = "slow"]\nfn follows_at_random() {}\n'
@@ -824,6 +827,14 @@ class TestFilterCheck(unittest.TestCase):
     def test_part_of_a_test_name_passes_as_cargo_matches(self):
         call = '(test "straum-pg" "--lib" "at_random" "--" "--ignored")'
         self.assertEqual(filter_errors(call), [])
+
+    def test_a_test_in_an_inline_module_is_named_with_that_module(self):
+        call = '(test "straum-pg" "--" "pgoutput::tests::decodes_begin")'
+        self.assertEqual(filter_errors(call), [])
+        self.assert_refused(
+            '(test "straum-pg" "--" "pgoutput::decodes_begin")',
+            "'pgoutput::decodes_begin' selects no test",
+        )
 
     def test_a_path_missing_its_module_fails(self):
         self.assert_refused(

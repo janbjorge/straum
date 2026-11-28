@@ -14,9 +14,9 @@ A filter passes when it is part of one of those names, as cargo's
 filter is, and that test runs under the recipe's flags: an ignored test
 runs only with `--ignored`, and a test that is not ignored runs only
 without it. `--include-ignored` runs both. A test in an inline module
-is named without that module, and the crate's `tests` and `benches`
-folders are not read, so a filter naming one fails here though cargo
-would find it.
+is named with that module, as cargo names it. The crate's `tests` and
+`benches` folders are not read, so a filter naming a test there fails
+here though cargo would find it.
 """
 
 import pathlib
@@ -33,6 +33,7 @@ FUNCTION = re.compile(
     r"((?:#\s*\[[^\]]*\]\s*)*)"
     r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)"
 )
+INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*\{")
 TEST_ATTRIBUTE = re.compile(r"#\s*\[\s*test\s*\]")
 IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\b")
 # Cargo's options whose next argument is their value, not a filter.
@@ -55,10 +56,16 @@ def test_names(crate: pathlib.Path) -> list[tuple[str, bool]]:
     for file in sorted(source_root.rglob("*.rs")):
         code = rust_source.lex(file.read_text()).code
         modules = module_path(file, source_root)
-        for attributes, name in FUNCTION.findall(code):
+        inline_spans = []
+        for module in INLINE_MODULE.finditer(code):
+            end = rust_source.closing(code, module.end() - 1)
+            inline_spans.append((module.group(1), range(module.end(), end)))
+        for function in FUNCTION.finditer(code):
+            attributes, name = function.groups()
             if TEST_ATTRIBUTE.search(attributes):
                 ignored = bool(IGNORE_ATTRIBUTE.search(attributes))
-                names.append(("::".join([*modules, name]), ignored))
+                inline = [m for m, span in inline_spans if function.start() in span]
+                names.append(("::".join([*modules, *inline, name]), ignored))
     return names
 
 
