@@ -56,11 +56,11 @@ pub struct SqlError {
 struct Reported;
 
 /// The most operators one statement may hold, counted before it is
-/// parsed. `sqlparser` builds a chain of them, `a AND b AND ...` or
-/// `1 + 1 + ...`, as a tree as deep as the chain, and the walk, a node's
-/// span and the tree's own drop recurse down it: 2,500 overflowed the 2
-/// MiB stack an ask is read on, and aborted Straum. No view or ask needs
-/// near this many.
+/// parsed. `sqlparser` builds a chain of them, `a AND b AND ...`,
+/// `1 + 1 + ...` or `SELECT ... UNION SELECT ...`, as a tree as deep as
+/// the chain, and the walk, a node's span and the tree's own drop recurse
+/// down it: 2,500 overflowed the 2 MiB stack an ask is read on, and
+/// aborted Straum. No view or ask needs near this many.
 const MAX_OPERATORS: usize = 512;
 
 fn statements(text: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
@@ -146,10 +146,10 @@ fn other_operator_spelling(tokens: &[TokenWithSpan]) -> Option<SqlError> {
     None
 }
 
-/// A token that can join or follow an expression and so deepen its tree:
-/// a symbol other than a comma, a parenthesis or a period, or a keyword
-/// such as `AND`, `IS`, `IN` or `OPERATOR`. Literals, names and parameters
-/// are not.
+/// A token that can join or follow an expression or a query and so deepen
+/// its tree: a symbol other than a comma, a parenthesis or a period, a
+/// keyword such as `AND`, `IS`, `IN` or `OPERATOR`, or a set operation
+/// such as `UNION`. Literals, names and parameters are not.
 fn is_operator(token: &Token) -> bool {
     match token {
         Token::Word(word) => matches!(
@@ -172,6 +172,10 @@ fn is_operator(token: &Token) -> bool {
                 | Keyword::REGEXP
                 | Keyword::RLIKE
                 | Keyword::XOR
+                | Keyword::UNION
+                | Keyword::EXCEPT
+                | Keyword::INTERSECT
+                | Keyword::MINUS
         ),
         Token::EOF
         | Token::Number(..)

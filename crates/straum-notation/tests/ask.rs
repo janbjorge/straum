@@ -925,10 +925,11 @@ fn a_long_chain_of_operators_is_refused_before_it_is_parsed() {
 
 /// No keyword of `sqlparser` makes a chain that overflows the 2 MiB stack
 /// an ask is read on. Each keyword goes between two keys, after a key,
-/// before `OF (kind)`, and before `(kind) kind`, 3,000 times. The thread
-/// has the keyword as its name, so an overflow names the keyword that
-/// caused it. One thread for each core reads at a time, because each long
-/// ask takes some milliseconds.
+/// before `OF (kind)`, and before `(kind) kind`, 3,000 times. Each set
+/// operation goes between two `SELECT`s 30,000 times, which a body of
+/// 1 MiB holds. The thread has the keyword as its name, so an overflow
+/// names the keyword that caused it. One thread for each core reads at a
+/// time, because each long ask takes some milliseconds.
 #[test]
 fn no_chain_of_a_keyword_overflows_the_stack() {
     let mut links = Vec::new();
@@ -939,17 +940,21 @@ fn no_chain_of_a_keyword_overflows_the_stack() {
             format!(" {keyword} OF (kind)"),
             format!(" {keyword}(kind) kind"),
         ] {
-            links.push((*keyword, link));
+            links.push((*keyword, "SELECT trips FROM t WHERE kind", link, 3_000));
         }
+    }
+    for keyword in ["UNION", "EXCEPT", "INTERSECT", "MINUS"] {
+        let select = "SELECT trips FROM t";
+        links.push((keyword, select, format!(" {keyword} {select}"), 30_000));
     }
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     for batch in links.chunks(cores) {
         std::thread::scope(|scope| {
             let threads: Vec<_> = batch
                 .iter()
-                .map(|(keyword, link)| {
-                    let read = || {
-                        let ask = format!("SELECT trips FROM t WHERE kind{}", link.repeat(3_000));
+                .map(|(keyword, start, link, times)| {
+                    let read = move || {
+                        let ask = format!("{start}{}", link.repeat(*times));
                         parse_ask(&ask, &[]).is_err()
                     };
                     let thread = std::thread::Builder::new()

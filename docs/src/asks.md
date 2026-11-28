@@ -72,8 +72,8 @@ Names are lowercase, `buckets` too; keywords such as `SELECT` and
 `GROUP BY` take any case. An ask holds no comment and no `;` after it.
 
 An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
-`+`, `::`, `OPERATOR` and the like), as does each statement of a spec:
-each is a level of the tree Straum reads it into.
+`+`, `::`, `OPERATOR`, `UNION` and the like), as does each statement of
+a spec: each is a level of the tree Straum reads it into.
 
 ## Rows a day or a week apart
 
