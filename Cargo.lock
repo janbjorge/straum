@@ -672,7 +672,6 @@ dependencies = [
 name = "straum"
 version = "0.0.0"
 dependencies = [
- "nix",
  "rustyline",
  "serde_json",
  "straum-app",

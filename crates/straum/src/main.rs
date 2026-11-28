@@ -28,7 +28,6 @@ use std::panic;
 use std::process::{self, ExitCode};
 use std::thread;
 
-use nix::sys::resource::{Resource, getrlimit, setrlimit};
 use rustyline::error::ReadlineError;
 use straum_app::{App, MemoryReadings, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
@@ -92,16 +91,6 @@ enum Failure {
     StartingWriter(io::Error),
     /// A set `--max-memory` whose reading failed at the start.
     Memory(MemoryError),
-    /// The limit of open files, or the files open, could not be read.
-    OpenFiles(io::Error),
-    /// The limit of open files, raised as far as the system lets, is
-    /// under what the connections and the files open `need`.
-    FileLimit {
-        limit: u64,
-        need: u64,
-        health: usize,
-        held: usize,
-    },
     StartingWatch(io::Error),
     Serving(io::Error),
 }
@@ -136,19 +125,6 @@ impl Display for Failure {
             }
             Failure::StartingWriter(error) => write!(formatter, "starting the writer: {error}"),
             Failure::Memory(error) => error.fmt(formatter),
-            Failure::OpenFiles(error) => write!(formatter, "reading the open files: {error}"),
-            Failure::FileLimit {
-                limit,
-                need,
-                health,
-                held,
-            } => write!(
-                formatter,
-                "the limit of open files (RLIMIT_NOFILE) is {limit}, under the {need} that \
-                 Straum needs: {} connections, {health} health checks and {held} open files; \
-                 raise the hard limit",
-                straum_http::MAX_CONNECTIONS
-            ),
             Failure::StartingWatch(error) => {
                 write!(formatter, "starting the memory watch: {error}")
             }
@@ -500,7 +476,6 @@ fn run(
 
     let app = App::new(spec, limits);
     start_memory_watch(max_memory, app.memory_readings())?;
-    raise_open_files(health.is_some())?;
     let writer = Writer::new(
         app.clone(),
         Postgres::new(
@@ -611,46 +586,6 @@ fn run_writer(mut writer: Writer<Postgres>) {
             }
         }
     }
-}
-
-/// Where the system lists the file descriptors that this process holds:
-/// Linux links it to `/proc/self/fd`, and macOS has it too.
-const FILE_DESCRIPTORS: &str = "/dev/fd";
-
-/// Raises the soft limit of open files to the hard limit, as Go does at
-/// its start. A container gets a soft limit of 1024 by default, which the
-/// connections alone can take: then accepts fail, and so does the memory
-/// watch. Where the system refuses the hard limit, as macOS refuses one
-/// without end, the soft limit becomes what Straum needs. Fails when the
-/// limit cannot hold the connections, the health checks and the files
-/// open now.
-fn raise_open_files(health: bool) -> Result<(), Failure> {
-    // The listing counts its own descriptor too, which errs to refuse.
-    let held = fs::read_dir(FILE_DESCRIPTORS)
-        .map_err(Failure::OpenFiles)?
-        .count();
-    let health = if health {
-        straum_http::MAX_HEALTH_CONNECTIONS
-    } else {
-        0
-    };
-    let need = u64::try_from(straum_http::MAX_CONNECTIONS + health + held).unwrap_or(u64::MAX);
-    let limits =
-        || getrlimit(Resource::RLIMIT_NOFILE).map_err(|errno| Failure::OpenFiles(errno.into()));
-    let (soft, hard) = limits()?;
-    if setrlimit(Resource::RLIMIT_NOFILE, hard, hard).is_err() {
-        setrlimit(Resource::RLIMIT_NOFILE, soft.max(need), hard).ok();
-    }
-    let (limit, _) = limits()?;
-    if limit < need {
-        return Err(Failure::FileLimit {
-            limit,
-            need,
-            health,
-            held,
-        });
-    }
-    Ok(())
 }
 
 /// Reads resident memory once, then watches it from before the load on,
@@ -808,17 +743,6 @@ mod tests {
             (
                 Failure::StartingWatch(gone()),
                 "starting the memory watch: gone",
-            ),
-            (Failure::OpenFiles(gone()), "reading the open files: gone"),
-            (
-                Failure::FileLimit {
-                    limit: 64,
-                    need: 1043,
-                    health: 16,
-                    held: 3,
-                },
-                "the limit of open files (RLIMIT_NOFILE) is 64, under the 1043 that Straum \
-                 needs: 1024 connections, 16 health checks and 3 open files; raise the hard limit",
             ),
         ];
         for (failure, said) in cases {

@@ -6,11 +6,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-# getrlimit and setrlimit without unsafe, which std lacks: `straum run`
-# raises its soft limit of open files, so that the connections do not
-# take every file descriptor. Cargo.lock holds it already, through
-# rustyline.
-nix = { version = "0.31.4", default-features = false, features = ["resource"] }
 # Raw terminal mode for `straum shell`: line editing, history kept in a
 # file and Tab completion, which std lacks and which needs unsafe to write
 # by hand.

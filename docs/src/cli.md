@@ -124,10 +124,9 @@ straum: loaded views trips, dropoffs in 22.4 s: 20332093 rows, 1698.1 MiB on dis
 The estimates come from PostgreSQL's catalog: rows as the last
 `ANALYZE` or `VACUUM` counted them, `unknown rows` for a table neither
 has read, and the size of the table's main file. A failure logs a line per
-problem and exits with 1. It does not start when the hard limit of open
-files cannot hold its connections ([Connections](deploy.md#connections)).
-A failed connection names the host and port it tried, as does a server
-that sends nothing for 10 s while the connection starts.
+problem and exits with 1. A failed connection names the host and port
+it tried, as does a server that sends nothing for 10 s while the
+connection starts.
 
 On SIGTERM or SIGINT it stops accepting, finishes the asks in flight
 for at most 10 seconds and exits; PostgreSQL drops the slot as the

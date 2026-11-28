@@ -1,6 +1,6 @@
 # ADR-0019: Orchestrators control Straum through flags, the environment, probes and signals
 
-Status: Accepted 2026-11-26; revised 2026-11-28
+Status: Accepted 2026-11-26
 
 ## Context
 
@@ -53,12 +53,8 @@ https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/).
 `/readyz` is off while Straum loads and while it lags past `--max-lag`
 (ADR-0009). `--health-listen` serves `/livez`, `/readyz` and `/status`
 on a listener of their own, so idle connections that fill the main port
-cannot fail a probe. Each connection holds a file descriptor, and a
-container gets a soft limit of 1024 open files by default. So
-`straum run` raises the soft limit to the hard limit, and does not
-start when the limit cannot hold its connections. The image has no
-shell or curl (ADR-0012), so the binary is its own probe client:
-`straum status` (ADR-0011). Compose and
+cannot fail a probe. The image has no shell or curl (ADR-0012), so the
+binary is its own probe client: `straum status` (ADR-0011). Compose and
 ECS run the health listener on loopback, at `127.0.0.1:8081`. Their one
 health check is `straum status` against that address.
 
