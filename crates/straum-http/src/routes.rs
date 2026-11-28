@@ -396,8 +396,19 @@ fn no_view(view: &str) -> Reply {
 
 async fn get_rows(served: &Served, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
-    let Some(asked) = served.app.rows_ask(view) else {
-        return no_view(view);
+    let Some(turn) = take_turn(&served.turns) else {
+        return busy(Format::Text);
+    };
+    let app = served.app.clone();
+    let named = view.to_owned();
+    // The ask reads the horizons under the store's lock, which a long ask
+    // or a writer can hold: the health routes don't queue behind.
+    let read = tokio::task::spawn_blocking(move || (app.rows_ask(&named), turn)).await;
+    let (asked, turn) = match read {
+        Ok((Some(asked), turn)) => (asked, turn),
+        Ok((None, _)) => return no_view(view),
+        // A panic is not the ask's error: pass it on, and send no reply.
+        Err(error) => panic::resume_unwind(error.into_panic()),
     };
     let window = match rows_window(query.unwrap_or("")) {
         Ok(window) => window,
@@ -406,9 +417,6 @@ async fn get_rows(served: &Served, view: &str, query: Option<&str>) -> Reply {
     let writing = Writing {
         format: Format::Text,
         rows: Rows::Window(window),
-    };
-    let Some(turn) = take_turn(&served.turns) else {
-        return busy(Format::Text);
     };
     answer(served, asked, writing, Duration::ZERO, start, turn).await
 }

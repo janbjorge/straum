@@ -3,6 +3,8 @@
 //! while the tables still load.
 
 use std::net::SocketAddr;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::fake::{Fake, LIMITS, SPEC, fake, int, trip, writer, writer_with};
 use crate::{Reply, call, request, serve, started};
@@ -187,5 +189,42 @@ fn a_view_shows_its_spec_while_the_tables_load() {
         (reply.status, reply.body.as_str()),
         (405, "use GET, HEAD\n")
     );
+    server.stop();
+}
+
+/// How long the writer holds the store's lock in the test below.
+const HELD: Duration = Duration::from_secs(3);
+
+/// How long the server gets to start the work that a test sent.
+const SETTLE: Duration = Duration::from_millis(200);
+
+/// `GET /views/NAME` waits for the store's lock off the async threads.
+/// While the writer holds the lock, two requests for each core wait, and
+/// `/livez` still answers at once.
+#[test]
+fn a_view_waits_for_the_store_off_the_async_threads() {
+    let fake = Fake {
+        hold: HELD,
+        ..fake()
+    };
+    let (mut writer, server) = started(writer_with(LIMITS, fake));
+    let applying = thread::spawn(move || writer.step().unwrap());
+    thread::sleep(SETTLE);
+    let address = server.address;
+    let mut waiting = Vec::new();
+    for _ in 0..2 * thread::available_parallelism().unwrap().get() {
+        waiting.push(thread::spawn(move || {
+            call(address, "GET", "/views/trips", "").status
+        }));
+    }
+    thread::sleep(SETTLE);
+    let asked = Instant::now();
+    assert_eq!(call(address, "GET", "/livez", "").status, 200);
+    let took = asked.elapsed();
+    assert!(took < HELD / 3, "/livez took {took:?}");
+    for request in waiting {
+        request.join().unwrap();
+    }
+    applying.join().unwrap();
     server.stop();
 }

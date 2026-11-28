@@ -50,6 +50,9 @@ pub(crate) struct Fake {
     pub(crate) commits: VecDeque<Commit>,
     /// How long loading the fact takes.
     pub(crate) pause: Duration,
+    /// How long the writer holds the store's lock after the last commit:
+    /// it asks for the next commit under the lock.
+    pub(crate) hold: Duration,
     pub(crate) wal: Wal,
 }
 
@@ -105,7 +108,10 @@ impl Source for Fake {
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         match self.commits.pop_front() {
             Some(commit) => Ok(Some(commit)),
-            None if wait.is_zero() => Ok(None),
+            None if wait.is_zero() => {
+                thread::sleep(self.hold);
+                Ok(None)
+            }
             None => Err("connection dropped".into()),
         }
     }
@@ -148,6 +154,7 @@ pub(crate) fn fake() -> Fake {
             }],
         }]),
         pause: Duration::ZERO,
+        hold: Duration::ZERO,
         wal: Wal {
             written: START,
             applied: START,
