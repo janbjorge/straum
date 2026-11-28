@@ -19,15 +19,19 @@ bench that starts Straum gives it `run_environment`, so the caller's
 STRAUM_* and PG* variables do not change the run.
 """
 
+import contextlib
 import json
 import os
 import pathlib
 import re
 import signal
 import subprocess
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from types import TracebackType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    import asyncpg
 
 POSTGRES = "postgres"
 POSTGRES_PORT = 5432
@@ -141,6 +145,38 @@ class Stack:
 
     def compose_command(self, *args: str) -> subprocess.CompletedProcess[str]:
         return compose(self.name, "-f", "-", *args, input_text=self.compose)
+
+    def load_taxi_trips(self, months: int, database: str = "postgres") -> None:
+        """Pipe `months` months of taxi trips from bench/load_taxi_trips.py
+        into psql, in `database` of PostgreSQL."""
+        bench = pathlib.Path(__file__).resolve().parent
+        loader = subprocess.Popen(
+            [bench / "load_taxi_trips.py", "--months", str(months), "--data", bench / "data"],
+            stdout=subprocess.PIPE,
+        )
+        stdout = loader.stdout
+        if stdout is None:
+            raise SystemExit("load_taxi_trips.py has no stdout")
+        # Closed when psql fails too, so that the loader stops.
+        with stdout:
+            psql = self.exec_args(POSTGRES, "psql", "-U", "postgres", "-q", "-d", database)
+            subprocess.run(psql, stdin=stdout, check=True, stdout=subprocess.DEVNULL)
+        if loader.wait():
+            raise SystemExit("load_taxi_trips.py failed")
+
+
+@contextlib.asynccontextmanager
+async def connected(url: str) -> AsyncIterator[asyncpg.Connection]:
+    """A connection to PostgreSQL at `url`, in New York's zone, closed on
+    the way out."""
+    # Imported here, so that bench/test-stack.py loads this file without it.
+    import asyncpg
+
+    pg = await asyncpg.connect(url, server_settings={"timezone": "America/New_York"})
+    try:
+        yield pg
+    finally:
+        await pg.close()
 
 
 def git_version() -> str | None:

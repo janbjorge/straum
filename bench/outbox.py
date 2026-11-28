@@ -656,21 +656,7 @@ def load_january(stack: Stack) -> None:
         POSTGRES, "psql", "-U", "postgres", "-q", "-c", "CREATE DATABASE taxi"
     )
     subprocess.run(stack_psql, check=True)
-    loader = subprocess.Popen(
-        [
-            pathlib.Path(__file__).resolve().parent / "load_taxi_trips.py",
-            "--months",
-            "1",
-            "--data",
-            DATA,
-        ],
-        stdout=subprocess.PIPE,
-    )
-    psql = stack.exec_args(POSTGRES, "psql", "-U", "postgres", "-q", "-d", "taxi")
-    subprocess.run(psql, stdin=loader.stdout, check=True, stdout=subprocess.DEVNULL)
-    loader.stdout.close()
-    if loader.wait():
-        raise SystemExit("load_taxi_trips.py failed")
+    stack.load_taxi_trips(1, "taxi")
 
 
 def money(value: float | None) -> decimal.Decimal | None:

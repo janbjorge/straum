@@ -1,4 +1,5 @@
-"""When Straum and PostgreSQL answer alike, and how the bench writes a time.
+"""When Straum and PostgreSQL answer alike, and how the bench times a run
+and writes a time.
 
 bench/taxi.py hands `alike` Straum's rows, decoded with their decimals as
 decimals, and PostgreSQL's rows as asyncpg read them. Each row goes to
@@ -10,7 +11,10 @@ bench's packages.
 
 import datetime
 import decimal
+import statistics
+import time
 from collections import Counter
+from collections.abc import Awaitable, Callable
 
 
 def alike(straum: list[list], postgres: list[list]) -> bool:
@@ -53,6 +57,17 @@ def plain(row: list, places: list[decimal.Decimal | None]) -> tuple:
                 value = value.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         values.append(value)
     return tuple(values)
+
+
+async def median(run: Callable[[], Awaitable[object]]) -> float:
+    """Median seconds of `run` over at least a second and five runs."""
+    times: list[float] = []
+    end = time.perf_counter() + 1
+    while len(times) < 5 or time.perf_counter() < end:
+        start = time.perf_counter()
+        await run()
+        times.append(time.perf_counter() - start)
+    return statistics.median(times)
 
 
 def duration(seconds: float) -> str:

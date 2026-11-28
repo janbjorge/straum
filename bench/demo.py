@@ -19,14 +19,11 @@ go to bench/data, which git ignores.
 
 import argparse
 import asyncio
-import contextlib
 import pathlib
 import secrets
-import statistics
-import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -34,15 +31,14 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import asyncpg
 import orjson
-from answers import duration
-from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_service
+from answers import duration, median
+from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, connected, postgres_service
 
 type Rows = Sequence[Mapping[str, Any]]
 type Counts = dict[str | None, int]
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "demo.sql"
-DATA = ROOT / "bench" / "data"
 IMAGE = "ghcr.io/janbjorge/straum"
 # The newest release; --tag names another (ADR-0012).
 TAG = "latest"
@@ -56,7 +52,6 @@ MONTH = (
     datetime(2024, 1, 1, tzinfo=NEW_YORK_TZ),
     datetime(2024, 2, 1, tzinfo=NEW_YORK_TZ),
 )
-NEW_YORK = {"timezone": "America/New_York"}
 NEWARK = 1
 JFK = 132
 LAGUARDIA = 138
@@ -106,24 +101,13 @@ def main() -> int:
         return asyncio.run(run(stack, password))
 
 
-@contextlib.asynccontextmanager
-async def connected(url: str) -> AsyncIterator[asyncpg.Connection]:
-    """A connection to PostgreSQL at `url`, in New York's zone, closed on
-    the way out."""
-    pg = await asyncpg.connect(url, server_settings=NEW_YORK)
-    try:
-        yield pg
-    finally:
-        await pg.close()
-
-
 async def run(stack: Stack, password: str) -> int:
     started = time.perf_counter()
     port = stack.port(POSTGRES, POSTGRES_PORT)
     server = f"postgres://postgres:{password}@127.0.0.1:{port}/postgres"
     async with connected(server) as pg:
         log("loading January")
-        load(stack)
+        stack.load_taxi_trips(1)
         await pg.execute("ANALYZE")
         await apply_plan(pg, stack)
         trips = await pg.fetchval("SELECT count(*) FROM yellow_trips")
@@ -157,21 +141,6 @@ def straum(password: str, image: str) -> dict:
         "volumes": [f"{SPEC}:{SPEC_IN_IMAGE}:ro"],
         "ports": [{"target": STRAUM_PORT, "host_ip": "127.0.0.1"}],
     }
-
-
-def load(stack: Stack) -> None:
-    loader = subprocess.Popen(
-        [ROOT / "bench" / "load_taxi_trips.py", "--months", "1", "--data", DATA],
-        stdout=subprocess.PIPE,
-    )
-    stdout = loader.stdout
-    if stdout is None:
-        raise SystemExit("demo: loader has no stdout")
-    with stdout:
-        psql = stack.exec_args(POSTGRES, "psql", "-U", "postgres", "-q")
-        subprocess.run(psql, stdin=stdout, check=True)
-    if loader.wait():
-        raise SystemExit("demo: load_taxi_trips.py failed")
 
 
 async def apply_plan(pg: asyncpg.Connection, stack: Stack) -> None:
@@ -346,16 +315,6 @@ def ask_body(query: str, parameters: Sequence[object]) -> bytes:
 
 def tally(rows: Rows) -> Counts:
     return {row["borough"]: row["trips"] for row in rows}
-
-
-async def median(run: Callable[[], Awaitable[object]]) -> float:
-    times: list[float] = []
-    end = time.perf_counter() + 1
-    while len(times) < 5 or time.perf_counter() < end:
-        start = time.perf_counter()
-        await run()
-        times.append(time.perf_counter() - start)
-    return statistics.median(times)
 
 
 def dsn(password: str) -> str:

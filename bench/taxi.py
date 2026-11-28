@@ -71,7 +71,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import AsyncIterator
 
 import aiohttp
 import asyncpg
@@ -79,7 +78,7 @@ import orjson
 import psutil
 import retention
 import tabulate
-from answers import alike, duration
+from answers import alike, duration, median
 from materialized import (
     MATERIALIZED_ASKS,
     MATERIALIZED_VIEWS,
@@ -93,6 +92,7 @@ from stack import (
     POSTGRES_PORT,
     Stack,
     build_environment,
+    connected,
     git_version,
     postgres_service,
     run_environment,
@@ -101,8 +101,6 @@ from stack import (
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "trips.sql"
 MONTHS = 6
-DATA = ROOT / "bench" / "data"
-NEW_YORK = {"timezone": "America/New_York"}
 
 # The asks name a range from 2000 to 2030, which holds every trip, so each
 # matches SQL without one; an ask may leave either end open too.
@@ -362,7 +360,7 @@ async def run(
         await pg.execute("ALTER SYSTEM SET synchronous_commit = off")
         await pg.execute("SELECT pg_reload_conf()")
         log(f"loading {MONTHS} months")
-        load(stack)
+        stack.load_taxi_trips(MONTHS)
         # The asks over a week or a day read this index.
         await pg.execute("CREATE INDEX ON yellow_trips (pickup_at)")
         await pg.execute("VACUUM ANALYZE")
@@ -399,17 +397,6 @@ async def run(
                 return await retention_runs(pg, straum, dsn, flags)
             case _:
                 return await asks(pg, straum, dsn, flags)
-
-
-@contextlib.asynccontextmanager
-async def connected(url: str) -> AsyncIterator[asyncpg.Connection]:
-    """A connection to PostgreSQL at `url`, in New York's zone, closed on
-    the way out."""
-    pg = await asyncpg.connect(url, server_settings=NEW_YORK)
-    try:
-        yield pg
-    finally:
-        await pg.close()
 
 
 async def shell(straum: str, dsn: str, flags: list[str]) -> int:
@@ -763,24 +750,6 @@ def print_table(rows: list, headers: list[str], align: str) -> None:
     )
 
 
-def load(stack: Stack) -> None:
-    loader = subprocess.Popen(
-        [
-            ROOT / "bench" / "load_taxi_trips.py",
-            "--months",
-            str(MONTHS),
-            "--data",
-            DATA,
-        ],
-        stdout=subprocess.PIPE,
-    )
-    psql = stack.exec_args(POSTGRES, "psql", "-U", "postgres", "-q")
-    subprocess.run(psql, stdin=loader.stdout, check=True)
-    loader.stdout.close()
-    if loader.wait():
-        raise SystemExit("load_taxi_trips.py failed")
-
-
 def postgres(password: str, wal: str) -> dict:
     # Reads see the defaults but for shared_buffers, sized as a server
     # would be. The rest only speed the load: no checkpoint midway and
@@ -904,17 +873,6 @@ async def check(
     if not alike(got, expected):
         raise SystemExit(f"taxi: {name}: Straum answered {got}, PostgreSQL {expected}")
     return len(got)
-
-
-async def median(run) -> float:
-    """Median seconds of `run` over at least a second and five runs."""
-    times = []
-    end = time.perf_counter() + 1
-    while len(times) < 5 or time.perf_counter() < end:
-        start = time.perf_counter()
-        await run()
-        times.append(time.perf_counter() - start)
-    return statistics.median(times)
 
 
 async def ask_until(http: aiohttp.ClientSession, done, at_least: float) -> list[float]:

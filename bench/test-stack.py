@@ -19,7 +19,8 @@ bench/materialized.py writes the materialized views and the asks over them
 that bench/taxi.py's materialized mode times, and bench/retention.py the
 specs and asks of its retention mode. bench/load_usage_events.py
 compares its sample with the trace; a test moves the sample to see
-the check stop it.
+the check stop it. Stack.load_taxi_trips gets a fake loader and a psql
+that fails.
 """
 
 import argparse
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import uuid
 
 import numpy
@@ -125,6 +127,23 @@ class RunEnvironment(unittest.TestCase):
     def test_drops_the_caller_s_straum_and_pg_variables(self):
         environ = {"STRAUM_DSN_FILE": "/run/dsn", "PGHOST": "db", "PATH": "/bin"}
         self.assertEqual(COPIES[0].run_environment(environ), {"PATH": "/bin"})
+
+
+class LoadTaxiTrips(unittest.TestCase):
+    def test_a_failed_psql_closes_the_pipe_from_the_loader(self):
+        read, write = os.pipe()
+        self.addCleanup(os.close, write)
+        loader = unittest.mock.Mock(stdout=os.fdopen(read, "rb"))
+        stack = COPIES[0]
+        with (
+            unittest.mock.patch.object(stack.subprocess, "Popen", return_value=loader),
+            unittest.mock.patch.object(
+                stack.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "psql")
+            ),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            stack.Stack("straum-test", {}).load_taxi_trips(1)
+        self.assertTrue(loader.stdout.closed)
 
 
 class ProjectNames(unittest.TestCase):
