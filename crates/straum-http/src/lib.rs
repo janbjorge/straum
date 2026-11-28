@@ -95,9 +95,22 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// How long a stop waits for the requests in flight: inside the 30 s a
 /// Kubernetes pod gets before it is killed.
 pub const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+/// The open files Straum lives in: the soft limit that a container gets
+/// by default. Straum neither reads nor raises it (ADR-0021).
+pub const OPEN_FILES: usize = 1024;
+/// The open files Straum holds for itself at most. Measured on
+/// 2026-11-28 with PostgreSQL 18 and `--health-listen`, the peak came at
+/// the end of the load with `--wal physical`: 22. That is stdin, stdout
+/// and stderr, the two listeners, the status file of the memory watch,
+/// three of the runtime, three Unix sockets for its signals and ten
+/// PostgreSQL connections. `--wal logical` held 19. Two more cover the
+/// root certificate file that a TLS connection reads when it starts, for
+/// the writer and the watchdog, which can connect at the same time.
+pub const OWN_FILES: usize = 24;
 /// The connections `straum run` serves at once: each holds a file
-/// descriptor, and its answer within `max_answer_bytes`.
-pub const MAX_CONNECTIONS: usize = 1024;
+/// descriptor, and its answer within `max_answer_bytes`. With the health
+/// checks and Straum's own files, they fill [`OPEN_FILES`] and no more.
+pub const MAX_CONNECTIONS: usize = OPEN_FILES - MAX_HEALTH_CONNECTIONS - OWN_FILES;
 /// How long `straum run` keeps a connection open: far past any answer a
 /// client reads, so only a client that stalls is cut.
 pub const CONNECTION_DEADLINE: Duration = Duration::from_secs(300);

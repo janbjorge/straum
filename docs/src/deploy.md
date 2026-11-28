@@ -85,10 +85,14 @@ runs, a rebound page in a browser on that machine can read it.
 
 ## Connections
 
-Straum serves at most 1024 connections at once. It does not accept a
-connection past that limit. The connection waits in the listen backlog
-until another connection closes. Straum cuts a connection that sends no
-request head for 5 s, from when it opens or from its last reply.
+Straum serves at most 984 connections at once. Straum lives inside 1024
+open files, the soft limit that a container gets by default, and does
+not raise it. The health listener takes 16 of the 1024, and Straum
+holds 24 for itself: its PostgreSQL connections, listeners and files.
+Straum does not accept a connection past that limit. The connection
+waits in the listen backlog until another connection closes. Straum
+cuts a connection that sends no request head for 5 s, from when it
+opens or from its last reply.
 
 Straum writes each answer in memory. It keeps the answer until it sends
 the last byte, so a client that does not read keeps its answer in
@@ -106,7 +110,7 @@ Straum reads it. A body without a `Content-Length` holds 1 MiB. An ask
 gets 503 busy when too few bytes are free, so slow bodies cannot fill
 the memory.
 
-A client that opens more than about 205 idle connections each second
+A client that opens more than about 197 idle connections each second
 still holds the limit. Then a health check on that port gets no
 answer, and Kubernetes restarts the pod. `--health-listen ADDRESS`
 serves `/livez`, `/readyz` and `/status` on a second port, with 16
