@@ -1,7 +1,8 @@
 //! The spec examples in the README and the guide parse, so an example can't
 //! drift from the grammar without a test saying which one. Each page's
 //! `sql` fences that hold a whole spec are cut out and parsed. The spec
-//! files the benchmarks and the demo run parse whole. The asks of the
+//! files the benchmarks and the demo run parse whole, and so does the
+//! trips spec of the quick start's compose file. The asks of the
 //! `usage` view are cut out the same way, parsed, and checked against the
 //! `usage` view of the Spec page.
 
@@ -312,6 +313,28 @@ fn every_spec_file_parses() {
         if let Err(error) = straum_notation::parse(file.markdown) {
             panic!("{}: {error}", file.name);
         }
+    }
+}
+
+/// The quick start's compose file holds a copy of the trips spec in its
+/// `trips` config. Straum runs that copy, so it must parse.
+#[test]
+fn the_quick_start_spec_parses() {
+    let compose = include_str!("../../../docs/compose/quick-start.yaml");
+    let Some((_, rest)) = compose.split_once("  trips:\n    content: |\n") else {
+        panic!("docs/compose/quick-start.yaml has no trips config");
+    };
+    let mut lines = Vec::new();
+    for line in rest.lines() {
+        let Some(text) = line.strip_prefix("      ") else {
+            break;
+        };
+        lines.push(text);
+    }
+    let spec = lines.join("\n");
+    assert!(spec.starts_with("CREATE VIEW trips AS"), "{spec}");
+    if let Err(error) = straum_notation::parse(&spec) {
+        panic!("docs/compose/quick-start.yaml: {error}");
     }
 }
 
