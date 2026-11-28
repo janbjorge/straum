@@ -197,9 +197,11 @@ impl Records {
     }
 
     /// Where the record after the last one read or passed by may start:
-    /// every record before it is done with.
+    /// every record before it is done with. It is never past the bytes
+    /// fed: the stream reports it, and the server removes the WAL before
+    /// it, also WAL that it has not sent yet.
     pub(crate) fn passed(&self) -> u64 {
-        self.passed
+        self.passed.min(self.wanted())
     }
 
     /// The LSN the next fed bytes must start at.
@@ -252,7 +254,8 @@ impl Records {
             decode_into(span.start, span.end, &mut self.record)?;
             // The zeros after a switch hold no record, and an idle server
             // writes none after them: the server stands at the segment's
-            // end, so the stream must say it has passed them.
+            // end, so the stream must say it has passed them once they
+            // come. `passed` waits for them.
             if self.record.is_switch() {
                 self.next = span.end.div_ceil(self.segment_size) * self.segment_size;
             } else {

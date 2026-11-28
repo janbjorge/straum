@@ -109,6 +109,31 @@ fn passes_the_padding_a_switch_leaves() {
     assert_eq!(record_end(inserted, SEGMENT), straum_app::Lsn(passed));
 }
 
+/// The zeros after a switch come after the switch record, maybe much
+/// later. Until they come, the reader must not say that it passed them:
+/// the stream reports `passed`, and the server can then remove the
+/// segment before it sends them.
+#[test]
+fn passes_no_further_than_the_bytes_fed_after_a_switch() {
+    let mut rng = Rng(5);
+    let specs = [random_spec(&mut rng), switch()];
+    let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
+    let laid_out = lay_out(MAJOR, SEGMENT, &assembled);
+    let switch_end = offset(laid_out.lsns[1]) + assembled[1].len();
+    let mut records = Records::new(laid_out.lsns[0], SEGMENT, MAJOR);
+    records.feed(SEGMENT, &laid_out.wal[..switch_end]).unwrap();
+    for _ in &specs {
+        assert!(records.next_record().unwrap().is_some());
+    }
+    assert!(records.wanted() < 2 * SEGMENT);
+    assert!(
+        records.passed() <= records.wanted(),
+        "passed {:#x}, fed up to {:#x}",
+        records.passed(),
+        records.wanted()
+    );
+}
+
 #[test]
 fn passes_no_further_than_a_record_mid_segment() {
     let mut rng = Rng(5);
