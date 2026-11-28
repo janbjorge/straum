@@ -437,7 +437,9 @@ impl StreamThread {
             if self.shared.stop.load(Ordering::Acquire) {
                 return Ok(false);
             }
-            if self.last_report.elapsed() >= REPORT_INTERVAL {
+            // An error waits without a report: a report that fails would
+            // drop the error, and the writer would see only a stop.
+            if item.is_ok() && self.last_report.elapsed() >= REPORT_INTERVAL {
                 self.report()?;
             }
             thread::sleep(WAIT);
@@ -578,7 +580,7 @@ const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
 mod tests {
     use super::*;
 
-    use crate::tests::support::{STREAM_MEMORY, now, scripted, signed_in};
+    use crate::tests::support::{STREAM_MEMORY, later, now, scripted, signed_in};
     use crate::wire::ConnectionKind;
     use straum_app::Change;
     use straum_domain::{Datum, Identifier};
@@ -666,6 +668,31 @@ mod tests {
                 "{count}"
             );
         }
+    }
+
+    /// A stream that fails with a full queue and a closed connection still
+    /// queues its error: the check gives it, not a stream that stopped.
+    #[test]
+    fn a_full_queue_keeps_the_error_when_the_server_is_gone() {
+        let (mut stream, mut thread) = ends(STREAM_MEMORY);
+        stream.shared.loading.store(false, Ordering::Release);
+        for _ in 0..QUEUE {
+            assert!(thread.deliver(Ok(commit_of(1))).unwrap());
+        }
+        // A server that has not ended the stream, so the shutdown takes.
+        let server = scripted(vec![now(signed_in()), later(STALL, Vec::new())]);
+        thread.connection = Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap();
+        thread.connection.closer().unwrap().close();
+        assert!(thread.report().is_err());
+        // A report is due, and the server cannot take it.
+        thread.last_report = Instant::now().checked_sub(REPORT_INTERVAL).unwrap();
+        let handle = thread::spawn(move || thread.fail(Error::Protocol(Unexpected::StreamEnded)));
+        stream.thread = Some(handle);
+        while !stream.shared.failed.load(Ordering::Acquire) {
+            thread::sleep(WAIT);
+        }
+        let error = stream.check().unwrap_err().to_string();
+        assert_eq!(error, "PostgreSQL sent a message that ended the stream");
     }
 
     /// The queue takes commits until their changes reach the bound, and
