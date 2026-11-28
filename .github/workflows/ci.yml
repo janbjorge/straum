@@ -138,6 +138,9 @@ jobs:
   # ones, and a failure names its seed.
   correctness:
     runs-on: ubuntu-latest
+    # A run takes about 2 minutes. A test that waits on a step that never
+    # ends fails here, and does not hold the runner and a release for 6 hours.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
