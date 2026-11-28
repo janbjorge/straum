@@ -93,12 +93,30 @@ fn statements(text: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
     Ok(statements)
 }
 
-/// `sqlparser`'s error, which knows no line of its own.
+/// `sqlparser`'s error, which knows no line of its own. It quotes the
+/// token that it found whole, so the token is cut as a quote is.
 fn parser_error(error: &ParserError) -> Vec<SqlError> {
+    let message = error.to_string();
+    let message = match message.split_once(", found: ") {
+        Some((expected, found)) => {
+            let (token, at) = found.split_at(found.rfind(" at Line: ").unwrap_or(found.len()));
+            format!("{expected}, found: {}{at}", cut(token))
+        }
+        None => message,
+    };
     vec![SqlError {
         line: None,
-        message: error.to_string(),
+        message,
     }]
+}
+
+/// `text` cut after [`QUOTE_CHARACTERS`] characters: a name or a value
+/// of an ask may be a mebibyte long, and an error quotes only its start.
+fn cut(text: &str) -> String {
+    match text.char_indices().nth(QUOTE_CHARACTERS) {
+        Some((end, _)) => format!("{}...", &text[..end]),
+        None => text.to_owned(),
+    }
 }
 
 /// The error for the first statement of `tokens` with more than
@@ -292,11 +310,7 @@ impl Walker {
     fn refuse(&mut self, line: u64, what: &str, node: &impl fmt::Display) {
         let text = node.to_string();
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let text = match text.char_indices().nth(QUOTE_CHARACTERS) {
-            Some((end, _)) => format!("{}...", &text[..end]),
-            None => text,
-        };
-        self.not_in_subset(line, &format!("{what} `{text}`"));
+        self.not_in_subset(line, &format!("{what} `{}`", cut(&text)));
     }
 
     /// The plain GROUP BY list, the only form a view or an ask uses.
@@ -351,12 +365,12 @@ impl Walker {
         if *value != lower {
             self.error(
                 span.start.line,
-                format!("{value}: write names in lowercase, {lower}"),
+                format!("{}: write names in lowercase, {}", cut(value), cut(&lower)),
             );
             return Err(Reported);
         }
         let Some(read) = Identifier::new(value) else {
-            self.error(span.start.line, format!("bad identifier {value}"));
+            self.error(span.start.line, format!("bad identifier {}", cut(value)));
             return Err(Reported);
         };
         Ok(read)
@@ -381,7 +395,8 @@ impl Walker {
     fn bare_name(&mut self, name: &sql::ObjectName, what: &str) -> Result<Identifier, Reported> {
         let sql::ObjectName(parts) = name;
         let [part] = parts.as_slice() else {
-            self.error(line(name), format!("{what} {name} must be a bare name"));
+            let quoted = cut(&name.to_string());
+            self.error(line(name), format!("{what} {quoted} must be a bare name"));
             return Err(Reported);
         };
         self.name_part(name, part)
@@ -620,7 +635,7 @@ impl Walker {
         for part in parts {
             let written = part.to_string();
             if seen.contains(&written) {
-                self.error(line(part), format!("{written} given twice"));
+                self.error(line(part), format!("{} given twice", cut(&written)));
                 continue;
             }
             seen.insert(written);
@@ -646,7 +661,7 @@ impl Walker {
         for item in list {
             let written = item.to_string();
             if seen.contains(&written) {
-                self.error(line(item), format!("{written} given twice"));
+                self.error(line(item), format!("{} given twice", cut(&written)));
                 failed = true;
                 continue;
             }

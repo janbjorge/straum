@@ -132,7 +132,10 @@ impl<'de> Visitor<'de> for JsonVisitor {
                 return Ok(Json::Number(map.next_value_seed(NumberText)?));
             }
             if !seen.insert(name.clone()) {
-                return Err(de::Error::custom(format!("key {name:?} given twice")));
+                return Err(de::Error::custom(format!(
+                    "key {:?} given twice",
+                    cut(&name)
+                )));
             }
             let value = map.next_value()?;
             fields.push(Field { name, value });
@@ -167,6 +170,19 @@ impl Visitor<'_> for NumberText {
 
     fn visit_str<E: de::Error>(self, _: &str) -> Result<String, E> {
         Err(E::custom(format!("key {NUMBER:?} is serde_json's own")))
+    }
+}
+
+/// How much of a client's token an error quotes before it cuts, as the
+/// SQL walker of straum-notation quotes a construct.
+const QUOTE_CHARACTERS: usize = 60;
+
+/// `text` cut after [`QUOTE_CHARACTERS`] characters: a key or a number
+/// of a body may be a mebibyte long, and an error quotes only its start.
+pub(crate) fn cut(text: &str) -> String {
+    match text.char_indices().nth(QUOTE_CHARACTERS) {
+        Some((end, _)) => format!("{}...", &text[..end]),
+        None => text.to_owned(),
     }
 }
 

@@ -482,6 +482,32 @@ fn a_body_of_many_errors_gets_a_short_reply() {
     server.stop();
 }
 
+/// A body may hold one token of almost 1 MiB: a number, a field name, or
+/// a key given twice. Each error said its token whole, so the reply was
+/// as large as the body, and no budget counted its bytes.
+#[test]
+fn an_error_does_not_repeat_a_long_token() {
+    let server = serve(writer().app().clone());
+    let digits = "1".repeat((1 << 20) - 64);
+    let key = "k".repeat((1 << 19) - 64);
+    let bodies = [
+        format!(r#"{{"query": "SELECT", "parameters": [{digits}]}}"#),
+        format!(r#"{{"query": "SELECT", "{digits}": 1}}"#),
+        format!(r#"{{"{key}": 1, "{key}": 1}}"#),
+    ];
+    let mut sizes = Vec::new();
+    for body in &bodies {
+        let reply = call(server.address, "POST", "/ask", body);
+        assert_eq!(reply.status, 400, "{} bytes", reply.body.len());
+        sizes.push(reply.body.len());
+    }
+    assert!(
+        sizes.iter().all(|size| *size < 8 * 1024),
+        "reply bytes: {sizes:?}"
+    );
+    server.stop();
+}
+
 /// One ask of 1,000 wrong values in an IN list made 1,000 lines; the
 /// reply says the first 50 and counts the rest, as for a body.
 #[test]

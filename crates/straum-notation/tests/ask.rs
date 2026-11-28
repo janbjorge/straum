@@ -1069,3 +1069,24 @@ fn a_long_ask_with_many_not_equals_reads_quickly() {
     assert_eq!(parsed.having.len(), 250);
     assert!(took < Duration::from_secs(5), "took {took:?}");
 }
+
+/// A name, a value or a token of an ask may be a mebibyte long. Each
+/// error quoted it whole, so a reply was as large as the ask.
+#[test]
+fn an_error_quotes_only_the_start_of_a_long_token() {
+    let long = "k".repeat(1 << 16);
+    let upper = long.to_uppercase();
+    let queries = [
+        format!("SELECT a{long} FROM t"),
+        format!("SELECT {upper} FROM t"),
+        format!("SELECT trips FROM t WHERE kind IN ('{long}', '{long}')"),
+        format!("SELECT trips FROM t WHERE kind = '{long}' AND kind = '{long}'"),
+        format!("SELECT trips FROM a.{long}"),
+        format!("SELECT trips FROM t '{long}'"),
+    ];
+    let mut lengths = Vec::new();
+    for query in &queries {
+        lengths.extend(errors(query, &[]).iter().map(String::len));
+    }
+    assert!(lengths.iter().all(|length| *length < 1024), "{lengths:?}");
+}

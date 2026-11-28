@@ -20,7 +20,7 @@ use std::fmt;
 
 use straum_domain::{Literal, MAX_SCALE};
 
-use crate::json::{Json, JsonError};
+use crate::json::{Json, JsonError, cut};
 
 /// An ask as sent, before the `ReadAsk` reads its query.
 #[derive(Debug, PartialEq)]
@@ -74,7 +74,7 @@ impl fmt::Display for BodyError {
             BodyError::ParametersNotArray { kind } => {
                 write!(formatter, "\"parameters\" must be an array, not {kind}")
             }
-            BodyError::UnknownField(name) => write!(formatter, "unknown field {name:?}"),
+            BodyError::UnknownField(name) => write!(formatter, "unknown field {:?}", cut(name)),
             BodyError::QueryMissing => formatter.write_str("\"query\" is missing"),
             BodyError::ParameterType { index, kind } => write!(
                 formatter,
@@ -84,9 +84,10 @@ impl fmt::Display for BodyError {
             ),
             BodyError::NumberTooLong { index, number } => write!(
                 formatter,
-                "\"parameters[{}]\" (${}) {number} has more digits than Straum keeps exactly",
+                "\"parameters[{}]\" (${}) {} has more digits than Straum keeps exactly",
                 index.0,
-                index.0 + 1
+                index.0 + 1,
+                cut(number)
             ),
             BodyError::More(count) => write!(formatter, "and {count} more errors"),
         }

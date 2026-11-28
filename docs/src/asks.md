@@ -285,7 +285,7 @@ write is in, so give up after a timeout or fall back to `as_of`.
 | Status | When |
 | --- | --- |
 | 200 | The answer. |
-| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An answer of more rows than [`--max-answer-rows`](cli.md#straum-run) allows, 100,000 by default, is refused too, since it is written whole in memory: narrow the ask. So is an answer larger than all the bytes that unread answers may hold, or of 4 GiB or more: `the answer has at least N bytes, past the M that one answer may hold` ([Connections](deploy.md#connections)). |
+| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. An error quotes at most the first 60 characters of a name, a value or a key of the ask, then `...`. An answer of more rows than [`--max-answer-rows`](cli.md#straum-run) allows, 100,000 by default, is refused too, since it is written whole in memory: narrow the ask. So is an answer larger than all the bytes that unread answers may hold, or of 4 GiB or more: `the answer has at least N bytes, past the M that one answer may hold` ([Connections](deploy.md#connections)). |
 | 405 | Not a `POST`. |
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
