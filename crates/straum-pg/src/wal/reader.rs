@@ -346,9 +346,7 @@ impl Records {
                 read_u32(&bytes[RECORD_LENGTH])
             }
         };
-        let Ok(total_length) = usize::try_from(total_length) else {
-            return Err(at(start, Problem::Length));
-        };
+        let total_length = total_length as usize;
         if !(RECORD_HEADER..=MAX_RECORD).contains(&total_length) {
             return Err(at(start, Problem::Length));
         }

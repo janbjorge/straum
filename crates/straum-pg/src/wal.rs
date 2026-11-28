@@ -144,7 +144,6 @@ pub(crate) enum Problem {
     TooManyColumns,
     UnknownLength,
     CompressedWithoutSize,
-    ValueTooBig,
     UnknownCompression,
     ValueNotDecompressing,
     WrongLength,
@@ -183,7 +182,6 @@ impl fmt::Display for Problem {
             Problem::TooManyColumns => "a row with more columns than its table",
             Problem::UnknownLength => "a column of unknown length",
             Problem::CompressedWithoutSize => "a compressed value without its size",
-            Problem::ValueTooBig => "a value too big",
             Problem::UnknownCompression => "a value compressed in a way Straum can't read",
             Problem::ValueNotDecompressing => "a value that doesn't decompress",
             Problem::WrongLength => "a value of the wrong length for its type",
@@ -256,7 +254,7 @@ mod tests {
     use super::*;
 
     /// Every problem, and the words it says.
-    const EVERY_PROBLEM: [(Problem, &str); 32] = [
+    const EVERY_PROBLEM: [(Problem, &str); 31] = [
         (
             Problem::PageAddress,
             "a page header that names another page",
@@ -323,7 +321,6 @@ mod tests {
             Problem::CompressedWithoutSize,
             "a compressed value without its size",
         ),
-        (Problem::ValueTooBig, "a value too big"),
         (
             Problem::UnknownCompression,
             "a value compressed in a way Straum can't read",

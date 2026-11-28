@@ -236,9 +236,7 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
     let Some(size_and_method) = u32_at(bytes, TCINFO.start) else {
         return Err(Problem::CompressedWithoutSize);
     };
-    let Ok(size) = usize::try_from(size_and_method & RAW_SIZE_MASK) else {
-        return Err(Problem::ValueTooBig);
-    };
+    let size = (size_and_method & RAW_SIZE_MASK) as usize;
     let stored = &bytes[COMPRESSED_HEADER..];
     let raw = match size_and_method >> METHOD_SHIFT {
         METHOD_PGLZ => compress::pglz(stored, size),
