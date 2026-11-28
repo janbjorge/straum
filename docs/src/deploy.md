@@ -90,8 +90,16 @@ connection past that limit. The connection waits in the listen backlog
 until another connection closes. Straum cuts a connection that sends no
 request head for 5 s, from when it opens or from its last reply.
 
-Each connection holds a file descriptor. If no file descriptor is free,
-Straum cannot accept a connection. Then it logs one line,
+Each connection holds a file descriptor. At its start, `straum run`
+raises its soft limit of open files (`RLIMIT_NOFILE`) to the hard
+limit. A container in Kubernetes on containerd 2, or in Docker 29 and
+later, gets a soft limit of 1024 by default. The connections alone can
+take that many. If the limit cannot hold 1024 connections, 16 health
+checks and the files that Straum has open, Straum does not start. Then
+raise the hard limit, as the `ulimits` key of Compose does.
+
+If no file descriptor is free all the same, Straum cannot accept a
+connection. Then it logs one line,
 `accepting a connection on ADDRESS failed`, and tries again every
 100 ms. It logs again only after an accept succeeds.
 
