@@ -57,9 +57,6 @@ impl Server {
     }
 }
 
-/// Drops a line the server reports: the tests check replies, not logs.
-fn ignore(_: &str) {}
-
 /// Reads asks as Straum SQL, as the binary does.
 fn read_with_notation(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<QueryError>> {
     let sql_errors = match straum_notation::parse_ask(query, parameters) {
@@ -114,7 +111,6 @@ fn serve_limited(app: App, limits: ServeLimits) -> Server {
     let listeners = Listeners {
         main: TcpListener::bind("127.0.0.1:0").unwrap(),
         health: None,
-        report: ignore,
     };
     serve_listening(app, notation(), listeners, Vec::new(), limits)
 }
@@ -127,7 +123,6 @@ fn serve_with_health(app: App, limits: ServeLimits) -> (Server, SocketAddr) {
     let listeners = Listeners {
         main: TcpListener::bind("127.0.0.1:0").unwrap(),
         health: Some(health),
-        report: ignore,
     };
     let server = serve_listening(app, notation(), listeners, Vec::new(), limits);
     (server, health_address)
@@ -139,7 +134,6 @@ fn serve_on(app: App, syntax: AskSyntax, listen: &str, named_hosts: Vec<String>)
     let listeners = Listeners {
         main: TcpListener::bind(listen).unwrap(),
         health: None,
-        report: ignore,
     };
     serve_listening(app, syntax, listeners, named_hosts, SERVE_LIMITS)
 }

@@ -506,7 +506,6 @@ fn run(
     let listeners = Listeners {
         main: listener,
         health: health.map(|bound| bound.listener),
-        report: log,
     };
     let serve_limits = ServeLimits {
         max_answer_rows,

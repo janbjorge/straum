@@ -28,10 +28,6 @@ straum-domain = { path = "../straum-domain" }
 [dev-dependencies]
 tokio = { version = "1.54.1", default-features = false, features = ["sync"] }
 straum-notation = { path = "../straum-notation" }
-# getrlimit and setrlimit without unsafe, which std lacks: a test fills
-# the table of file descriptors to make an accept fail. Cargo.lock holds
-# it already, through rustyline.
-nix = { version = "0.31.4", default-features = false, features = ["resource"] }
 
 [lints]
 workspace = true
