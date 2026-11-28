@@ -159,6 +159,8 @@ struct Snapshot {
     tables: Tables,
     /// The versions of the columns read, as the snapshot sees them.
     versions: Vec<ColumnVersions>,
+    /// The version of the publication, as the snapshot sees it.
+    publication: Option<String>,
     /// Tables not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
     unloaded: Vec<Identifier>,
@@ -238,6 +240,8 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
     let taken = snapshot_time(&mut connection)?;
     let tables = read_in_time(&mut connection, spec, settings, AfterRead::HoldTables)?;
     let versions = catalog::column_versions(&mut connection, &checked(&tables))?;
+    let publication =
+        catalog::publication_version(&mut connection, &checked(&tables), &settings.publication)?;
     // After the import: the slot's connection keeps its snapshot only
     // until its next command.
     let names = replication_literal(&escape_identifier(&settings.publication));
@@ -260,6 +264,7 @@ fn snapshot(settings: &Settings, spec: &Spec, guard: &mut SlotGuard) -> Result<S
         taken,
         tables,
         versions,
+        publication: Some(publication),
         unloaded,
         stream,
     })
@@ -328,6 +333,7 @@ fn physical_snapshot(
         taken,
         tables,
         versions: Vec::new(),
+        publication: None,
         unloaded,
         stream,
     })
@@ -637,6 +643,7 @@ impl Source for Postgres {
             tables: checked(&snapshot.tables),
             labels: snapshot.tables.labels.clone(),
             versions: snapshot.versions.clone(),
+            publication: snapshot.publication.clone(),
         };
         self.state = State::Loading(Box::new(snapshot));
         Ok(Opened { start, at })

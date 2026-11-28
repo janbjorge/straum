@@ -1,10 +1,10 @@
 //! What a running stream checks of its tables with each reading of the
 //! WAL: changes no message the stream reads says. A table is gone from
 //! under its name, another is there, a table inherits from it, the
-//! publication left it out, filters its rows or leaves out an action, a
-//! label of an enum it reads was renamed, or a column it reads was
-//! altered. A `synchronous_standby_names` reloaded since the start
-//! names Straum's connection.
+//! publication left it out, filters its rows, leaves out an action or
+//! was altered since the load, a label of an enum it reads was renamed,
+//! or a column it reads was altered. A `synchronous_standby_names`
+//! reloaded since the start names Straum's connection.
 
 use std::collections::HashMap;
 
@@ -28,15 +28,19 @@ pub(crate) struct Followed {
     /// The versions of the columns read, as loaded; none on the physical
     /// stream, which reads a rewrite in the WAL.
     pub(crate) versions: Vec<ColumnVersions>,
+    /// The version of the publication, as loaded; none on the physical
+    /// stream, which reads no publication.
+    pub(crate) publication: Option<String>,
 }
 
 /// Fails once a table the stream follows is gone from under its name,
 /// another table is there, a table inherits from it, the publication left
-/// it out, filters its rows or leaves out an action, or a label of an
-/// enum it reads was renamed or dropped: none of it sends a message the
-/// stream reads, and a renamed label leaves the rows loaded with the old
-/// one. It fails too once `synchronous_standby_names` names Straum's
-/// connection. The setup check of the next start says what is wrong.
+/// it out, filters its rows, leaves out an action or was altered since the
+/// load, or a label of an enum it reads was renamed or dropped: none of it
+/// sends a message the stream reads, and a renamed label leaves the rows
+/// loaded with the old one. It fails too once `synchronous_standby_names`
+/// names Straum's connection. The setup check of the next start says what
+/// is wrong.
 pub(crate) fn still_followed(
     connection: &mut Connection,
     followed: &Followed,
@@ -89,6 +93,15 @@ pub(crate) fn still_followed(
             publication: publication.to_owned(),
         }));
     }
+    // A change made while the publication left it out did not come.
+    if problems.is_empty()
+        && let Some(loaded) = &followed.publication
+        && *loaded != publication_version(connection, &followed.tables, publication)?
+    {
+        problems.push(Problem::Server(ServerProblem::PublicationChanged {
+            publication: publication.to_owned(),
+        }));
+    }
     relabelled(connection, followed, &mut problems)?;
     altered(connection, followed, &mut problems)?;
     standby_named(connection, &mut problems)?;
@@ -129,6 +142,49 @@ fn publication_rows(
         publication = escape_literal(publication)
     ))?;
     Ok(rows)
+}
+
+/// The version of `publication` for `tables`: the `oid` and `xmin` of its
+/// catalog row, of the row of each table in `pg_publication_rel`, and of
+/// the row of each table's schema in `pg_publication_namespace`. `ALTER
+/// PUBLICATION` writes these rows anew when it drops, adds or filters a
+/// table, or sets the actions it publishes. pgoutput reads each change
+/// with the publication of its time, so a change made between two such
+/// statements does not come, though the publication is then as it was.
+/// The read takes no lock on a table.
+pub(crate) fn publication_version(
+    connection: &mut Connection,
+    tables: &[Checked],
+    publication: &str,
+) -> Result<String, Error> {
+    let mut oids = Vec::new();
+    for table in tables {
+        oids.push(table.oid.to_string());
+    }
+    if oids.is_empty() {
+        return Ok(String::new());
+    }
+    let rows = connection.rows(&format!(
+        "SELECT string_agg(v, ',' ORDER BY v) FROM (
+             SELECT 'publication ' || p.oid || ':' || p.xmin
+               FROM pg_publication p WHERE p.pubname = {publication}
+             UNION ALL
+             SELECT 'table ' || r.oid || ':' || r.xmin
+               FROM pg_publication_rel r JOIN pg_publication p ON p.oid = r.prpubid
+              WHERE p.pubname = {publication} AND r.prrelid IN ({oids})
+             UNION ALL
+             SELECT DISTINCT 'schema ' || s.oid || ':' || s.xmin
+               FROM pg_publication_namespace s JOIN pg_publication p ON p.oid = s.pnpubid
+               JOIN pg_class c ON c.relnamespace = s.pnnspid
+              WHERE p.pubname = {publication} AND c.oid IN ({oids})
+         ) AS t(v)",
+        publication = escape_literal(publication),
+        oids = oids.join(", ")
+    ))?;
+    let Some(Ok([version])) = rows.into_iter().next().map(<[Option<String>; 1]>::try_from) else {
+        return Err(shape("publication version"));
+    };
+    Ok(version.unwrap_or_default())
 }
 
 /// A problem when `synchronous_standby_names` names Straum's connection:

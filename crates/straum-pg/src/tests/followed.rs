@@ -1,14 +1,13 @@
 //! A spec table that stops being the one Straum loaded, with no change
 //! the stream reads to say so: left out of the publication, its rows or
-//! an action filtered out by the publication, renamed away
-//! with another table made under its name, a parent of a table that
-//! inherits from it, a label of an enum it reads renamed, a column it
-//! reads rewritten to its own type or put at another place under its
-//! name. Each reading of the WAL checks the tables, so Straum stops, and
-//! the setup check of the
-//! next start names the problem. A reading after the stream failed gives
-//! the stream's error. The physical stream reads the catalog's
-//! own changes and stops on the DDL itself.
+//! an action filtered out by the publication, also for a time only,
+//! renamed away with another table made under its name, a parent of a
+//! table that inherits from it, a label of an enum it reads renamed, a
+//! column it reads rewritten to its own type or put at another place
+//! under its name. Each reading of the WAL checks the tables, so Straum
+//! stops, and the setup check of the next start names the problem. A
+//! reading after the stream failed gives the stream's error. The physical
+//! stream reads the catalog's own changes and stops on the DDL itself.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -53,8 +52,8 @@ fn a_table_left_out_of_the_publication_stops_the_stream() {
 
 /// A publication altered to leave out an action, or to filter a table's
 /// rows, sends nothing the stream reads, and the totals would drift: the
-/// reading of the WAL finds it. All four actions again, unfiltered, keep
-/// the stream.
+/// reading of the WAL finds it. All four actions again stop the stream
+/// too: an update made between did not come.
 #[test]
 fn a_publication_narrowed_stops_the_stream() {
     let pg = postgres();
@@ -70,7 +69,8 @@ fn a_publication_narrowed_stops_the_stream() {
         db.sql("publication $S must publish insert, update, delete and truncate")
     );
     db.run("ALTER PUBLICATION $S SET (publish = 'insert, update, delete, truncate')");
-    assert!(source.wal().is_ok());
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(error, db.sql(CHANGED));
     db.run(
         "ALTER PUBLICATION $S DROP TABLE $S.trips;
          ALTER PUBLICATION $S ADD TABLE $S.trips WHERE (fare > 0)",
@@ -80,6 +80,57 @@ fn a_publication_narrowed_stops_the_stream() {
         error,
         db.sql("trips: publication $S filters the rows of $S.trips; Straum needs every row")
     );
+}
+
+/// The publication changes and changes back before the next reading of
+/// the WAL, with a change of `trips` between. pgoutput reads each change
+/// with the publication of its time and does not send that change. The
+/// publication is then as Straum loaded it, but the totals drift: the
+/// reading of the WAL finds the change. A `SET TABLE` with the same
+/// tables changes nothing and keeps the stream.
+const UNDONE: [[&str; 3]; 3] = [
+    [
+        "ALTER PUBLICATION $S DROP TABLE $S.trips",
+        "INSERT INTO $S.trips VALUES (2, now(), NULL, 1, 10.00, NULL, 1)",
+        "ALTER PUBLICATION $S ADD TABLE $S.trips",
+    ],
+    [
+        "ALTER PUBLICATION $S SET (publish = 'insert')",
+        "UPDATE $S.trips SET tip = tip + 1",
+        "ALTER PUBLICATION $S SET (publish = 'insert, update, delete, truncate')",
+    ],
+    [
+        "ALTER PUBLICATION $S SET TABLE $S.zones, $S.trips WHERE (fare > 50), $S.logins",
+        "INSERT INTO $S.trips VALUES (2, now(), NULL, 1, 10.00, NULL, 1)",
+        "ALTER PUBLICATION $S SET TABLE $S.zones, $S.trips, $S.logins",
+    ],
+];
+
+/// The error of a publication altered after the load.
+const CHANGED: &str =
+    "publication $S was altered after the load; a change made in between can be missing";
+
+#[test]
+fn a_publication_changed_and_changed_back_stops_the_stream() {
+    let pg = postgres();
+    let mut readings = Vec::new();
+    let mut expected = Vec::new();
+    for (index, [change, write, back]) in UNDONE.into_iter().enumerate() {
+        let mut db = Db::new(&pg, &format!("changedback{index}"), TABLES);
+        db.run(&Rng::new(3).trip(1));
+        let spec = db.spec(SPEC);
+        let mut source = db.pg();
+        source.open(&spec).unwrap();
+        load_all(&mut source, &spec).unwrap();
+        db.run("ALTER PUBLICATION $S SET TABLE $S.zones, $S.trips, $S.logins");
+        assert!(source.wal().is_ok());
+        db.run(change);
+        db.run(write);
+        db.run(back);
+        readings.push((change, source.wal().err().map(|error| error.to_string())));
+        expected.push((change, Some(db.sql(CHANGED))));
+    }
+    assert_eq!(readings, expected);
 }
 
 /// The table renamed away still sends its changes, under its new name:

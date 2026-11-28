@@ -27,7 +27,9 @@ mod followed;
 mod query;
 mod standby;
 
-pub(crate) use followed::{ColumnVersions, Followed, column_versions, still_followed};
+pub(crate) use followed::{
+    ColumnVersions, Followed, column_versions, publication_version, still_followed,
+};
 pub(crate) use query::{labels, locked_tables, query};
 
 /// `server_version_num` is the major times 10 000, plus the minor.

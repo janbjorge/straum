@@ -76,6 +76,11 @@ pub(crate) enum ServerProblem {
     PublicationActions {
         publication: String,
     },
+    /// The publication was altered after the load: a change made while it
+    /// left a spec table out did not come.
+    PublicationChanged {
+        publication: String,
+    },
     /// The physical stream needs a page whole after each checkpoint.
     FullPageWrites {
         setting: String,
@@ -279,6 +284,11 @@ impl fmt::Display for ServerProblem {
             ServerProblem::PublicationActions { publication } => write!(
                 formatter,
                 "publication {publication} must publish insert, update, delete and truncate"
+            ),
+            ServerProblem::PublicationChanged { publication } => write!(
+                formatter,
+                "publication {publication} was altered after the load; \
+                 a change made in between can be missing"
             ),
             ServerProblem::FullPageWrites { setting } => write!(
                 formatter,

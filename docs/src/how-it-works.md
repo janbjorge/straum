@@ -140,8 +140,10 @@ set, resident memory past `--max-memory`
 ([States](deploy.md#states)), on a spec table that is renamed away
 or replaced by another table under its name, on a spec table that
 another table now inherits from, and, on logical decoding, on a
-publication altered to leave a spec table out, filter its rows or stop
-sending inserts, updates, deletes or truncates. It also stops on a
+publication altered after the load in its settings or its spec tables.
+pgoutput does not send a change made while the publication left a spec
+table out, filtered its rows or left out an action, also when the
+publication is changed back before the check. Straum also stops on a
 `synchronous_standby_names` reloaded to name its connection
 ([What Straum checks at start](postgresql.md#what-straum-checks-at-start)).
 It checks for these once a second. The check waits at most 200 ms for
