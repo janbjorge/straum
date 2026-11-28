@@ -95,6 +95,7 @@ from stack import (
     build_environment,
     git_version,
     postgres_service,
+    run_environment,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -329,11 +330,7 @@ def main() -> int:
     straum = build()
     # The plan reads its role from STRAUM_DSN, else PGUSER, else the OS
     # user; the bench's role is straum, whatever the caller exported.
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if name != "STRAUM_DSN" and not name.startswith("PG")
-    }
+    environment = run_environment(os.environ)
     # The plan takes only the role from these; no host is reached.
     environment["PGUSER"] = "straum"
     environment["PGHOST"] = "localhost"
@@ -598,7 +595,7 @@ async def load_under_writes(
             "--listen",
             f"127.0.0.1:{port}",
             *flags,
-            env=os.environ | {"STRAUM_DSN": dsn},
+            env=run_environment(os.environ) | {"STRAUM_DSN": dsn},
         )
         samples = []
         try:
@@ -834,7 +831,7 @@ async def serve(straum: str, dsn: str, *flags: str, spec: pathlib.Path = SPEC):
         "--listen",
         f"127.0.0.1:{port}",
         *flags,
-        env=os.environ | {"STRAUM_DSN": dsn},
+        env=run_environment(os.environ) | {"STRAUM_DSN": dsn},
     )
     try:
         async with aiohttp.ClientSession(

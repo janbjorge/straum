@@ -14,7 +14,9 @@ bench/try_your_data.py carries its own copy, since it runs from a URL
 where this file is not beside it.
 
 A bench that builds Straum builds it with `build_environment`, so the
-binary names the commit it is built from, as a release names its tag.
+binary names the commit it is built from, as a release names its tag. A
+bench that starts Straum gives it `run_environment`, so the caller's
+STRAUM_* and PG* variables do not change the run.
 """
 
 import json
@@ -168,6 +170,17 @@ def build_environment(environ: Mapping[str, str], described: str | None) -> dict
         return built
     built["STRAUM_VERSION"] = described.removeprefix("v")
     return built
+
+
+def run_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """`environ` for a Straum that a bench starts, without each STRAUM_*
+    and PG* variable of the caller. An exported STRAUM_DSN_FILE wins over
+    the bench's STRAUM_DSN, and points Straum at another database."""
+    return {
+        name: value
+        for name, value in environ.items()
+        if not name.startswith(("STRAUM_", "PG"))
+    }
 
 
 def run_name(tool: str, pid: int) -> str:

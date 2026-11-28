@@ -121,6 +121,12 @@ class BuildVersion(unittest.TestCase):
         self.assertNotEqual(described.strip(), "")
 
 
+class RunEnvironment(unittest.TestCase):
+    def test_drops_the_caller_s_straum_and_pg_variables(self):
+        environ = {"STRAUM_DSN_FILE": "/run/dsn", "PGHOST": "db", "PATH": "/bin"}
+        self.assertEqual(COPIES[0].run_environment(environ), {"PATH": "/bin"})
+
+
 class ProjectNames(unittest.TestCase):
     def test_a_run_is_named_for_its_tool_and_process(self):
         for copy in COPIES:
