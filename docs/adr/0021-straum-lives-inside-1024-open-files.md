@@ -14,8 +14,9 @@ https://github.com/moby/moby/issues/51485). Kubernetes has no field of
 a pod for the limit (https://github.com/kubernetes/kubernetes/issues/3595).
 `std` has no call that sets it. Until 2026-11-28 Straum served 1024
 connections at once. At a limit of 1024 they took every file
-descriptor. Then an accept failed, the health listener answered no
-probe, and the next PostgreSQL connection failed, which ended Straum.
+descriptor. Then each accept failed and Straum tried again 10 times a
+second without a log line, the health listener answered no probe, and
+the next PostgreSQL connection failed, which ended Straum.
 
 ## Decision
 
@@ -43,6 +44,21 @@ health port, held for 40 s, gave a peak of 1021 files with
 `--wal physical` and 1018 with `--wal logical`. `/livez` on the
 health port answered 200 to each probe, and Straum ran on.
 
+An accept that fails for a reason of Straum ends Straum: `serve`
+returns the error, and `straum run` logs it and exits with 1
+(ADR-0009). An example is EMFILE, no free file descriptor, which a
+wrong `OWN_FILES` would cause. An accept that fails for one client's
+connection is passed by, else a client could end Straum when it
+closes its own connection at the wrong moment. These are ECONNABORTED,
+a client that gave up before the accept, and the network errors that
+Linux hands over from the new connection (accept(2), "Error handling").
+`std` names some of them: `ConnectionAborted`, `ConnectionReset`,
+`NetworkDown`, `NetworkUnreachable`, `HostUnreachable`,
+`PermissionDenied` and `Unsupported`. It gives EPROTO, ENOPROTOOPT,
+EHOSTDOWN and ENONET no name, so they end Straum. On 2026-11-28 a
+client that reset its connection in the listen backlog made no accept
+fail at all, on Linux 6 and on macOS.
+
 More connections come back only with a higher limit that Straum can
 count on: a field of the pod for the limit in Kubernetes (KEP-5758, at
 alpha on 2026-11-28), or a call in `std` that sets it. Then
@@ -63,3 +79,5 @@ Straum does not take these alternatives:
 - Straum serves 984 connections, not 1024. More clients need another
   Straum.
 - On a host with a higher limit, Straum still uses at most 1024 files.
+- A failed accept that is no client's stops Straum, and the supervisor's
+  restart count shows it.

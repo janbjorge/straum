@@ -96,6 +96,30 @@ fn a_connection_past_the_limit_waits_until_one_closes() {
     server.stop();
 }
 
+/// A client that resets its connection while it waits in the backlog
+/// fails the accept, with ECONNABORTED on Linux. That failure is the
+/// client's, not Straum's: the server passes it by and serves the next.
+#[test]
+fn a_client_that_resets_in_the_backlog_does_not_stop_the_server() {
+    let server = serve_limited(writer().app().clone(), ONE_CONNECTION);
+    let mut first = TcpStream::connect(server.address).unwrap();
+    assert_eq!(livez_kept_open(&mut first, server.address), 200);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let second = tokio::net::TcpStream::connect(server.address)
+            .await
+            .unwrap();
+        // Its drop sends a reset, not a close.
+        second.set_zero_linger().unwrap();
+    });
+    drop(first);
+    assert_eq!(call(server.address, "GET", "/livez", "").status, 200);
+    server.stop();
+}
+
 /// The `timeoutSeconds` of the chart's probes.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 

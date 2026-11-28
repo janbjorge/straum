@@ -743,6 +743,7 @@ mod tests {
                 Failure::StartingWatch(gone()),
                 "starting the memory watch: gone",
             ),
+            (Failure::Serving(gone()), "serving HTTP: gone"),
         ];
         for (failure, said) in cases {
             assert_eq!(failure.to_string(), said);

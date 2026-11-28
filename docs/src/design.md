@@ -69,7 +69,9 @@ connections hold every file descriptor. It reads once before the
 thread starts: a limit it can't read fails the start, and without a
 limit a system with neither runs without the watch. Then `run` builds
 a `Writer` over a `Postgres` source, spawns the writer thread and
-serves HTTP until SIGTERM or SIGINT.
+serves HTTP until SIGTERM or SIGINT. An accept that fails for a reason
+of Straum ends `serve` with the error, and `run` exits 1; an accept
+that fails for one client's connection is passed by.
 
 `run_writer` logs a failed step's error and exits 1, and PostgreSQL
 drops the temporary slot as the connection closes. Straum never retries

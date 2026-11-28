@@ -67,7 +67,7 @@ pub const VERSION: &str = match option_env!("STRAUM_VERSION") {
 };
 
 use std::fmt;
-use std::future::{Future, poll_fn};
+use std::future::{self, Future, poll_fn};
 use std::io;
 use std::net;
 use std::num::NonZero;
@@ -89,9 +89,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
-/// How long to wait before accepting again after an accept fails, as when
-/// the process is out of file descriptors.
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// How long a stop waits for the requests in flight: inside the 30 s a
 /// Kubernetes pod gets before it is killed.
 pub const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
@@ -255,6 +252,7 @@ pub async fn serve(
     };
     let (stop, stopping) = watch::channel(false);
     let health_connections = Arc::new(Semaphore::new(MAX_HEALTH_CONNECTIONS));
+    let mut health_accepting = None;
     if let Some(health) = health {
         // Probes name the pod's address, not the names told for asks.
         let health_served = Served {
@@ -266,18 +264,14 @@ pub async fn serve(
             health_only: true,
             ..served
         };
-        let mut stopped = stopping.clone();
-        let accepting = accept_until(
+        health_accepting = Some(accept_until(
             to_tokio(health)?,
             Arc::clone(&health_connections),
             Arc::new(health_served),
             limits,
             stopping.clone(),
-            async move {
-                stopped.wait_for(is_true).await.ok();
-            },
-        );
-        tokio::spawn(accepting);
+            future::pending(),
+        ));
     }
     let connections = Arc::new(Semaphore::new(limits.max_connections));
     let accepting = accept_until(
@@ -288,15 +282,25 @@ pub async fn serve(
         stopping,
         shutdown,
     );
-    accepting.await;
+    // A failed accept on either listener ends Straum, with no drain.
+    match health_accepting {
+        Some(health_accepting) => first_of(accepting, health_accepting).await?,
+        None => accepting.await?,
+    }
     stop.send_replace(true);
-    // Each connection holds a permit until it closes, so all of them free
-    // means none is open. A stop waits for none past the deadline.
+    drain([
+        (&connections, limits.max_connections),
+        (&health_connections, MAX_HEALTH_CONNECTIONS),
+    ])
+    .await;
+    Ok(())
+}
+
+/// Waits until each connection of `held`, a semaphore and its permits,
+/// has closed, for at most [`DRAIN_DEADLINE`]. Each connection holds a
+/// permit until it closes, so all of them free means none is open.
+async fn drain(held: [(&Arc<Semaphore>, usize); 2]) {
     let every_connection_closed = async {
-        let held = [
-            (&connections, limits.max_connections),
-            (&health_connections, MAX_HEALTH_CONNECTIONS),
-        ];
         for (permits, count) in held {
             let count = u32::try_from(count).unwrap_or(u32::MAX);
             permits.acquire_many(count).await.ok();
@@ -305,11 +309,13 @@ pub async fn serve(
     tokio::time::timeout(DRAIN_DEADLINE, every_connection_closed)
         .await
         .ok();
-    Ok(())
 }
 
 /// Accepts connections on `listener` until `shutdown` completes, each
 /// served from `served` while it holds one of `connections`' permits.
+/// An accept that fails for one client's connection is passed by. Any
+/// other failure is Straum's own, as no free file descriptor, and ends
+/// the loop with an error that names the listener.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
 async fn accept_until(
     listener: TcpListener,
@@ -318,32 +324,56 @@ async fn accept_until(
     limits: ServeLimits,
     stopping: watch::Receiver<bool>,
     shutdown: impl Future<Output = ()>,
-) {
+) -> io::Result<()> {
     let mut shutdown = pin!(shutdown);
+    let address = listener
+        .local_addr()
+        .map_or_else(|error| error.to_string(), |address| address.to_string());
     loop {
         // Past the limit nothing is accepted: the listen backlog holds the
         // next connections until one closes.
         let free = Arc::clone(&connections).acquire_owned();
         let Some(Ok(permit)) = before_shutdown(shutdown.as_mut(), free).await else {
-            return;
+            return Ok(());
         };
         let Some(accepted) = before_shutdown(shutdown.as_mut(), listener.accept()).await else {
-            return;
+            return Ok(());
         };
-        match accepted {
-            Ok((stream, _)) => {
-                let connection = Connection {
-                    stream,
-                    permit,
-                    deadline: limits.connection_deadline,
-                    grace: limits.connection_grace,
-                    stopping: stopping.clone(),
-                };
-                spawn_connection(connection, &served);
+        let stream = match accepted {
+            Ok((stream, _)) => stream,
+            Err(error) if one_client(&error) => continue,
+            Err(error) => {
+                let message = format!("accepting a connection on {address}: {error}");
+                return Err(io::Error::new(error.kind(), message));
             }
-            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
-        }
+        };
+        let connection = Connection {
+            stream,
+            permit,
+            deadline: limits.connection_deadline,
+            grace: limits.connection_grace,
+            stopping: stopping.clone(),
+        };
+        spawn_connection(connection, &served);
     }
+}
+
+/// Whether an accept failed for one client's connection, not for Straum.
+/// A client that gave up before the accept gives ECONNABORTED, and Linux
+/// hands over the network errors that waited on the new connection, which
+/// accept(2) lists under "Error handling". std gives EPROTO, ENOPROTOOPT,
+/// EHOSTDOWN and ENONET of that list no kind, so they end Straum.
+fn one_client(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NetworkDown
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::Unsupported
+    )
 }
 
 /// `listener` as tokio takes it. Needs the runtime entered.
@@ -399,25 +429,26 @@ pub fn serve_until_signal(
         limits,
         shutdown,
     );
-    let result = runtime.block_on(until_done_or(served, second));
+    let result = runtime.block_on(first_of(served, async {
+        second.await;
+        Ok(())
+    }));
     // An answer still running on a blocking thread is not waited for.
     runtime.shutdown_background();
     result
 }
 
-/// `served`'s result, or `Ok` as soon as `cut_short` completes first.
-// `impl Future`: both are `async` blocks, whose types have no name.
-async fn until_done_or(
-    served: impl Future<Output = io::Result<()>>,
-    cut_short: impl Future<Output = ()>,
-) -> io::Result<()> {
-    let mut served = pin!(served);
-    let mut cut_short = pin!(cut_short);
+/// What `first` gives, or what `second` gives if it completes first.
+// Generic: `serve` races two accept loops, and the signal loop races
+// `serve` against a second signal; each is an `async` block.
+async fn first_of<T>(first: impl Future<Output = T>, second: impl Future<Output = T>) -> T {
+    let mut first = pin!(first);
+    let mut second = pin!(second);
     poll_fn(|context| {
-        if let Poll::Ready(result) = served.as_mut().poll(context) {
+        if let Poll::Ready(result) = first.as_mut().poll(context) {
             return Poll::Ready(result);
         }
-        cut_short.as_mut().poll(context).map(Ok)
+        second.as_mut().poll(context)
     })
     .await
 }
@@ -540,5 +571,31 @@ mod tests {
             message: "nope at column 3".to_owned(),
         };
         assert_eq!(anywhere.to_string(), "nope at column 3");
+    }
+
+    /// The errors of one client's connection pass; a failure of Straum,
+    /// such as no free file descriptor, does not.
+    #[test]
+    fn only_the_errors_of_one_client_pass() {
+        use io::ErrorKind::*;
+        for kind in [
+            ConnectionAborted,
+            ConnectionReset,
+            NetworkDown,
+            NetworkUnreachable,
+            HostUnreachable,
+            PermissionDenied,
+            Unsupported,
+        ] {
+            assert!(one_client(&io::Error::from(kind)), "{kind:?}");
+        }
+        // ENFILE and EMFILE, on Linux and on macOS.
+        for errno in [23, 24] {
+            let error = io::Error::from_raw_os_error(errno);
+            assert!(!one_client(&error), "{error}");
+        }
+        for kind in [OutOfMemory, Other, TimedOut] {
+            assert!(!one_client(&io::Error::from(kind)), "{kind:?}");
+        }
     }
 }

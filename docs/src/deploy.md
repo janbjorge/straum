@@ -92,7 +92,8 @@ holds 24 for itself: its PostgreSQL connections, listeners and files.
 Straum does not accept a connection past that limit. The connection
 waits in the listen backlog until another connection closes. Straum
 cuts a connection that sends no request head for 5 s, from when it
-opens or from its last reply.
+opens or from its last reply. An accept that fails for a reason of
+Straum stops it ([States](#states)).
 
 Straum writes each answer in memory. It keeps the answer until it sends
 the last byte, so a client that does not read keeps its answer in
@@ -165,8 +166,11 @@ never understate it.
 A lost connection, a missing setup, a change Straum can't apply, a
 table altered under it, too much WAL retained for its slot, or more
 commits held while the tables load than `--max-stream-memory` allows ends
-the process with exit 1, and the last lines of its log say why. The
-connections close with it, and PostgreSQL drops the temporary slot.
+the process with exit 1, and the last lines of its log say why. So does
+an accept that fails for a reason of Straum, such as no free file
+descriptor. An accept that fails for one client's connection does not
+stop Straum. The connections close with it, and PostgreSQL drops the
+temporary slot.
 Straum keeps no state across a failure and never retries inside the
 process; whatever runs it starts it again, with a wait of its own.
 

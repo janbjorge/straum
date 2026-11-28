@@ -1,6 +1,6 @@
 # ADR-0009: A change that can't apply stops Straum
 
-Status: Accepted 2026-11-10; revised 2026-11-25
+Status: Accepted 2026-11-10; revised 2026-11-28
 
 ## Context
 
@@ -14,7 +14,9 @@ without the server's, and a commit time stops on a quiet database.
 ## Decision
 
 Straum fails hard. Any failure of the writer, at a start or while
-following, logs the error and ends the process with exit 1. Whatever
+following, logs the error and ends the process with exit 1. So does a
+failure of the server: an accept that fails for a reason of Straum
+(ADR-0021). The errors of one client's connection do not stop it. Whatever
 runs Straum starts it again, and the new process loads from a new slot.
 Its snapshot is after the failing commit, so those rows arrive through
 the bulk load (ADR-0007) instead of being held and applied under the

@@ -81,8 +81,8 @@ waits on 3 and tries again; the other failures need a change first.
 
 On a pipe, `straum shell` goes on past a failed command, one that met
 a Straum not ready included, and exits with 1 if any failed. `straum
-run` exits with 1 on any failure to load or follow, for whatever runs
-it to start it again ([States](deploy.md#states)).
+run` exits with 1 on any failure to load, follow or serve, for whatever
+runs it to start it again ([States](deploy.md#states)).
 
 ## straum run
 
