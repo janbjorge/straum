@@ -421,9 +421,22 @@ fn allow_hosts_takes_names_with_their_port() {
         };
         assert_eq!(run.allow_hosts, expected, "{line}");
     }
-    for value in ["localhost:8080,", ",x", "localhost:x", ":8080"] {
+    for value in [
+        "localhost:8080,",
+        ",x",
+        "localhost:x",
+        ":8080",
+        "localhost:8080, 127.0.0.1:8080",
+        "http://straum:8080",
+    ] {
+        // One argument, as a shell passes a quoted value with a space.
+        let mut line = args("run s --wal logical");
+        line.push(format!("--allow-hosts={value}"));
+        let Err(Usage::Wrong { error, .. }) = command_of(&line) else {
+            panic!("{value}");
+        };
         assert_eq!(
-            usage(&format!("run s --wal logical --allow-hosts={value}")),
+            error.to_string(),
             format!(
                 "--allow-hosts takes names with their port, as \
                  localhost:8080,127.0.0.1:8080, not {value:?}"

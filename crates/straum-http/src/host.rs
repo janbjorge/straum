@@ -71,7 +71,11 @@ impl Hosts {
 /// port that is a number if it has one.
 pub fn is_host(text: &str) -> bool {
     let (name, port) = name_and_port(text);
-    !name.is_empty() && port.is_some()
+    // A request can match only the bytes of a `uri-host` and its port
+    // (RFC 3986): hyper drops the spaces around a `Host`, and a URL never
+    // comes in one.
+    let in_host = |byte: u8| byte.is_ascii_alphanumeric() || b"-._~%!$&'()*+;=[]:".contains(&byte);
+    !name.is_empty() && port.is_some() && text.bytes().all(in_host)
 }
 
 /// Whether a request naming `host` is one of `names`, the port of each
@@ -230,6 +234,10 @@ mod tests {
         }
         for text in ["", ":8080", "localhost:", "localhost:x", "localhost:70000"] {
             assert!(!is_host(text), "{text}");
+        }
+        // A client never sends these, so a request can never match them.
+        for text in [" localhost:8080", "localhost:8080 ", "http://straum:8080"] {
+            assert!(!is_host(text), "{text:?}");
         }
     }
 
