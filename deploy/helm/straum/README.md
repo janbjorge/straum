@@ -41,8 +41,8 @@ fail a probe and restart the pod. The Service does not expose it.
 With `wal: physical`, set `maxPageMemory` well under
 `resources.limits.memory`. The rows it bounds come on top of the
 cells, and so do up to three times `maxStreamMemory`. At the defaults,
-`256Mi` and three times `256Mi` fill the whole `1Gi` limit, and
-leave nothing for the cells. So add the memory of the cells to
+`256Mi` and three times `256Mi` fill `1Gi` of the `4Gi` limit, and
+leave `3Gi` for the cells. A bigger spec needs a bigger
 `resources.limits.memory`.
 
 `maxStreamMemory`, `256Mi` by default, bounds the commits straum holds

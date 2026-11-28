@@ -54,9 +54,9 @@ wal: ""
 # open transactions, before it exits 1 and the pod restarts to load every
 # table again; with a Ki, Mi, Gi or Ti suffix. It comes on top of the
 # cells, and so do up to three times maxStreamMemory. At the defaults,
-# 256Mi and three times 256Mi fill the whole 1Gi memory limit, and leave
-# nothing for the cells. So with wal "physical", add the memory of the
-# cells to resources.limits.memory. straum run without the flag takes 1Gi.
+# 256Mi and three times 256Mi fill 1Gi of the 4Gi memory limit, and leave
+# 3Gi for the cells. A bigger spec needs a bigger resources.limits.memory.
+# straum run without the flag takes 1Gi.
 maxPageMemory: "256Mi"
 
 # maxStreamMemory is how many bytes of commits straum may hold, read from
@@ -68,8 +68,8 @@ maxPageMemory: "256Mi"
 # maxMemory, the ask bodies that straum reads and the answers that it has
 # not sent yet can hold this much too. So up to three times it comes on
 # top of the cells, and of maxPageMemory with wal "physical": keep that under
-# resources.limits.memory. The default, 256Mi, is a quarter of the
-# default memory limit, so three times it leaves a quarter for the
+# resources.limits.memory. The default, 256Mi, is a sixteenth of the
+# default 4Gi memory limit, so three times it leaves most of it for the
 # cells. straum run without the flag takes 1Gi.
 maxStreamMemory: "256Mi"
 
@@ -142,9 +142,9 @@ service:
 resources:
   requests:
     cpu: "250m"
-    memory: "1Gi"
+    memory: "4Gi"
   limits:
-    memory: "1Gi"
+    memory: "4Gi"
 
 # serviceAccount is the pod's ServiceAccount. straum never calls the
 # Kubernetes API, so no token is mounted.

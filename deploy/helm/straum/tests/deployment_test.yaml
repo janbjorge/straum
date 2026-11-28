@@ -419,9 +419,9 @@ tests:
           value:
             requests:
               cpu: 250m
-              memory: 1Gi
+              memory: 4Gi
             limits:
-              memory: 1Gi
+              memory: 4Gi
 
   - it: leaves out placement and pull secrets that aren't set
     template: deployment.yaml
