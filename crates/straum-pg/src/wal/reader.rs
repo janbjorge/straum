@@ -438,6 +438,9 @@ impl Records {
                     self.gathering = Some(progress);
                     return Ok(None);
                 };
+                if header.flags & self.page_flags.first_is_overwrite != 0 {
+                    return Err(at(progress.position, Problem::Overwritten));
+                }
                 let left = (length - progress.gathered) as u64;
                 let continues = header.flags & FIRST_IS_CONTINUATION != 0;
                 // Past the record header, the page knows the whole length.

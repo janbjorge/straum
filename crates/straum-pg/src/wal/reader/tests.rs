@@ -531,6 +531,20 @@ fn refuses_an_overwritten_record_where_19_moved_the_flag() {
     assert_eq!(first_problem(19, &wal, SEGMENT), Some(Problem::Overwritten));
 }
 
+/// A crash cut off a record that ran on to the next page, and a new
+/// record was written over that page.
+#[test]
+fn refuses_a_record_overwritten_on_its_second_page() {
+    let LaidOut { mut wal, lsns } = record_across_pages(5);
+    let page = &mut wal[second_page()..];
+    page[PAGE_FLAGS_FIELD.start] &= !FIRST_IS_CONTINUATION.to_le_bytes()[0];
+    set_first_page_flag(page, PageFlags::of_major(MAJOR).first_is_overwrite);
+    assert_eq!(
+        first_problem(MAJOR, &wal, lsns[0]),
+        Some(Problem::Overwritten)
+    );
+}
+
 #[test]
 fn refuses_an_impossible_length() {
     let LaidOut { mut wal, lsns } = one_record();
