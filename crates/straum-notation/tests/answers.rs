@@ -69,6 +69,26 @@ fn an_offset_bound_on_a_timestamp_is_refused() {
     );
 }
 
+/// An offset on the upper bound alone is refused too: after a lower
+/// bound with Z, and with no lower bound.
+#[test]
+fn an_offset_on_the_upper_bound_only_is_refused() {
+    let store = one_row(TimeColumn::Timestamp, JAN);
+    let refused = [
+        "the view's time is a timestamp, so PostgreSQL does not use \
+         the offset of a bound; write the wall clock time of the bound with Z",
+    ];
+    let to = "2024-01-01T01:00:00-05:00";
+    let counted = count(&store, "2024-01-01T00:00:00Z", to);
+    assert_eq!(described(&counted.unwrap_err()), refused);
+    let ask = parse_ask(
+        "SELECT n FROM t WHERE bucket < $1",
+        &[Literal::Text(to.into())],
+    )
+    .unwrap();
+    assert_eq!(described(&store.ask(&ask).unwrap_err()), refused);
+}
+
 #[test]
 fn a_z_bound_on_a_timestamp_answers() {
     let store = one_row(TimeColumn::Timestamp, JAN);
