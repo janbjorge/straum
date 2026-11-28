@@ -465,6 +465,11 @@ fn an_ask_is_one_select_from_one_view() {
             "SELECT DISTINCT is not in Straum SQL",
         ),
         ("SELECT trips FROM t WHERE", &[], "sql parser error"),
+        (
+            "SELECT trips FROM t END SELECT trips FROM t",
+            &[],
+            "`END` after a statement is not in Straum SQL",
+        ),
     ]);
 }
 

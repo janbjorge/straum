@@ -48,6 +48,12 @@ fn view_shapes_outside_the_subset_are_rejected() {
             "SECURE is not in Straum SQL",
         ),
         (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 END x",
+            6,
+            "`END` after a statement is not in Straum SQL",
+        ),
+        (
             "AS",
             "COPY GRANTS AS",
             1,

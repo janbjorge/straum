@@ -79,10 +79,18 @@ fn statements(text: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
         return Err(vec![error]);
     }
     let mut parser = Parser::new(&dialect).with_tokens_with_locations(tokens);
-    match parser.parse_statements() {
-        Ok(statements) => Ok(statements),
-        Err(error) => Err(parser_error(&error)),
+    let statements = parser
+        .parse_statements()
+        .map_err(|error| parser_error(&error))?;
+    // `sqlparser` stops at an `END` after a statement and reads no further.
+    let left = parser.peek_token();
+    if left.token != Token::EOF {
+        return Err(vec![SqlError {
+            line: Some(left.span.start.line),
+            message: format!("`{}` after a statement {NOT_IN_STRAUM_SQL}", left.token),
+        }]);
     }
+    Ok(statements)
 }
 
 /// `sqlparser`'s error, which knows no line of its own.
