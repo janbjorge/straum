@@ -4,12 +4,13 @@
 //! each width kept only for a time with its horizon, per dim its rows
 //! and the view keys that read it. `App::rows_ask` builds, from the spec
 //! and the horizon of the view's width, the ask for every row a view holds.
+//! `App::rows` builds that ask and answers it under one read guard.
 
 use std::ops::Range;
 
-use straum_domain::{Ask, AskKey, ColumnType, Fact, Identifier, Spec, Store, Table, Width};
+use straum_domain::{Ask, AskKey, ColumnType, Fact, Identifier, Spec, Store, Table, Width, Window};
 
-use crate::app::App;
+use crate::app::{AnswerError, Answered, App};
 
 const IN_SPEC: &str = "the store holds every view and dim of its spec";
 
@@ -98,35 +99,56 @@ impl App {
         Some(Held { views, dims })
     }
 
+    /// Whether the spec names the view. It takes no lock.
+    pub fn has_view(&self, view: &str) -> bool {
+        self.spec.fact(view).is_some()
+    }
+
     /// The ask for every row the view holds: each measure by the time and
     /// every key, from the horizon of the view's width, else open, to an
     /// open end.
     /// `None` for a name no view has.
     pub fn rows_ask(&self, view: &str) -> Option<Ask> {
         let fact = self.spec.fact(view)?;
-        // An open start reads the buckets that the horizon dropped, and
-        // the store refuses it.
-        let mut from = None;
-        for horizon in self.read().store.horizons(view).expect(IN_SPEC) {
-            if horizon.width == fact.time.width {
-                from = horizon.kept_from;
-            }
+        Some(rows_ask(&self.read().store, fact))
+    }
+
+    /// The rows of [`App::rows_ask`] that `window` shows. One read guard
+    /// reads the horizon and answers, so no commit moves the horizon past
+    /// the start of the ask.
+    /// `None` for a name no view has.
+    pub fn rows(&self, view: &str, window: Window) -> Option<Result<Answered, AnswerError>> {
+        let fact = self.spec.fact(view)?;
+        let state = self.read();
+        let ask = rows_ask(&state.store, fact);
+        Some(self.answer_in(&state, &ask, Some(window)))
+    }
+}
+
+/// The ask of [`App::rows_ask`], from the horizon that `store` holds.
+fn rows_ask(store: &Store, fact: &Fact) -> Ask {
+    // An open start reads the buckets that the horizon dropped, and the
+    // store refuses it.
+    let mut from = None;
+    for horizon in store.horizons(fact.name.as_str()).expect(IN_SPEC) {
+        if horizon.width == fact.time.width {
+            from = horizon.kept_from;
         }
-        let mut keys = vec![AskKey::Key(fact.time.name.clone())];
-        for key in fact.keys() {
-            keys.push(AskKey::Key(key.clone()));
-        }
-        Some(Ask {
-            view: fact.name.clone(),
-            measures: measure_names(fact),
-            keys,
-            filter: Vec::new(),
-            having: Vec::new(),
-            from,
-            to: None,
-            bounded: None,
-            bound_zone: straum_domain::BoundZone::Utc,
-        })
+    }
+    let mut keys = vec![AskKey::Key(fact.time.name.clone())];
+    for key in fact.keys() {
+        keys.push(AskKey::Key(key.clone()));
+    }
+    Ask {
+        view: fact.name.clone(),
+        measures: measure_names(fact),
+        keys,
+        filter: Vec::new(),
+        having: Vec::new(),
+        from,
+        to: None,
+        bounded: None,
+        bound_zone: straum_domain::BoundZone::Utc,
     }
 }
 

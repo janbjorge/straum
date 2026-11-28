@@ -374,14 +374,14 @@ The other endpoints reuse these paths. `GET /views` takes the read lock
 once and reports what the store holds (`App::held`): per view its
 widths, cells, range of buckets at any width, each width kept for a
 time with its horizon (`Store::horizons`), keys with the types the load
-set, and measures; per dim its rows. `GET /views/NAME` builds an ask of
-its own (`App::rows_ask`), every measure by the bucket and every key over all
-the buckets the view holds, from the horizon of its width when the spec
-keeps that width for a time. It takes a turn first and builds that ask
-on a blocking thread, because `App::rows_ask` reads the horizons under
-the read lock. Then it runs that ask like any other
-(`App::ask_window`). The store builds only the rows of the window asked
-for, at most 1000, and merges only the cells of their groups.
+set, and measures; per dim its rows. `GET /views/NAME` answers an ask
+of its own (`App::rows_ask`), every measure by the bucket and every key
+over all the buckets the view holds, from the horizon of its width when
+the spec keeps that width for a time. It takes a turn first. Then, on a
+blocking thread, `App::rows` takes the read lock once, reads the
+horizon, builds the ask and answers it. Thus no commit moves the horizon
+past the start of the ask. The store builds only the rows of the window
+asked for, at most 1000, and merges only the cells of their groups.
 `GET /views/NAME/spec` replies with the view's `CREATE VIEW` statement,
 which `straum run` cut from the spec's text at start
 (`straum_notation::definitions`); the store never sees it.

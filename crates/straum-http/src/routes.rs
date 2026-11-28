@@ -17,7 +17,7 @@ use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Body, Bytes, Incoming};
 use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
-use straum_app::{AnswerError, App, Lsn};
+use straum_app::{AnswerError, Answered, App, Lsn};
 use straum_domain::{Ask, Cut, Definition, Start, Window};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -158,10 +158,10 @@ pub(crate) async fn handle(
         (&Method::POST, "/ask") => {
             let format = Format::of(accept, Format::Json);
             if is_json(parts.headers.get(CONTENT_TYPE)) {
-                let rows = Rows::Every {
+                let writing = Writing {
+                    format,
                     max_rows: *max_answer_rows,
                 };
-                let writing = Writing { format, rows };
                 post_ask(body, &served, writing).await
             } else {
                 let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
@@ -394,31 +394,26 @@ fn no_view(view: &str) -> Reply {
     )
 }
 
+/// `get_rows` checks the name before it reads the store.
+const HAS_VIEW: &str = "the view is in the spec";
+
 async fn get_rows(served: &Served, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
     let Some(turn) = take_turn(&served.turns) else {
         return busy(Format::Text);
     };
-    let app = served.app.clone();
-    let named = view.to_owned();
-    // The ask reads the horizons under the store's lock, which a long ask
-    // or a writer can hold: the health routes don't queue behind.
-    let read = tokio::task::spawn_blocking(move || (app.rows_ask(&named), turn)).await;
-    let (asked, turn) = match read {
-        Ok((Some(asked), turn)) => (asked, turn),
-        Ok((None, _)) => return no_view(view),
-        // A panic is not the ask's error: pass it on, and send no reply.
-        Err(error) => panic::resume_unwind(error.into_panic()),
-    };
+    if !served.app.has_view(view) {
+        return no_view(view);
+    }
     let window = match rows_window(query.unwrap_or("")) {
         Ok(window) => window,
         Err(error) => return Format::Text.errors(StatusCode::BAD_REQUEST, &[error]),
     };
-    let writing = Writing {
-        format: Format::Text,
-        rows: Rows::Window(window),
-    };
-    answer(served, asked, writing, Duration::ZERO, start, turn).await
+    let named = view.to_owned();
+    // One take of the store's lock reads the horizon and answers, so no
+    // commit moves the horizon past the start of the ask.
+    let read = move |app: &App| Ok(app.rows(&named, window).expect(HAS_VIEW)?);
+    reply(served, read, Format::Text, Duration::ZERO, start, turn).await
 }
 
 /// The rows `GET /views/NAME` writes, from `start` and `count` in its
@@ -473,20 +468,12 @@ fn window_count(value: Option<&str>) -> Result<usize, String> {
     }
 }
 
-/// How an answer is to be written: its format, and which of its rows.
+/// How an answer is to be written: its format, and every row, or none
+/// when there are more than `max_rows`.
 #[derive(Clone, Copy)]
 struct Writing {
     format: Format,
-    rows: Rows,
-}
-
-/// Which of an answer's rows a reply writes.
-#[derive(Clone, Copy)]
-enum Rows {
-    /// Every one, or none when there are more than `max_rows`.
-    Every { max_rows: usize },
-    /// Those the window shows.
-    Window(Window),
+    max_rows: usize,
 }
 
 /// Why an answer was not written.
@@ -547,10 +534,7 @@ fn within_answer_rows(cut: Cut, max_rows: usize) -> Result<(), Unwritten> {
     Ok(())
 }
 
-/// The answer to `asked` on a blocking thread, holding `turn` till it is
-/// written: a client that hangs up stops neither, so the turn is not
-/// freed while the store is still being read. The written answer then
-/// holds its bytes of the budget until hyper sends it.
+/// The answer to `asked`, of every row, as [`reply`] gives it.
 async fn answer(
     served: &Served,
     asked: Ask,
@@ -559,18 +543,38 @@ async fn answer(
     start: Instant,
     turn: OwnedSemaphorePermit,
 ) -> Reply {
-    let format = writing.format;
+    let Writing { format, max_rows } = writing;
     let range_errors = answer::range_errors(&asked);
     if !range_errors.is_empty() {
         return format.errors(StatusCode::BAD_REQUEST, &range_errors);
     }
+    let read = move |app: &App| {
+        let answered = app.ask_window(&asked, answer_window(max_rows))?;
+        within_answer_rows(answered.cut, max_rows)?;
+        Ok(answered)
+    };
+    reply(served, read, format, parse_time, start, turn).await
+}
+
+/// The answer that `read` gives, on a blocking thread, holding `turn`
+/// till it is written: a client that hangs up stops neither, so the turn
+/// is not freed while the store is still being read. The written answer
+/// then holds its bytes of the budget until hyper sends it.
+async fn reply(
+    served: &Served,
+    read: impl FnOnce(&App) -> Result<Answered, Unwritten> + Send + 'static,
+    format: Format,
+    parse_time: Duration,
+    start: Instant,
+    turn: OwnedSemaphorePermit,
+) -> Reply {
     let app = served.app.clone();
     let max_bytes = served.max_answer_bytes;
     // A big ask reads every cell of a fact, so it runs off the async
     // threads.
     let answered = tokio::task::spawn_blocking(move || {
         let _turn = turn;
-        answer_timed(&app, &asked, writing, max_bytes)
+        answer_timed(&app, read, format, max_bytes)
     })
     .await;
     match answered {
@@ -595,24 +599,17 @@ struct Timed {
     write_time: Duration,
 }
 
-/// The answer to `asked`, written; it stops past `max_bytes`.
+/// The answer that `read` gives, written; it stops past `max_bytes`.
 fn answer_timed(
     app: &App,
-    asked: &Ask,
-    writing: Writing,
+    read: impl FnOnce(&App) -> Result<Answered, Unwritten>,
+    format: Format,
     max_bytes: usize,
 ) -> Result<Timed, Unwritten> {
     let answering = Instant::now();
-    let answered = match writing.rows {
-        Rows::Window(window) => app.ask_window(asked, window)?,
-        Rows::Every { max_rows } => {
-            let answered = app.ask_window(asked, answer_window(max_rows))?;
-            within_answer_rows(answered.cut, max_rows)?;
-            answered
-        }
-    };
+    let answered = read(app)?;
     let written_from = Instant::now();
-    let body = match writing.format {
+    let body = match format {
         Format::Json => answer::write(&answered, max_bytes)?,
         Format::Text => answer::table(&answered, max_bytes)?.into_bytes(),
     };

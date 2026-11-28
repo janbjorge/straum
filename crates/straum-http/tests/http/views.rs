@@ -3,10 +3,17 @@
 //! while the tables still load.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::fake::{Fake, LIMITS, SPEC, fake, int, trip, writer, writer_with};
+use straum_app::{
+    App, Change, Commit, Estimate, LoadCounts, Lsn, Opened, Source, SourceError, Wal, Writer,
+};
+use straum_domain::{Identifier, Spec, Store};
+
+use crate::fake::{COMMIT, Fake, JAN_1, LIMITS, SPEC, fake, int, trip, writer, writer_with};
 use crate::{Reply, call, request, serve, started};
 
 fn views_as_json(address: SocketAddr) -> Reply {
@@ -226,5 +233,89 @@ fn a_view_waits_for_the_store_off_the_async_threads() {
         request.join().unwrap();
     }
     applying.join().unwrap();
+    server.stop();
+}
+
+/// The fake, but each step of the writer applies one commit.
+struct OneAStep(Fake);
+
+impl Source for OneAStep {
+    fn open(&mut self, spec: &Spec) -> Result<Opened, SourceError> {
+        self.0.open(spec)
+    }
+
+    fn estimate(&mut self, tables: &[Identifier]) -> Result<Estimate, SourceError> {
+        self.0.estimate(tables)
+    }
+
+    fn load(
+        &mut self,
+        tables: &[Identifier],
+        store: &mut Store,
+        counts: &LoadCounts,
+    ) -> Result<(), SourceError> {
+        self.0.load(tables, store, counts)
+    }
+
+    fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
+        if wait.is_zero() {
+            return Ok(None);
+        }
+        self.0.next_commit(wait)
+    }
+
+    fn wal(&mut self) -> Result<Wal, SourceError> {
+        self.0.wal()
+    }
+}
+
+/// `GET /views/NAME` starts the rows at the horizon, so Straum does not
+/// refuse them (asks.md). Here each commit moves the horizon one day
+/// while clients ask for the rows. No reply may be a refusal.
+#[test]
+fn a_view_s_rows_are_not_refused_while_the_horizon_moves() {
+    const DAYS: i64 = 300;
+    const DAY: i64 = 86_400;
+    let kept = SPEC.replace("(t.at, '1 hour'", "(t.at, keep('1 hour', '1 day')");
+    let mut source = fake();
+    source.commits = (1..=DAYS)
+        .map(|day| Commit {
+            lsn: Lsn(COMMIT.0 + day.unsigned_abs()),
+            committed: UNIX_EPOCH + Duration::from_secs((JAN_1 + day * DAY).unsigned_abs()),
+            changes: vec![Change::Insert {
+                table: Identifier::new("trips").unwrap(),
+                row: vec![int(JAN_1 + day * DAY), int(1), int(1), int(100)],
+            }],
+        })
+        .collect();
+    let app = App::new(straum_notation::parse(&kept).unwrap(), LIMITS);
+    let mut writer = Writer::new(app, OneAStep(source));
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+    let (address, done) = (server.address, Arc::new(AtomicBool::new(false)));
+    let mut askers = Vec::new();
+    for _ in 0..8 {
+        let done = Arc::clone(&done);
+        askers.push(thread::spawn(move || {
+            let mut refused = Vec::new();
+            while !done.load(Ordering::Relaxed) {
+                let reply = call(address, "GET", "/views/trips", "");
+                if reply.status != 200 {
+                    refused.push(reply.body);
+                }
+            }
+            refused
+        }));
+    }
+    for _ in 0..DAYS {
+        thread::sleep(Duration::from_millis(2));
+        writer.step().unwrap();
+    }
+    done.store(true, Ordering::Relaxed);
+    let mut refused = Vec::new();
+    for asker in askers {
+        refused.extend(asker.join().unwrap());
+    }
+    assert_eq!(refused.len(), 0, "{:?}", refused.first());
     server.stop();
 }

@@ -253,7 +253,7 @@ and this glossary. The clashes at the end are open.
   ([straum views](cli.md#straum-views)).
 - **Shell**: `straum shell`, a prompt at a running Straum
   ([straum shell](cli.md#straum-shell)).
-- **A view's rows** (`App::rows_ask`): what `GET /views/NAME` and
+- **A view's rows** (`App::rows`): what `GET /views/NAME` and
   `\rows` print ([Endpoints](asks.md#endpoints)).
 - **Definition** (`Definition`): a view's `CREATE VIEW` statement as
   the spec wrote it, which `GET /views/NAME/spec` and `\d VIEW` print

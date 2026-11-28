@@ -176,7 +176,16 @@ impl App {
     }
 
     fn answer(&self, ask: &Ask, window: Option<Window>) -> Result<Answered, AnswerError> {
-        let state = self.read();
+        self.answer_in(&self.read(), ask, window)
+    }
+
+    /// As [`App::answer`], from the store that `state` holds.
+    pub(crate) fn answer_in(
+        &self,
+        state: &State,
+        ask: &Ask,
+        window: Option<Window>,
+    ) -> Result<Answered, AnswerError> {
         // An ask the spec refuses is refused even while loading; only a
         // load knows the types the store checks.
         (state.store.spec().check_ask(ask)).map_err(AnswerError::Invalid)?;
