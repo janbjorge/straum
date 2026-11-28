@@ -252,16 +252,16 @@ pub(crate) fn scaled(
         value = value.checked_mul(NUMERIC_BASE)?.checked_add(digit.into())?;
         count = count.checked_add(1)?;
     }
+    // Zero has no digits and any weight, so no place to scale.
+    if value == 0 {
+        return Some(0);
+    }
     let last_place = weight.checked_sub(count)?.checked_add(1)?;
     let exponent = DECIMAL_DIGITS.checked_mul(last_place)?.checked_add(scale)?;
     let magnitude = match u32::try_from(exponent) {
         Ok(exponent) => value.checked_mul(10_u128.checked_pow(exponent)?)?,
         // Below the scale the digits must be zero.
-        Err(_) => match 10_u128.checked_pow(exponent.unsigned_abs()) {
-            Some(unit) => divide_exactly(value, unit)?,
-            None if value == 0 => 0,
-            None => return None,
-        },
+        Err(_) => divide_exactly(value, 10_u128.checked_pow(exponent.unsigned_abs())?)?,
     };
     let magnitude = i128::try_from(magnitude).ok()?;
     i64::try_from(if negative { -magnitude } else { magnitude }).ok()
@@ -846,6 +846,12 @@ mod tests {
             ),
             (cents, numeric_bytes(0, NUMERIC_POS, &[7]), Datum::Int(700)),
             (cents, numeric_bytes(0, NUMERIC_POS, &[]), Datum::Int(0)),
+            // Zero has no digits, so no scale puts it past an `i64`.
+            (
+                ColumnType::Numeric { scale: 35 },
+                numeric_bytes(0, NUMERIC_POS, &[]),
+                Datum::Int(0),
+            ),
             (
                 cents,
                 numeric_bytes(2, NUMERIC_POS, &[1, 2345, 6789, 100]),
