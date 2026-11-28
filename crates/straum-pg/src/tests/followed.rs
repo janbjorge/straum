@@ -518,7 +518,8 @@ fn with_other(db: &mut Db) {
 
 /// An `ALTER TABLE` that holds its lock on a spec table, or a lock on
 /// another published table, keeps the reading of the WAL: it skips the
-/// check at the lock timeout and does not wait out the read timeout.
+/// check of the publication's tables at the lock timeout and does not
+/// wait out the read timeout.
 #[test]
 fn a_lock_on_a_published_table_keeps_the_reading_of_the_wal() {
     let pg = postgres();
@@ -545,9 +546,10 @@ fn a_lock_on_a_published_table_keeps_the_reading_of_the_wal() {
 }
 
 /// A spec table left out of the publication while a lock holds the check
-/// stops the stream at the first reading after the lock goes.
+/// of the publication's tables stops the stream all the same: the version
+/// of the publication changed.
 #[test]
-fn a_table_left_out_under_a_lock_stops_the_stream_once_the_lock_goes() {
+fn a_table_left_out_under_a_lock_stops_the_stream() {
     let pg = postgres();
     let mut db = Db::new(&pg, "leftunderlock", TABLES);
     with_other(&mut db);
@@ -558,14 +560,30 @@ fn a_table_left_out_under_a_lock_stops_the_stream_once_the_lock_goes() {
     let mut locker = db.another_connection();
     locker.run("BEGIN; LOCK TABLE $S.other IN ACCESS EXCLUSIVE MODE");
     db.run("ALTER PUBLICATION $S DROP TABLE $S.trips");
-    assert!(source.wal().is_ok());
-    locker.run("ROLLBACK");
     let error = source.wal().unwrap_err().to_string();
+    assert_eq!(error, db.sql(CHANGED));
+}
+
+/// A lock on one spec table holds the check of the publication. A column
+/// of another spec table altered under that lock stops the stream at the
+/// next reading of the WAL all the same: the check of the columns waits
+/// on no table lock.
+#[test]
+fn a_column_altered_while_another_table_is_locked_stops_the_logical_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "alteredunderlock", TABLES);
+    db.run(&Rng::new(3).trip(1));
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec).unwrap();
+    let mut locker = db.another_connection();
+    locker.run("BEGIN; LOCK TABLE $S.zones IN ACCESS EXCLUSIVE MODE");
+    db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(10, 2) USING fare + 1");
+    let read = source.wal().map_err(|error| error.to_string());
     assert_eq!(
-        error,
-        db.sql(
-            "trips: publication $S leaves out $S.trips: ALTER PUBLICATION $S ADD TABLE $S.trips"
-        )
+        read.err(),
+        Some(db.sql("trips: a column Straum reads of $S.trips was altered"))
     );
 }
 

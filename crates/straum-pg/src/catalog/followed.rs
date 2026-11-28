@@ -50,7 +50,24 @@ pub(crate) fn still_followed(
     if followed.tables.is_empty() {
         return Ok(());
     }
-    let rows = publication_rows(connection, followed, publication)?;
+    // These checks read no table, so a lock on one holds none of them.
+    let mut later = Vec::new();
+    relabelled(connection, followed, &mut later)?;
+    altered(connection, followed, &mut later)?;
+    standby_named(connection, &mut later)?;
+    let changed = publication_changed(connection, followed, publication)?;
+    // `pg_publication_tables` locks each table it reads: past the lock
+    // timeout, the problems found above still stop the stream.
+    let rows = match publication_rows(connection, followed, publication) {
+        Ok(rows) => rows,
+        Err(error) => {
+            let found: Vec<Problem> = changed.into_iter().chain(later).collect();
+            if found.is_empty() {
+                return Err(error);
+            }
+            return Err(Error::Setup(found));
+        }
+    };
     if rows.len() != followed.tables.len() {
         return Err(shape("followed tables"));
     }
@@ -93,18 +110,10 @@ pub(crate) fn still_followed(
             publication: publication.to_owned(),
         }));
     }
-    // A change made while the publication left it out did not come.
-    if problems.is_empty()
-        && let Some(loaded) = &followed.publication
-        && *loaded != publication_version(connection, &followed.tables, publication)?
-    {
-        problems.push(Problem::Server(ServerProblem::PublicationChanged {
-            publication: publication.to_owned(),
-        }));
+    if problems.is_empty() {
+        problems.extend(changed);
     }
-    relabelled(connection, followed, &mut problems)?;
-    altered(connection, followed, &mut problems)?;
-    standby_named(connection, &mut problems)?;
+    problems.extend(later);
     if problems.is_empty() {
         return Ok(());
     }
@@ -142,6 +151,24 @@ fn publication_rows(
         publication = escape_literal(publication)
     ))?;
     Ok(rows)
+}
+
+/// A problem when `publication` has another version than the one loaded:
+/// a change made while it left a spec table out did not come.
+fn publication_changed(
+    connection: &mut Connection,
+    followed: &Followed,
+    publication: &str,
+) -> Result<Option<Problem>, Error> {
+    let Some(loaded) = &followed.publication else {
+        return Ok(None);
+    };
+    if *loaded == publication_version(connection, &followed.tables, publication)? {
+        return Ok(None);
+    }
+    Ok(Some(Problem::Server(ServerProblem::PublicationChanged {
+        publication: publication.to_owned(),
+    })))
 }
 
 /// The version of `publication` for `tables`: the `oid` and `xmin` of its

@@ -146,10 +146,14 @@ table out, filtered its rows or left out an action, also when the
 publication is changed back before the check. Straum also stops on a
 `synchronous_standby_names` reloaded to name its connection
 ([What Straum checks at start](postgresql.md#what-straum-checks-at-start)).
-It checks for these once a second. The check waits at most 200 ms for
-a lock on a published table. While another session holds a lock that blocks a
-read, as `ALTER TABLE` does until it commits, Straum skips the check
-and keeps the lag.
+
+Straum checks for these once a second. One check reads the tables of
+the publication and waits at most 200 ms for a lock on a published
+table. While another session holds a lock that blocks a read, as
+`ALTER TABLE` does until it commits, Straum skips that check and keeps
+the lag. A spec table renamed away, replaced or inherited from then
+stops Straum only once the lock goes. The other checks read no table
+and still run.
 
 ## The logical stream
 

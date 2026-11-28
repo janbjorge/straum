@@ -813,8 +813,8 @@ fn loaded(snapshot: &mut Snapshot, tables: &[Identifier]) -> Result<(), Error> {
 }
 
 /// The server's WAL position, then a check that the spec's tables are
-/// still followed, skipped when a table lock holds it past
-/// `CHECK_LOCK_WAIT`.
+/// still followed. A table lock held past `CHECK_LOCK_WAIT` skips the
+/// check of the publication's tables alone.
 fn read_wal_and_check(
     connection: &mut Connection,
     slot: &str,
@@ -831,8 +831,9 @@ fn read_wal_and_check(
     ))?;
     match catalog::still_followed(connection, followed, publication, settings.replication) {
         Ok(()) => connection.execute("COMMIT")?,
-        // A lock held on a published table stops the check, never the
-        // reading: the next reading checks again.
+        // A lock held on a published table stops the check of the
+        // publication's tables, never the reading: the next reading checks
+        // again. The checks that read no table found nothing.
         Err(Error::Server { code, .. }) if code == LOCK_NOT_AVAILABLE => {
             connection.execute("ROLLBACK")?;
         }
