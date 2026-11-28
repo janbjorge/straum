@@ -3,7 +3,7 @@
 //! seeds over one shape of view, so between them every join kind meets
 //! every kind of cells an ask may read: keyed and bound.
 
-use crate::common::{Rng, condition, id, lit, text};
+use crate::common::{Rng, condition, id, lit, text, windows_match};
 use crate::reference::reference;
 use crate::view::{
     AT, DIM_NAMES, Dims, FILTERED, HOUR, KEYS, Kinds, Loaded, MEASURES, START, Shape, ask, keyed,
@@ -343,11 +343,13 @@ impl Walk {
         for _ in 0..ASKS_A_CHECK {
             let ask = random_ask(&mut self.rng, shape);
             let loaded = &self.loaded;
+            let expected = reference(&loaded.spec, &ask, &self.rows, &loaded.dims);
             assert_eq!(
                 loaded.store.ask(&ask).unwrap(),
-                reference(&loaded.spec, &ask, &self.rows, &loaded.dims),
+                expected,
                 "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
             );
+            windows_match(&loaded.store, &ask, &expected);
         }
     }
 

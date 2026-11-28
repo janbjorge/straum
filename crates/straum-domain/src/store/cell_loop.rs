@@ -25,6 +25,7 @@ use super::{AnswerRow, Cut, Window};
 // The `'s` in this file borrows the store for the length of the ask.
 pub(super) struct CellLoop<'s> {
     pub(super) rollup: &'s Rollup,
+    pub(super) merging: Merging,
     /// Which buckets the ask reads.
     pub(super) cover: Cover,
     /// The cells the ask reads.
@@ -46,6 +47,43 @@ pub(super) struct Asked<'s> {
     /// none of its own: `count`, `sum` and `avg` of one column's distinct
     /// values under one `FILTER` tally them once.
     pub(super) shares: Option<AskedIndex>,
+}
+
+/// Which groups the cell loop merges into partials.
+pub(super) enum Merging {
+    /// The groups while they are at most this many, group 0 counted.
+    /// Past that, the loop only counts the groups it meets.
+    AtMost(usize),
+    /// Only the groups of a window: per group, the place of its row in
+    /// the window, from 1, and 0 for a group the window does not show.
+    Shown { places: Vec<u32>, rows: usize },
+}
+
+impl Merging {
+    /// The groups a loop that made `made` groups merges when it shows
+    /// `shown` alone.
+    pub(super) fn shown(shown: &[u32], made: usize) -> Merging {
+        let mut places = vec![0; made];
+        for (place, &group) in (1..).zip(shown) {
+            places[group as usize] = place;
+        }
+        let rows = shown.len();
+        Merging::Shown { places, rows }
+    }
+
+    /// The groups the partials hold, group 0 counted, once each of
+    /// `groups` is its place among them; `None` past the most to merge.
+    fn held(&self, made: usize, groups: &mut [u32]) -> Option<usize> {
+        match self {
+            Merging::AtMost(most) => (made <= *most).then_some(made),
+            Merging::Shown { places, rows } => {
+                for group in groups {
+                    *group = places[*group as usize];
+                }
+                Some(rows + 1)
+            }
+        }
+    }
 }
 
 /// A measure's place among those an ask names.
@@ -108,11 +146,15 @@ impl<'s> CellLoop<'s> {
                 check.pass(rollup, cells, &mut cell_groups);
             }
             (self.groups).assign(&mut self.by, rollup, cells, &mut cell_groups);
+            let made = self.groups.len();
+            let Some(held) = self.merging.held(made, &mut cell_groups) else {
+                continue;
+            };
             for measure in &mut self.measures {
                 if measure.shares.is_some() {
                     continue;
                 }
-                measure.partials.grow(self.groups.len());
+                measure.partials.grow(held);
                 let read = if measure.filter.is_empty() {
                     &cell_groups
                 } else {
@@ -153,15 +195,18 @@ impl<'s> CellLoop<'s> {
         for grouping in &self.by {
             groups.numbers.push(grouping.number_in(cells, cell, row));
         }
-        let group = groups.insert();
+        let mut group = [groups.insert()];
+        let Some(held) = self.merging.held(groups.len(), &mut group) else {
+            return;
+        };
         for measure in &mut self.measures {
             if measure.shares.is_some() {
                 continue;
             }
-            measure.partials.grow(groups.len());
+            measure.partials.grow(held);
             if all_hold(&mut measure.filter, rollup, cells, cell, row) {
                 let state = state_in(cells, measure.state);
-                (measure.partials).merge_cell(group, cell, cells.rows(), state);
+                (measure.partials).merge_cell(group[0], cell, cells.rows(), state);
             }
         }
     }
@@ -225,6 +270,48 @@ impl<'s> CellLoop<'s> {
                 &checked,
                 Which::Unchecked,
                 group as usize,
+                &mut values,
+            );
+            rows.push(AnswerRow {
+                keys: groups.key_values(&by, rollup, group),
+                values: values.clone(),
+            });
+        }
+        Rows { rows, cut }
+    }
+}
+
+impl CellLoop<'_> {
+    /// The groups `window` shows, in the order of their keys, and where
+    /// they lie among all of the groups.
+    pub(super) fn shown(&self, window: Option<Window>) -> (Vec<u32>, Cut) {
+        let kept = self.groups.in_key_order(&self.by, self.rollup);
+        let cut = Cut::of(window, kept.len());
+        (kept[cut.first..cut.end()].to_vec(), cut)
+    }
+
+    /// The rows of the `shown` groups, from a loop that merged only them
+    /// (`Merging::Shown`).
+    pub(super) fn shown_rows(self, shown: &[u32], cut: Cut) -> Rows {
+        let CellLoop {
+            rollup,
+            by,
+            groups,
+            mut measures,
+            ..
+        } = self;
+        let unchecked = vec![false; measures.len()];
+        let mut values = vec![Value::Null; measures.len()];
+        let mut rows = Vec::with_capacity(shown.len());
+        for measure in &mut measures {
+            measure.partials.grow(shown.len() + 1);
+        }
+        for (place, &group) in (1..).zip(shown) {
+            finish_where(
+                &mut measures,
+                &unchecked,
+                Which::Unchecked,
+                place,
                 &mut values,
             );
             rows.push(AnswerRow {

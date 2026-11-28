@@ -348,6 +348,9 @@ ask](how-it-works.md#answering-an-ask) says.
 An ask builds at most `--max-answer-rows` rows, 100,000 by default, and
 an answer with more is 400: it is written whole in memory, so an ask over
 every key of a large view could take more than the process may hold.
+An ask without `HAVING` merges the cells of at most that many groups.
+Past them it only counts the groups. Then it reads the cells again and
+merges only the cells of the groups of the rows it builds.
 
 The turn ends when the answer is written, before hyper sends it. Then
 the answer takes one permit for each of its bytes from a second
@@ -377,7 +380,7 @@ keeps that width for a time. It takes a turn first and builds that ask
 on a blocking thread, because `App::rows_ask` reads the horizons under
 the read lock. Then it runs that ask like any other
 (`App::ask_window`). The store builds only the rows of the window asked
-for, at most 1000, but still merges every cell into its group.
+for, at most 1000, and merges only the cells of their groups.
 `GET /views/NAME/spec` replies with the view's `CREATE VIEW` statement,
 which `straum run` cut from the spec's text at start
 (`straum_notation::definitions`); the store never sees it.

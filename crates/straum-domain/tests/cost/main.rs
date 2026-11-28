@@ -299,6 +299,26 @@ fn an_ask_allocates_per_group_not_per_cell() {
     }
 }
 
+/// An ask with a window builds the partial answers of the rows the window
+/// shows, not of every group: the bytes that its sum and max add to a
+/// count do not grow with the groups.
+#[test]
+fn a_windowed_ask_holds_partials_for_its_rows_not_its_groups() {
+    let window = Window {
+        start: Start::FromFirst(0),
+        count: 10,
+    };
+    let added = |cells: i64| {
+        let store = store(cells);
+        let mut every = ask(&["bucket", "pay", "pu"], 0, cells / (2 * ZONES));
+        let all = peak(|| drop(store.ask_window(&every, Some(window)).unwrap()));
+        every.measures = vec![id("trips")];
+        all - peak(|| drop(store.ask_window(&every, Some(window)).unwrap()))
+    };
+    let (small, big) = (added(1_000), added(8_000));
+    assert_eq!(small, big, "the sum and max add {small} bytes, then {big}");
+}
+
 #[test]
 fn an_ask_reads_only_the_buckets_in_its_range() {
     let store = store(8_000);

@@ -10,9 +10,32 @@
 #![allow(dead_code)]
 
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, Condition, Datum, Dim, Fraction, Identifier, Literal,
-    Measure, Table, Value, Width,
+    Aggregate, Answer, Ask, AskKey, Attribute, ByKey, Condition, Datum, Dim, Fraction, Identifier,
+    Literal, Measure, Start, Store, Table, Value, Width, Window,
 };
+
+/// Asserts that a window of half the rows of `whole`, from row 1 and from
+/// the end, builds the rows that `whole` has there. Such a window shows
+/// fewer rows than the groups, so the store reads the cells again for
+/// its rows. An ask with HAVING does not, so this checks none.
+pub fn windows_match(store: &Store, ask: &Ask, whole: &Answer) {
+    let total = whole.rows.len();
+    if !ask.having.is_empty() || total < 2 {
+        return;
+    }
+    let count = total / 2;
+    let starts = [
+        (Start::FromFirst(1), 1),
+        (Start::FromLast(count + 1), total - count - 1),
+    ];
+    for (start, first) in starts {
+        let window = Window { start, count };
+        let cut = store.ask_window(ask, Some(window)).unwrap();
+        assert_eq!(cut.cut.total, total, "{window:?}, {ask:?}");
+        let shown = &whole.rows[first..first + count];
+        assert_eq!(cut.answer.rows, shown, "{window:?}, {ask:?}");
+    }
+}
 
 /// Whether a row at `at` is in the ask's range, as PostgreSQL reads
 /// `bucket >= from AND bucket < to`; an open end leaves its side unbounded.

@@ -13,7 +13,7 @@ use crate::identifier::Identifier;
 use crate::rollup::{Cover, CoveredBucket, Rollup};
 use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefIndex, RefKind, Via};
 
-use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, Rows, ViaFrom};
+use super::cell_loop::{Asked, CellLoop, Expander, Merging, RefPlan, Rows, ViaFrom};
 use super::groups::{Grouping, Groups};
 use super::lookup::{
     AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, KnownMemo, Lookup, Memo,
@@ -83,21 +83,25 @@ impl Store {
             Read::Bound(_) => None,
             Read::Keyed(_) => self.expander(fact),
         };
-        let mut cell_loop = self.cell_loop(fact, read, ask, &asked, expander.is_some());
+        // Without HAVING, a group past the window's rows needs no partials
+        // to count; a window that shows fewer rows than the groups reads
+        // the cells again for the groups it shows.
+        let most = match window {
+            Some(window) if ask.having.is_empty() => window.count.saturating_add(1),
+            _ => usize::MAX,
+        };
+        let merging = Merging::AtMost(most);
+        let cell_loop = self.cell_loop(fact, read, ask, &asked, &mut expander, merging);
         let columns = answer_columns(ask, rollup, &cell_loop.by, &asked);
-        match read {
-            // The bound cells hold only what the joins keep.
-            Read::Bound(_) => cell_loop.ask_once(&mut Vec::new(), ask),
-            Read::Keyed(_) => {
-                if let Some(expander) = &mut expander {
-                    cell_loop.ask_expanded(ask, expander);
-                } else {
-                    cell_loop.ask_once(&mut self.join_checks(fact, rollup, cell_loop.cells), ask);
-                }
-            }
-        }
-        let checks = having_checks(ask, &columns);
-        let Rows { rows, cut } = cell_loop.answer_rows(&checks, window);
+        let Rows { rows, cut } = if cell_loop.groups.len() <= most {
+            cell_loop.answer_rows(&having_checks(ask, &columns), window)
+        } else {
+            let (shown, cut) = cell_loop.shown(window);
+            let merging = Merging::shown(&shown, cell_loop.groups.len());
+            drop(cell_loop);
+            let again = self.cell_loop(fact, read, ask, &asked, &mut expander, merging);
+            again.shown_rows(&shown, cut)
+        };
         Ok(WindowAnswer {
             answer: Answer { columns, rows },
             cut,
@@ -132,9 +136,33 @@ impl Store {
         }
     }
 
+    /// The cell loop of an ask after it met every cell, merging as
+    /// `merging` says. `expander` repeats a cell for joins that can.
+    fn cell_loop<'s>(
+        &'s self,
+        fact: &Fact,
+        read: Read<'s>,
+        ask: &Ask,
+        asked: &[&Measure],
+        expander: &mut Option<Expander<'s>>,
+        merging: Merging,
+    ) -> CellLoop<'s> {
+        let mut cell_loop = self.new_cell_loop(fact, read, ask, asked, expander.is_some());
+        cell_loop.merging = merging;
+        match (read, expander) {
+            // The bound cells hold only what the joins keep.
+            (Read::Bound(_), _) => cell_loop.ask_once(&mut Vec::new(), ask),
+            (Read::Keyed(_), Some(expander)) => cell_loop.ask_expanded(ask, expander),
+            (Read::Keyed(rollup), None) => {
+                cell_loop.ask_once(&mut self.join_checks(fact, rollup, cell_loop.cells), ask);
+            }
+        }
+        cell_loop
+    }
+
     /// The cell loop of an ask before it meets a cell: its groupings,
     /// filters and measures. `expanded` tells that the joins repeat a cell.
-    fn cell_loop<'s>(
+    fn new_cell_loop<'s>(
         &'s self,
         fact: &Fact,
         read: Read<'s>,
@@ -170,6 +198,7 @@ impl Store {
         }
         CellLoop {
             rollup,
+            merging: Merging::AtMost(usize::MAX),
             cover,
             cells,
             by,

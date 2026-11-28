@@ -4,7 +4,7 @@
 //! reference. Also rows loaded in batches against rows added one by one,
 //! and two views of the trips in one store, sharing their dims.
 
-use crate::common::{Rng, dim_row, id, text};
+use crate::common::{Rng, dim_row, id, text, windows_match};
 use crate::random::{
     change_dim, held, load_dims, meet_a_group, near, random_ask, random_dims, trip, trips,
 };
@@ -184,6 +184,7 @@ impl Workload {
                     expected,
                     "seed {seed}, step {step}, {ask:?}"
                 );
+                windows_match(&self.store, &ask, &expected);
             }
         }
     }
