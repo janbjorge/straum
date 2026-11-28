@@ -201,3 +201,11 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "maxlag"
+
+  - it: takes the global values that a parent chart gives each subchart
+    template: deployment.yaml
+    set:
+      global: {}
+    asserts:
+      - isKind:
+          of: Deployment

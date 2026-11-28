@@ -5,7 +5,9 @@ ClusterIP Service and a ServiceAccount. No volume claims; straum keeps
 everything in memory and loads every table again when its pod starts.
 The [user guide](https://janbjorge.github.io/straum/deploy.html#kubernetes)
 says what that means. `values.yaml` documents every value, and
-`values.schema.json` refuses what straum can't take.
+`values.schema.json` refuses what straum can't take. It takes the
+`global` values that Helm gives a subchart, so another chart can
+depend on this one.
 
 Each release publishes the chart at that version, pulling
 `ghcr.io/janbjorge/straum:X.Y.Z`. The copy in this repository has
